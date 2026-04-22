@@ -1,0 +1,150 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OfflinAi LaTeX</title>
+<style> body { margin: 0; background: #000; color: #ccc; font: 12px monospace; } </style>
+</head>
+<body>
+<div id="log"></div>
+<script src="PdfTeXEngine.js"></script>
+<script>
+(function () {
+  // Bridge from Swift: expose compile(texSource) → returns {status, log, pdfBase64}.
+  // Called via webView.evaluateJavaScript("window.__latex.compile(…)").
+  //
+  // The SwiftLaTeX engine (PdfTeXEngine.js) spawns a Web Worker that runs
+  // the pdftex WASM. When the WASM needs a TeX Live support file like
+  // article.cls, it issues an XHR to `${texlive_endpoint}pdftex/<cacheKey>`
+  // which we intercept via the `offlinai-tex://` custom scheme registered
+  // by WebLaTeXEngine.swift. Swift serves the file from the bundled
+  // Frameworks/latex/texmf/ tree, so the whole pipeline stays offline.
+
+  var engine = null;
+  var ready = false;
+  var loadPromise = null;
+  var logEl = document.getElementById("log");
+  function log(s) { logEl.textContent += s + "\n"; }
+
+  async function ensureLoaded() {
+    if (ready) return;
+    if (loadPromise) return loadPromise;  // coalesce concurrent callers
+    loadPromise = (async function () {
+    engine = new PdfTeXEngine();
+    // Stream pdftex's stdout/stderr back to Swift every ~2 s so the
+    // terminal shows progress during compute-heavy phases (beamer
+    // preamble processing, TikZ path building, etc.) when no files
+    // are being fetched and the outer progress counter is quiet.
+    engine.onProgressLog = function (chunk) {
+      if (!chunk) return;
+      // Send EACH non-empty line separately so we can see the full
+      // trace (useful when debugging startup hangs — the critical
+      // [trace] lines shouldn't be dropped by a last-3-lines filter).
+      var lines = chunk.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.length > 0) {
+          sendLog("[pdftex] " + line.substring(0, 300));
+        }
+      }
+    };
+    await engine.loadEngine();
+    // The worker JS default `texlive_endpoint` has been patched at
+    // build time to `offlinai-tex://texmf/`, so XHRs for TeX Live
+    // support files go through our Swift URLSchemeHandler.
+    //
+    // SwiftLaTeX doesn't ship a pre-built `.fmt` file (the LaTeX
+    // kernel pre-digested into a binary dump), so the first run has
+    // to build one via `compileFormat()`. We hand the resulting bytes
+    // to Swift so the URLSchemeHandler can serve them on every
+    // subsequent compileLaTeX() call — WASM's MEMFS doesn't survive
+    // `prepareExecutionContext()`'s heap restore between runs.
+    sendLog("building format (one-time, ~30-60s)…");
+    try {
+      const result = await engine.compileFormat();
+      const fmtBytes = (result && result.bytes) || null;
+      const fmtLog = (result && result.log) || "";
+      sendLog("compileFormat resolved, bytes=" + (fmtBytes ? fmtBytes.length : 0));
+      if (fmtBytes && fmtBytes.length > 0) {
+        let bin = "";
+        for (let i = 0; i < fmtBytes.length; i++) {
+          bin += String.fromCharCode(fmtBytes[i]);
+        }
+        try {
+          window.webkit.messageHandlers.latexCache.postMessage({
+            kind: "fmt",
+            data: btoa(bin)
+          });
+          sendLog("format cached (" + fmtBytes.length + " bytes)");
+        } catch (e) {
+          sendLog("format cache post failed: " + e);
+        }
+      } else {
+        // Empty fmt → pdftex never reached \dump. Show the log tail.
+        sendLog("compileFormat returned no bytes (empty fmt)");
+        const tail = fmtLog.split("\n").slice(-40).join("\n");
+        sendLog("--- format log tail ---\n" + tail + "\n--- end ---");
+      }
+    } catch (err) {
+      const log = (err && err.log) || "";
+      sendLog("compileFormat REJECTED: " + String(err).substring(0, 200));
+      if (log) {
+        const tail = log.split("\n").slice(-40).join("\n");
+        sendLog("--- format log tail ---\n" + tail + "\n--- end ---");
+      }
+    }
+    ready = true;
+    sendLog("ensureLoaded done, ready=true");
+    })();
+    return loadPromise;
+  }
+
+  function sendLog(msg) {
+    log(msg);
+    try {
+      window.webkit.messageHandlers.latexLog.postMessage(msg);
+    } catch (_) {}
+  }
+
+  window.__latex = {
+    async compile(texSource, mainFileName) {
+      sendLog("compile() called, ready=" + ready);
+      try {
+        await ensureLoaded();
+      } catch (e) {
+        return { status: -1, log: "engine load failed: " + e, pdfBase64: "" };
+      }
+      sendLog("engine ready, starting compileLaTeX");
+      const name = mainFileName || "main.tex";
+      engine.flushCache();
+      engine.writeMemFSFile(name, texSource);
+      engine.setEngineMainFile(name);
+      let r;
+      try {
+        r = await engine.compileLaTeX();
+      } catch (e) {
+        sendLog("compileLaTeX threw: " + e);
+        return { status: -2, log: "compile threw: " + e, pdfBase64: "" };
+      }
+      sendLog("compileLaTeX status=" + r.status
+              + " pdfBytes=" + (r.pdf ? r.pdf.byteLength : 0));
+      let b64 = "";
+      if (r.pdf && r.pdf.byteLength) {
+        // Base64-encode the PDF bytes for the JSON round-trip back to Swift.
+        let bin = "";
+        const bytes = new Uint8Array(r.pdf);
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        b64 = btoa(bin);
+      }
+      return { status: r.status, log: r.log || "", pdfBase64: b64 };
+    },
+
+    isReady() { return ready; },
+  };
+
+  // Kick off preload so the first compile doesn't pay worker-boot latency.
+  ensureLoaded().catch(function (e) { log("preload failed: " + e); });
+})();
+</script>
+</body>
+</html>

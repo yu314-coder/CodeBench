@@ -1,0 +1,15 @@
+# Git LFS tracking — large binary assets that exceed GitHub's 50 MB warning
+# and/or 100 MB hard limit. All stored in LFS, pulled automatically on clone
+# via `git lfs pull` (which `git clone` runs by default on LFS-enabled repos).
+#
+# Busytex TeX Live data packages (LZ4-compressed Emscripten file_packager
+# output — preload texmf into the WASM engine's MEMFS at app start):
+*.data filter=lfs diff=lfs merge=lfs -text
+
+# Busytex WASM binary (pdftex 1.40.25 + xetex + luatex + bibtex8 + xdvipdfmx
+# linked into one ~30 MB WebAssembly module):
+*.wasm filter=lfs diff=lfs merge=lfs -text
+
+# Line endings — force LF for all text so Windows contributors don't
+# introduce CRLF pollution.
+* text=auto eol=lf

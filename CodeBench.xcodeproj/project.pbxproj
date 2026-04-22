@@ -1,0 +1,528 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F5FF228CE7F457AA86ACE6E /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F89F24366B2E40D390AEBB54 /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		28055AA0EFC548269F101DDD /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9864F81207304B62A8321929 /* Metal.framework */; };
+		4C1A8B7A7E0B4C4E9FA4D2F1 /* CodeBench/Resources/KaTeX in Resources */ = {isa = PBXBuildFile; fileRef = 4C1A8B7A7E0B4C4E9FA4D2F2 /* CodeBench/Resources/KaTeX */; };
+		4C1A8B7A7E0B4C4E9FA4D2F3 /* CodeBench/Resources/LibraryDocs in Resources */ = {isa = PBXBuildFile; fileRef = 4C1A8B7A7E0B4C4E9FA4D2F4 /* CodeBench/Resources/LibraryDocs */; };
+		800C4BF2A9754B1F8F19E02C /* app_packages in Resources */ = {isa = PBXBuildFile; fileRef = 2C57DBA5B9FC46A684ABACD2 /* app_packages */; };
+		82528BD41E84475ABD7306EA /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7D9C3AA5FDA74C4BA18EFC23 /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		829F60A3A6F4421385D66B67 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7D9C3AA5FDA74C4BA18EFC23 /* Python.xcframework */; };
+		9471A8561896430AA109E9BA /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F89F24366B2E40D390AEBB54 /* llama.xcframework */; };
+		A1B2C3D4E5F6789012345678 /* Monaco in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6789012345679 /* Monaco */; };
+		A63BD55BBE3746868E10CA1F /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE440FAB6ABE468783D3B3AD /* Accelerate.framework */; };
+		EF00000000000000000000E1 /* executorch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F1 /* executorch.xcframework */; };
+		EF00000000000000000000E2 /* executorch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F1 /* executorch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EF00000000000000000000E3 /* backend_xnnpack.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F2 /* backend_xnnpack.xcframework */; };
+		EF00000000000000000000E4 /* backend_xnnpack.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F2 /* backend_xnnpack.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EF00000000000000000000E5 /* backend_coreml.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F3 /* backend_coreml.xcframework */; };
+		EF00000000000000000000E6 /* backend_coreml.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F3 /* backend_coreml.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EF00000000000000000000E7 /* kernels_optimized.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F4 /* kernels_optimized.xcframework */; };
+		EF00000000000000000000E8 /* kernels_optimized.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F4 /* kernels_optimized.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EF00000000000000000000E9 /* threadpool.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F5 /* threadpool.xcframework */; };
+		EF00000000000000000000EA /* threadpool.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F5 /* threadpool.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EF00000000000000000000EB /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F6 /* CoreML.framework */; };
+		EF00000000000000000000EC /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F7 /* libsqlite3.tbd */; };
+		ST00000000000000000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = ST00000000000000000001 /* SwiftTerm */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		8F797F20F7514EB9BD301A4F /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				82528BD41E84475ABD7306EA /* Python.xcframework in Embed Frameworks */,
+				0F5FF228CE7F457AA86ACE6E /* llama.xcframework in Embed Frameworks */,
+				EF00000000000000000000E2 /* executorch.xcframework in Embed Frameworks */,
+				EF00000000000000000000E4 /* backend_xnnpack.xcframework in Embed Frameworks */,
+				EF00000000000000000000E6 /* backend_coreml.xcframework in Embed Frameworks */,
+				EF00000000000000000000E8 /* kernels_optimized.xcframework in Embed Frameworks */,
+				EF00000000000000000000EA /* threadpool.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		14DDAF03FDD043D0A1716056 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2C57DBA5B9FC46A684ABACD2 /* app_packages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = app_packages; sourceTree = "<group>"; };
+		4C1A8B7A7E0B4C4E9FA4D2F2 /* CodeBench/Resources/KaTeX */ = {isa = PBXFileReference; lastKnownFileType = folder; path = CodeBench/Resources/KaTeX; sourceTree = "<group>"; };
+		4C1A8B7A7E0B4C4E9FA4D2F4 /* CodeBench/Resources/LibraryDocs */ = {isa = PBXFileReference; lastKnownFileType = folder; path = CodeBench/Resources/LibraryDocs; sourceTree = "<group>"; };
+		7D9C3AA5FDA74C4BA18EFC23 /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Python.xcframework; path = Frameworks/Python.xcframework; sourceTree = "<group>"; };
+		9864F81207304B62A8321929 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		A1B2C3D4E5F6789012345679 /* Monaco */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Monaco; sourceTree = "<group>"; };
+		AE440FAB6ABE468783D3B3AD /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
+		B98F68152F2E4478007FD74B /* CodeBench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodeBench.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EF00000000000000000000F1 /* executorch.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = executorch.xcframework; path = Frameworks/ExecuTorch/executorch.xcframework; sourceTree = "<group>"; };
+		EF00000000000000000000F2 /* backend_xnnpack.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = backend_xnnpack.xcframework; path = Frameworks/ExecuTorch/backend_xnnpack.xcframework; sourceTree = "<group>"; };
+		EF00000000000000000000F3 /* backend_coreml.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = backend_coreml.xcframework; path = Frameworks/ExecuTorch/backend_coreml.xcframework; sourceTree = "<group>"; };
+		EF00000000000000000000F4 /* kernels_optimized.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = kernels_optimized.xcframework; path = Frameworks/ExecuTorch/kernels_optimized.xcframework; sourceTree = "<group>"; };
+		EF00000000000000000000F5 /* threadpool.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = threadpool.xcframework; path = Frameworks/ExecuTorch/threadpool.xcframework; sourceTree = "<group>"; };
+		EF00000000000000000000F6 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
+		EF00000000000000000000F7 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		F89F24366B2E40D390AEBB54 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = Frameworks/llama.xcframework; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		B98F68172F2E4478007FD74B /* CodeBench */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CodeBench;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B98F68122F2E4478007FD74B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A63BD55BBE3746868E10CA1F /* Accelerate.framework in Frameworks */,
+				28055AA0EFC548269F101DDD /* Metal.framework in Frameworks */,
+				829F60A3A6F4421385D66B67 /* Python.xcframework in Frameworks */,
+				9471A8561896430AA109E9BA /* llama.xcframework in Frameworks */,
+				EF00000000000000000000E1 /* executorch.xcframework in Frameworks */,
+				EF00000000000000000000E3 /* backend_xnnpack.xcframework in Frameworks */,
+				EF00000000000000000000E5 /* backend_coreml.xcframework in Frameworks */,
+				EF00000000000000000000E7 /* kernels_optimized.xcframework in Frameworks */,
+				EF00000000000000000000E9 /* threadpool.xcframework in Frameworks */,
+				EF00000000000000000000EB /* CoreML.framework in Frameworks */,
+				EF00000000000000000000EC /* libsqlite3.tbd in Frameworks */,
+				ST00000000000000000003 /* SwiftTerm in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AC6B6909E0DB480D961E1DBD /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7D9C3AA5FDA74C4BA18EFC23 /* Python.xcframework */,
+				F89F24366B2E40D390AEBB54 /* llama.xcframework */,
+				9864F81207304B62A8321929 /* Metal.framework */,
+				AE440FAB6ABE468783D3B3AD /* Accelerate.framework */,
+				EF00000000000000000000F1 /* executorch.xcframework */,
+				EF00000000000000000000F2 /* backend_xnnpack.xcframework */,
+				EF00000000000000000000F3 /* backend_coreml.xcframework */,
+				EF00000000000000000000F4 /* kernels_optimized.xcframework */,
+				EF00000000000000000000F5 /* threadpool.xcframework */,
+				EF00000000000000000000F6 /* CoreML.framework */,
+				EF00000000000000000000F7 /* libsqlite3.tbd */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B98F680C2F2E4478007FD74B = {
+			isa = PBXGroup;
+			children = (
+				B98F68172F2E4478007FD74B /* CodeBench */,
+				14DDAF03FDD043D0A1716056 /* Info.plist */,
+				2C57DBA5B9FC46A684ABACD2 /* app_packages */,
+				4C1A8B7A7E0B4C4E9FA4D2F2 /* CodeBench/Resources/KaTeX */,
+				4C1A8B7A7E0B4C4E9FA4D2F4 /* CodeBench/Resources/LibraryDocs */,
+				A1B2C3D4E5F6789012345679 /* Monaco */,
+				AC6B6909E0DB480D961E1DBD /* Frameworks */,
+				B98F68162F2E4478007FD74B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B98F68162F2E4478007FD74B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B98F68152F2E4478007FD74B /* CodeBench.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B98F68142F2E4478007FD74B /* CodeBench */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B98F682B2F2E4479007FD74B /* Build configuration list for PBXNativeTarget "CodeBench" */;
+			buildPhases = (
+				B98F68112F2E4478007FD74B /* Sources */,
+				B98F68122F2E4478007FD74B /* Frameworks */,
+				B98F68132F2E4478007FD74B /* Resources */,
+				FE439133A26945B5B2FB0E5B /* Install Python */,
+				8F797F20F7514EB9BD301A4F /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B98F68172F2E4478007FD74B /* CodeBench */,
+			);
+			name = CodeBench;
+			packageProductDependencies = (
+				ST00000000000000000001 /* SwiftTerm */,
+			);
+			productName = CodeBench;
+			productReference = B98F68152F2E4478007FD74B /* CodeBench.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B98F680D2F2E4478007FD74B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					B98F68142F2E4478007FD74B = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = B98F68102F2E4478007FD74B /* Build configuration list for PBXProject "CodeBench" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B98F680C2F2E4478007FD74B;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				ST00000000000000000002 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B98F68162F2E4478007FD74B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B98F68142F2E4478007FD74B /* CodeBench */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		B98F68132F2E4478007FD74B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				800C4BF2A9754B1F8F19E02C /* app_packages in Resources */,
+				4C1A8B7A7E0B4C4E9FA4D2F1 /* CodeBench/Resources/KaTeX in Resources */,
+				4C1A8B7A7E0B4C4E9FA4D2F3 /* CodeBench/Resources/LibraryDocs in Resources */,
+				A1B2C3D4E5F6789012345678 /* Monaco in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		FE439133A26945B5B2FB0E5B /* Install Python */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/Frameworks/Python.xcframework/build/utils.sh",
+				"$(PROJECT_DIR)/Frameworks/Python.xcframework/build/iOS-dylib-Info-template.plist",
+				"$(PROJECT_DIR)/Frameworks/Python.xcframework/lib",
+				"$(PROJECT_DIR)/app_packages",
+			);
+			name = "Install Python";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Frameworks",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/python",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then\n  HOST_ARCH=$(uname -m)\n  if [ \"$HOST_ARCH\" = \"x86_64\" ]; then\n    export ARCHS=\"x86_64\"\n  else\n    export ARCHS=\"arm64\"\n  fi\nfi\nsource \"$PROJECT_DIR/Frameworks/Python.xcframework/build/utils.sh\"\ninstall_python Frameworks/Python.xcframework app_packages\n\n# Bundle ffmpeg dylibs for PyAV\nFFMPEG_SRC=\"$PROJECT_DIR/Frameworks/ffmpeg\"\nFFMPEG_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$FFMPEG_SRC\" ]; then\n  echo \"Bundling ffmpeg dylibs...\"\n  for dylib in \"$FFMPEG_SRC\"/*.dylib; do\n    [ -L \"$dylib\" ] && continue\n    name=$(basename \"$dylib\")\n    short=$(echo \"$name\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n    cp \"$dylib\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n    if [ -f \"$FFMPEG_DST/$short\" ]; then\n      install_name_tool -id \"@rpath/$short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      for dep in $(otool -L \"$FFMPEG_DST/$short\" 2>/dev/null | grep '/tmp/ffmpeg-ios' | awk '{print $1}'); do\n        dep_short=$(basename \"$dep\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n        install_name_tool -change \"$dep\" \"@rpath/$dep_short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      echo \"  Bundled: $short\"\n    fi\n  done\nfi\n\n# Bundle LaTeX frameworks (pdftex, kpathsea, ios_system)\nLATEX_SRC=\"$PROJECT_DIR/Frameworks/latex\"\nLATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$LATEX_SRC\" ]; then\n  echo \"Bundling LaTeX frameworks...\"\n  for xcfw in pdftex kpathsea ios_system; do\n    FW_DIR=\"$LATEX_SRC/$xcfw.xcframework\"\n    if [ -d \"$FW_DIR/ios-arm64/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64/$xcfw.framework\"\n    elif [ -d \"$FW_DIR/ios-arm64_armv7/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64_armv7/$xcfw.framework\"\n    else\n      continue\n    fi\n    rm -rf \"$LATEX_DST/$xcfw.framework\"\n    cp -R \"$SRC_FW\" \"$LATEX_DST/$xcfw.framework\"\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$LATEX_DST/$xcfw.framework\" 2>/dev/null || true\n    echo \"  Bundled: $xcfw.framework\"\n  done\n  # Copy texmf support files\n  TEXMF_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/latex/texmf\"\n  if [ -d \"$LATEX_SRC/texmf\" ]; then\n    mkdir -p \"$TEXMF_DST\"\n    cp -R \"$LATEX_SRC/texmf/\" \"$TEXMF_DST/\"\n    echo \"  Bundled: texmf ($(find $TEXMF_DST -type f | wc -l | tr -d ' ') files)\"\n  fi\nfi\n\n# Bundle KaTeX (JS + CSS + fonts) for LaTeX rendering in WKWebView\nKATEX_SRC=\"$PROJECT_DIR/Frameworks/katex\"\nKATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/katex\"\nif [ -d \"$KATEX_SRC\" ]; then\n  echo \"Bundling KaTeX...\"\n  mkdir -p \"$KATEX_DST/fonts\"\n  cp \"$KATEX_SRC/katex.min.js\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex.min.css\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex_template.html\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC\"/fonts/* \"$KATEX_DST/fonts/\" 2>/dev/null || true\n  echo \"  Bundled: KaTeX\"\nfi\n\n# Bundle Fortran runtime stubs for scipy (arpack/propack need _Fortran* symbols)\nFORTRAN_STUB_SRC=\"$PROJECT_DIR/Frameworks/fortran_stubs/libfortran_io_stubs.dylib\"\nFORTRAN_STUB_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/libfortran_io_stubs.dylib\"\nif [ -f \"$FORTRAN_STUB_SRC\" ]; then\n  cp \"$FORTRAN_STUB_SRC\" \"$FORTRAN_STUB_DST\"\n  install_name_tool -id \"@rpath/libfortran_io_stubs.dylib\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  echo \"  Bundled: libfortran_io_stubs.dylib\"\nfi\n\n# Rewrite av.*.framework LC_LOAD_DYLIB entries that hard-code /tmp/ffmpeg-ios\n# build paths → @rpath (ffmpeg dylibs are bundled above in Frameworks/).\nfor fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.av.*.framework; do\n  [ -d \"$fw\" ] || continue\n  bin=\"$fw/$(basename $fw .framework)\"\n  [ -f \"$bin\" ] || continue\n  for dep in $(otool -L \"$bin\" 2>/dev/null | awk '{print $1}' | grep \"/tmp/ffmpeg-ios\"); do\n    name=$(basename \"$dep\")\n    install_name_tool -change \"$dep\" \"@rpath/$name\" \"$bin\" 2>/dev/null || true\n  done\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\ndone\necho \"  Rewired av.*.framework → @rpath ffmpeg\"\n\n# Bundle scipy aux dylibs (scipy.special's _ufuncs.so / _gufuncs.so / etc.\n# load libsf_error_state.dylib via @rpath — dyld searches .app/Frameworks/).\nSCIPY_AUX_SRC=\"$PROJECT_DIR/Frameworks/scipy_aux\"\nif [ -d \"$SCIPY_AUX_SRC\" ]; then\n  for dylib in \"$SCIPY_AUX_SRC\"/*.dylib; do\n    [ -f \"$dylib\" ] || continue\n    name=$(basename \"$dylib\")\n    cp \"$dylib\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\"\n    install_name_tool -id \"@rpath/$name\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    echo \"  Bundled scipy aux: $name\"\n  done\nfi\n\n# Bundle torch dylibs (libtorch_python + libshm) for native `import torch`\nTORCH_LIB_SRC=\"$PROJECT_DIR/app_packages/site-packages/torch/lib\"\nTORCH_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$TORCH_LIB_SRC\" ]; then\n  echo \"Bundling torch dylibs...\"\n  for dylib in libtorch_python.dylib libshm.dylib; do\n    if [ -f \"$TORCH_LIB_SRC/$dylib\" ]; then\n      cp \"$TORCH_LIB_SRC/$dylib\" \"$TORCH_DST/$dylib\"\n      install_name_tool -id \"@rpath/$dylib\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      for dep in $(otool -L \"$TORCH_DST/$dylib\" 2>/dev/null | grep -oE '@loader_path/[^ ]+'); do\n        depname=$(basename \"$dep\")\n        install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      echo \"  Bundled: $dylib\"\n    fi\n  done\n  # install_python has already converted _C.cpython-*.so into a proper\n  # iOS .framework bundle at Frameworks/site-packages.torch._C.framework/.\n  # That framework's binary still references @loader_path/lib/libtorch_python.dylib,\n  # which won't resolve (the framework's @loader_path is its own dir, no lib/\n  # subdir). Rewrite to @rpath so dyld finds our sibling framework dylibs.\n  for fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C.framework \\\n            \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C_flatbuffer.framework; do\n    [ -d \"$fw\" ] || continue\n    bin=\"$fw/$(basename $fw .framework)\"\n    [ -f \"$bin\" ] || continue\n    for dep in $(otool -L \"$bin\" 2>/dev/null | grep -oE '@loader_path/lib/[^ ]+'); do\n      depname=$(basename \"$dep\")\n      install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$bin\" 2>/dev/null || true\n    done\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\n    echo \"  Rewired: $(basename $fw)\"\n  done\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B98F68112F2E4478007FD74B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B98F68292F2E4479007FD74B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = HBSD8CP766;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_CFLAGS = "-Wno-incomplete-umbrella";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B98F682A2F2E4479007FD74B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = HBSD8CP766;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_CFLAGS = "-Wno-incomplete-umbrella";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B98F682C2F2E4479007FD74B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HBSD8CP766;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/ios-arm64_armv7",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UIRequiredDeviceCapabilities = metal;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					pdftex,
+					"-framework",
+					kpathsea,
+					"-framework",
+					ios_system,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = euler.CodeBench;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/CodeBench-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B98F682D2F2E4479007FD74B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HBSD8CP766;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/ios-arm64",
+					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/ios-arm64_armv7",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIMainStoryboardFile = Main;
+				INFOPLIST_KEY_UIRequiredDeviceCapabilities = metal;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					pdftex,
+					"-framework",
+					kpathsea,
+					"-framework",
+					ios_system,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = euler.CodeBench;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/CodeBench-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B98F68102F2E4478007FD74B /* Build configuration list for PBXProject "CodeBench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B98F68292F2E4479007FD74B /* Debug */,
+				B98F682A2F2E4479007FD74B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B98F682B2F2E4479007FD74B /* Build configuration list for PBXNativeTarget "CodeBench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B98F682C2F2E4479007FD74B /* Debug */,
+				B98F682D2F2E4479007FD74B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		ST00000000000000000002 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		ST00000000000000000001 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ST00000000000000000002 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = B98F680D2F2E4478007FD74B /* Project object */;
+}

@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+._*
+
+# Xcode
+xcuserdata/
+*.pbxuser
+*.perspectivev3
+*.mode1v3
+*.mode2v3
+DerivedData/
+build/
+
+# Swift Package
+*.xcworkspace/
+.swiftpm/
+.build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.venv/
+
+# Compiled objects
+*.o
+*.a
+*.dSYM/
+
+# Build artifacts
+*.log

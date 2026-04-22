@@ -1,0 +1,185 @@
+import UIKit
+
+final class OnboardingViewController: UIViewController {
+
+    private let pages: [(icon: String, title: String, body: String)] = [
+        ("cpu.fill", "Private AI on Your iPad",
+         "CodeBench runs powerful language models entirely on your device. Your conversations never leave your iPad."),
+        ("arrow.down.circle.fill", "Choose Your Model",
+         "Pick from three model sizes:\n\n• 0.8B — Ultra-light, instant responses\n• 4B — Balanced quality and speed\n• 9B — Highest quality reasoning"),
+        ("wifi.slash", "Works Completely Offline",
+         "Once a model is downloaded, everything runs locally. No internet needed. No cloud. No subscriptions."),
+        ("sparkles", "Get Started",
+         "Tap below to begin your private AI experience.")
+    ]
+
+    private let scrollView = UIScrollView()
+    private let pageControl = UIPageControl()
+    private let getStartedButton = UIButton(type: .system)
+    private var cardViews: [UIView] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor.systemBackground
+        setupBackground()
+        setupScrollView()
+        setupPageControl()
+        setupGetStartedButton()
+        buildPages()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let w = scrollView.bounds.width
+        for (i, card) in cardViews.enumerated() {
+            card.frame = CGRect(x: CGFloat(i) * w + 40, y: 40, width: w - 80, height: scrollView.bounds.height - 80)
+        }
+        scrollView.contentSize = CGSize(width: w * CGFloat(pages.count), height: scrollView.bounds.height)
+    }
+
+    private func setupBackground() {
+        let gradient = CAGradientLayer()
+        gradient.frame = view.bounds
+        gradient.type = .conic
+        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        gradient.colors = WorkspaceStyle.gradientColors
+        gradient.locations = [0, 0.25, 0.5, 0.75, 1.0]
+        view.layer.insertSublayer(gradient, at: 0)
+    }
+
+    private func setupScrollView() {
+        scrollView.isPagingEnabled = true
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.delegate = self
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 40),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -120)
+        ])
+    }
+
+    private func setupPageControl() {
+        pageControl.numberOfPages = pages.count
+        pageControl.currentPage = 0
+        pageControl.currentPageIndicatorTintColor = WorkspaceStyle.accent
+        pageControl.pageIndicatorTintColor = WorkspaceStyle.mutedText.withAlphaComponent(0.3)
+        pageControl.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pageControl)
+        NSLayoutConstraint.activate([
+            pageControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pageControl.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 12)
+        ])
+    }
+
+    private func setupGetStartedButton() {
+        var config = UIButton.Configuration.filled()
+        config.title = "Get Started"
+        config.baseBackgroundColor = WorkspaceStyle.accent
+        config.baseForegroundColor = .white
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 40, bottom: 14, trailing: 40)
+        getStartedButton.configuration = config
+        getStartedButton.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        getStartedButton.addTarget(self, action: #selector(getStartedTapped), for: .touchUpInside)
+        getStartedButton.translatesAutoresizingMaskIntoConstraints = false
+        getStartedButton.alpha = 0
+        view.addSubview(getStartedButton)
+        NSLayoutConstraint.activate([
+            getStartedButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            getStartedButton.topAnchor.constraint(equalTo: pageControl.bottomAnchor, constant: 16)
+        ])
+    }
+
+    private func buildPages() {
+        for page in pages {
+            let card = makeCard(icon: page.icon, title: page.title, body: page.body)
+            scrollView.addSubview(card)
+            cardViews.append(card)
+        }
+    }
+
+    private func makeCard(icon: String, title: String, body: String) -> UIView {
+        let card = UIView()
+        card.backgroundColor = WorkspaceStyle.glassFill
+        card.layer.cornerRadius = WorkspaceStyle.radiusLarge
+        card.layer.cornerCurve = .continuous
+        card.layer.borderWidth = WorkspaceStyle.borderWidth
+        card.layer.borderColor = WorkspaceStyle.glassStroke.cgColor
+        card.clipsToBounds = true
+
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: WorkspaceStyle.glassBlurStyle))
+        blur.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(blur)
+
+        let iconView = UIImageView(image: UIImage(systemName: icon))
+        iconView.tintColor = WorkspaceStyle.accent
+        iconView.contentMode = .scaleAspectFit
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = UIFont.systemFont(ofSize: 26, weight: .bold)
+        titleLabel.textColor = WorkspaceStyle.primaryText
+        titleLabel.textAlignment = .center
+        titleLabel.numberOfLines = 0
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let bodyLabel = UILabel()
+        bodyLabel.text = body
+        bodyLabel.font = UIFont.systemFont(ofSize: 17)
+        bodyLabel.textColor = WorkspaceStyle.secondaryText
+        bodyLabel.textAlignment = .center
+        bodyLabel.numberOfLines = 0
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(iconView)
+        card.addSubview(titleLabel)
+        card.addSubview(bodyLabel)
+
+        NSLayoutConstraint.activate([
+            blur.topAnchor.constraint(equalTo: card.topAnchor),
+            blur.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            blur.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            blur.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+
+            iconView.centerXAnchor.constraint(equalTo: card.centerXAnchor),
+            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 60),
+            iconView.widthAnchor.constraint(equalToConstant: 72),
+            iconView.heightAnchor.constraint(equalToConstant: 72),
+
+            titleLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 28),
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
+            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
+
+            bodyLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            bodyLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
+            bodyLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24)
+        ])
+
+        return card
+    }
+
+    @objc private func getStartedTapped() {
+        HapticService.shared.success()
+        UserDefaults.standard.set(true, forKey: "onboarding.completed")
+        dismiss(animated: true)
+    }
+
+    private func updateGetStartedVisibility() {
+        let isLastPage = pageControl.currentPage == pages.count - 1
+        UIView.animate(withDuration: 0.3) {
+            self.getStartedButton.alpha = isLastPage ? 1 : 0
+        }
+    }
+}
+
+extension OnboardingViewController: UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let page = Int(round(scrollView.contentOffset.x / max(1, scrollView.bounds.width)))
+        pageControl.currentPage = max(0, min(page, pages.count - 1))
+        updateGetStartedVisibility()
+    }
+}

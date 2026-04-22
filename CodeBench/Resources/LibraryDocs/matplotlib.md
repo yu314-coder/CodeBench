@@ -9,7 +9,7 @@ bundled: true
 
 # matplotlib (plotly-backed)
 
-**OfflinAi's matplotlib module is a plotly-powered drop-in** that renders charts using plotly.js in a WKWebView behind the scenes, since running the real mpl backends on iOS is fragile. The pyplot API you're used to still works for the common cases (line, scatter, bar, histogram, subplots, annotations, titles, axes).
+**CodeBench's matplotlib module is a plotly-powered drop-in** that renders charts using plotly.js in a WKWebView behind the scenes, since running the real mpl backends on iOS is fragile. The pyplot API you're used to still works for the common cases (line, scatter, bar, histogram, subplots, annotations, titles, axes).
 
 If you need a real native matplotlib backend, bundle one yourself via `Frameworks/`.
 

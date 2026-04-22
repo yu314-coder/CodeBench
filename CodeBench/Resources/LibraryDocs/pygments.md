@@ -71,7 +71,7 @@ class MyStyle(Style):
 
 ## Use inside the editor
 
-The OfflinAi editor does its own syntax highlighting (Monaco-backed), so you only need Pygments if you're:
+The CodeBench editor does its own syntax highlighting (Monaco-backed), so you only need Pygments if you're:
 - Writing code that outputs syntax-highlighted text / HTML
 - Building a Jupyter-like rendering pipeline
 - Generating docs with syntax-highlighted snippets

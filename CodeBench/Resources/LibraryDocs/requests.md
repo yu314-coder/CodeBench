@@ -43,7 +43,7 @@ r = requests.post("https://httpbin.org/post",
 ```python
 r = requests.get("https://api.github.com/user",
                  headers={"Authorization": "Bearer YOUR_TOKEN",
-                          "User-Agent": "OfflinAi/1.0"})
+                          "User-Agent": "CodeBench/1.0"})
 
 # Basic auth
 r = requests.get("https://api.example.com", auth=("user", "pass"))
@@ -53,7 +53,7 @@ r = requests.get("https://api.example.com", auth=("user", "pass"))
 
 ```python
 with requests.Session() as s:
-    s.headers.update({"User-Agent": "OfflinAi"})
+    s.headers.update({"User-Agent": "CodeBench"})
     s.get("https://httpbin.org/cookies/set/flavor/chocolate")
     r = s.get("https://httpbin.org/cookies")
     print(r.json())  # {'cookies': {'flavor': 'chocolate'}}

@@ -69,8 +69,8 @@ if b:
 ## Current process
 
 ```python
-p = psutil.Process()           # "self" — the OfflinAi app
-print(p.name())                # e.g. "OfflinAi"
+p = psutil.Process()           # "self" — the CodeBench app
+print(p.name())                # e.g. "CodeBench"
 print(p.pid)
 print(p.memory_info().rss / 1e6, "MB RSS")
 print(p.cpu_percent(interval=0.5))

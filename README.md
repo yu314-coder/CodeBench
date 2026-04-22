@@ -153,17 +153,52 @@ The CodeBench shell IS a Python REPL — typing Python executes directly. On top
 
 ## Install / build
 
-CodeBench's app code is not bundled in this repo — this repo contains only the README and project overview. To build CodeBench yourself:
+This repo contains the CodeBench-specific pieces (Swift source, Xcode project, resources, busytex data packages via LFS, build scripts). It expects **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** to provide the runtime layer (Python.xcframework, llama.xcframework, ExecuTorch frameworks, app_packages, Monaco folder, SwiftTerm SPM). Clone both side-by-side.
 
-1. Clone **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** (the runtime this app is built on):
-   ```
-   git clone https://github.com/yu314-coder/python-ios-lib
-   cd python-ios-lib
-   ```
-2. Add the Swift Package to an Xcode iOS/iPadOS target. See the [python-ios-lib Quick Start](https://github.com/yu314-coder/python-ios-lib#quick-start--add-via-xcode).
-3. Drop in CodeBench's `CodeBench/` Swift source folder, `CodeBench.xcodeproj`, and `Info.plist` (or reach out for the app-side sources).
+```bash
+# Clone the runtime libraries first — CodeBench references its folders.
+git clone https://github.com/yu314-coder/python-ios-lib
+cd python-ios-lib
 
-The app bundle is ~1 GB installed — 791 MB frameworks (Python, llama, ExecuTorch), 484 MB `app_packages`, 254 MB Swift source + resources (including 230 MB of bundled LaTeX data packages).
+# Clone CodeBench into the same workspace (its Xcode project expects
+# Frameworks/, app_packages/, Monaco/, Sources/, Package.swift all to
+# sit at the same level as CodeBench.xcodeproj).
+git clone https://github.com/yu314-coder/CodeBench
+mv CodeBench/CodeBench CodeBench/
+mv CodeBench/CodeBench.xcodeproj .
+mv CodeBench/Info.plist .
+mv CodeBench/scripts/* scripts/ 2>/dev/null || true
+rmdir CodeBench 2>/dev/null || true
+
+# Git LFS auto-pulls the big busytex data packages on clone.
+# If your git doesn't — run `git lfs pull` inside CodeBench/ before build.
+
+# llama.cpp source (for rebuilding llama.xcframework from scratch —
+# not needed if you're just building the app, the xcframework is
+# already in python-ios-lib/Frameworks/).
+# mkdir -p third_party && git clone https://github.com/ggerganov/llama.cpp third_party/llama.cpp
+
+# Open the project in Xcode and build for iOS / iPadOS / Mac Catalyst.
+open CodeBench.xcodeproj
+```
+
+The app bundle is ~1 GB installed:
+- 791 MB `Frameworks/` (Python, llama, ExecuTorch xcframeworks — from python-ios-lib)
+- 484 MB `app_packages/` (bundled Python site-packages — from python-ios-lib)
+- 254 MB `CodeBench/` (Swift source + Resources, of which ~230 MB is the LaTeX data packages — this repo, via LFS)
+
+### What's in this repo vs python-ios-lib
+
+| This repo (CodeBench) | python-ios-lib |
+|---|---|
+| `CodeBench/` — Swift source + Resources | `Frameworks/` — Python, llama, ExecuTorch xcframeworks |
+| `CodeBench.xcodeproj/` | `app_packages/` — 30+ iOS-ported Python packages |
+| `Info.plist` | `Monaco/` — Monaco editor WebView bundle |
+| `scripts/` — fetch/build helpers (busytex assets, ffmpeg path fixup, wheel unpack/test) | `Sources/` + `Package.swift` — SwiftTerm SPM integration |
+|  | `docs/` — per-library docs linked from this README |
+|  | iOS build dirs: `cairo/`, `cpp/`, `ffmpeg/`, `fortran/`, `gcc/`, `harfbuzz/`, `numpy_ios/`, `pandas_ios/`, `pango/`, `pillow_ios/`, `psutil_ios/`, `skia-pathops/` |
+
+The `third_party/llama.cpp/` source tree (~7.6 GB unbuilt, needed only to *rebuild* the `llama.xcframework`, not to run the app) is **not** in either repo. `git clone https://github.com/ggerganov/llama.cpp third_party/llama.cpp` if you want to regenerate it — the pre-built xcframework in python-ios-lib's Frameworks/ is what the app actually links against.
 
 ---
 

@@ -459,6 +459,7 @@ import UIKit
                 self?.checkForDocCompileRequest()
                 self?.checkForPreviewRequest()
                 self?.checkForEditorApplyRequest()
+                self?.checkForOpenInEditorRequest()
             }
             // Preload the WASM engine so the first pdflatex call doesn't
             // pay the cold-start tax. busytex is the default path —
@@ -488,6 +489,26 @@ import UIKit
     /// editor's in-memory buffer is stale after an `ai` edit and the
     /// next debounced auto-save overwrites the AI's change.
     var onEditorApplyRequest: ((_ path: String, _ content: String) -> Void)?
+
+    /// Fired by `offlinai_ai` when the user starts the REPL with no
+    /// file open — it creates a scratch file and asks the editor to
+    /// load it so there's always a target to edit. Signal file is a
+    /// plain text with the absolute path to load.
+    var onOpenInEditorRequest: ((_ path: String) -> Void)?
+
+    private func checkForOpenInEditorRequest() {
+        let signalDir = NSTemporaryDirectory().appending("latex_signals/")
+        let signalFile = signalDir.appending("open_in_editor.txt")
+        guard FileManager.default.fileExists(atPath: signalFile),
+              let content = try? String(contentsOfFile: signalFile, encoding: .utf8) else {
+            return
+        }
+        try? FileManager.default.removeItem(atPath: signalFile)
+        let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return }
+        onOpenInEditorRequest?(path)
+    }
 
     private func checkForEditorApplyRequest() {
         let signalDir = NSTemporaryDirectory().appending("latex_signals/")

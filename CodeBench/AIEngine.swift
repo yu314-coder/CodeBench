@@ -46,6 +46,7 @@ import llama   // GGML_TYPE_F16 and other ggml constants
             self?.poll()
             self?.pollLoadModel()
         }
+        autoLoadLastModel()
     }
 
     /// Handle `ai_load_model.json` — writes the chosen GGUF path,
@@ -103,11 +104,56 @@ import llama   // GGML_TYPE_F16 and other ggml constants
                 switch result {
                 case .success:
                     self.publishCurrentModel(path: path)
+                    // Remember this model so the next app launch can
+                    // auto-reload it without the user re-running
+                    // `ai run <name>`. UserDefaults is written
+                    // immediately — no need to wait for the next
+                    // background-save cycle.
+                    UserDefaults.standard.set(path, forKey: Self.lastModelDefaultsKey)
                     self.writeModelDone(status: 0, message: "loaded: \(url.lastPathComponent)")
                 case .failure(let err):
                     self.writeModelDone(status: -3, message: "ai-load: \(err.localizedDescription)")
                 }
             }
+        }
+    }
+
+    /// UserDefaults key for the last successfully-loaded GGUF path.
+    /// Read on AIEngine.start() for auto-reload, written on every
+    /// successful loadModel completion.
+    private static let lastModelDefaultsKey = "ai.last.model.path"
+
+    /// Kick off a background load of whichever model was active last
+    /// time the app ran. Called from `start()` — blocks nothing, just
+    /// schedules the load so by the time the user types `ai` the
+    /// model is (likely) already warm.
+    private func autoLoadLastModel() {
+        guard let path = UserDefaults.standard.string(forKey: Self.lastModelDefaultsKey),
+              !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else {
+            return
+        }
+        // Defer slightly so LlamaRunner's own initialisation finishes
+        // and any UI boot is through its first render cycle. 300ms is
+        // plenty for either; the load itself takes 3-10s depending on
+        // model size, and we want that to be background-ish.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            // Synthesise an ai_load_model.json request — same path
+            // the Python CLI uses, so the same pollLoadModel() handler
+            // picks it up. That way all load attempts go through one
+            // code path with consistent logging and state publishing.
+            let sig = NSTemporaryDirectory().appending("latex_signals/")
+            try? FileManager.default.createDirectory(
+                atPath: sig, withIntermediateDirectories: true)
+            let payload = ["path": path]
+            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                let tmp = sig + "ai_load_model.json.tmp"
+                try? data.write(to: URL(fileURLWithPath: tmp))
+                try? FileManager.default.moveItem(atPath: tmp,
+                    toPath: sig + "ai_load_model.json")
+                NSLog("[AIEngine] auto-loading last model: %@", path)
+            }
+            _ = self  // silence unused-self warning
         }
     }
 

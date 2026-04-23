@@ -530,6 +530,18 @@ final class CodeEditorViewController: UIViewController {
             DispatchQueue.main.async { self?.showImageOutput(path: pdfPath) }
         }
 
+        // AI CLI asked us to open a file — happens when the user
+        // runs `ai` with no file loaded and the Python side creates
+        // a scratch file for the session. Route through loadFile()
+        // so Monaco + currentFileURL + publishCurrentEditorFile all
+        // fire consistently.
+        LaTeXEngine.shared.onOpenInEditorRequest = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.loadFile(url: URL(fileURLWithPath: path))
+            }
+        }
+
         // AI-authored edits: when the `ai` CLI applies an edit to the
         // currently-open file, we refresh Monaco's in-memory buffer so
         // the user sees the new content immediately. Without this, the

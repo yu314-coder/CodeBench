@@ -1093,13 +1093,19 @@ final class CodeEditorViewController: UIViewController {
         aiToggleButton.layer.cornerCurve = .continuous
         aiToggleButton.layer.borderWidth = 1
         aiToggleButton.addTarget(self, action: #selector(toggleAIChat), for: .touchUpInside)
+        // Button stays in the view hierarchy (so the trailing /
+        // centerY / height constraints below still resolve — removing
+        // it from the header hits "no common ancestor" at activate
+        // time), but isHidden + alpha 0 keep it invisible and
+        // non-interactive. Re-enable the AI-chat entry point by
+        // flipping isHidden = false + alpha = 1.
         aiToggleButton.isHidden = true
+        aiToggleButton.alpha = 0
+        aiToggleButton.isUserInteractionEnabled = false
         applyAIToggleStyle()
 
         editorHeaderBar.addSubview(fileTabPill)
-        // Deliberately NOT adding aiToggleButton as a subview — hides
-        // the AI chat entry point entirely. The `ai` shell command
-        // replaces this UI path.
+        editorHeaderBar.addSubview(aiToggleButton)
 
         // Monaco editor
         monacoView.translatesAutoresizingMaskIntoConstraints = false

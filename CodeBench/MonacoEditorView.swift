@@ -176,6 +176,25 @@ extension MonacoEditorView: WKScriptMessageHandler {
         case "resolveRequest":
             handleResolveRequest(body)
 
+        case "clipboardCopy":
+            // Monaco sent selected text on Cmd+C/Cmd+X. Write to the
+            // system pasteboard so it's available to other apps + the
+            // iOS share sheet. Cut's buffer-side removal happens on
+            // the JS side before this message arrives.
+            if let text = body["text"] as? String, !text.isEmpty {
+                UIPasteboard.general.string = text
+            }
+
+        case "clipboardPasteRequest":
+            // Monaco wants to paste. Read the pasteboard and send the
+            // text back via window.__editor.pasteFromClipboard(text).
+            let text = UIPasteboard.general.string ?? ""
+            let escaped = text
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "`", with: "\\`")
+                .replacingOccurrences(of: "$", with: "\\$")
+            webView.evaluateJavaScript("window.__editor.pasteFromClipboard(`\(escaped)`)")
+
         default:
             break
         }

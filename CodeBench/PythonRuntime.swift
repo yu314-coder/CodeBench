@@ -1420,14 +1420,50 @@ try:
                 _scene_name, _scene_cls = _scene_classes[-1]
                 _log(f"Auto-rendering Scene: {_scene_name}")
                 print(f"[manim] Auto-rendering {_scene_name}...", flush=True)
-                try:
-                    _auto_scene = _scene_cls()
-                    _auto_scene.render()
+
+                # Content-hash cache: if the exact same source has
+                # already produced a scene with this name, skip the
+                # render and reuse the cached MP4. Source hash covers
+                # the user code AND the scene class name so renaming
+                # the class invalidates. Hit = 5-20s faster; miss =
+                # render then copy to cache.
+                import hashlib as _hashlib, shutil as _shutil
+                from pathlib import Path as _Path
+                _src_bytes = (_offlinai_code or '').encode('utf-8', 'replace')
+                _src_bytes += b'\\x00scene=' + _scene_name.encode('utf-8')
+                _src_bytes += b'\\x00manim=' + getattr(_manim_detect, '__version__', 'x').encode('utf-8', 'replace')
+                _src_hash = _hashlib.sha256(_src_bytes).hexdigest()[:16]
+                _cache_dir = _Path.home() / 'Documents' / '.manim_cache'
+                _cache_dir.mkdir(parents=True, exist_ok=True)
+                _cached_mp4 = _cache_dir / f"{_src_hash}.mp4"
+
+                if _cached_mp4.exists() and _cached_mp4.stat().st_size > 1024:
+                    print(f"[manim] cache hit ({_src_hash}) — skipping render", flush=True)
+                    # Emit the same [manim rendered] line the renderer
+                    # would — Swift's output observer picks it up and
+                    # routes the video to the preview panel.
+                    print(f"[manim rendered] {_cached_mp4}", flush=True)
                     print(f"[manim] {_scene_name}.render() returned.", flush=True)
-                except BaseException as _render_err:
-                    import traceback as _tb
-                    print(f"[manim] render() failed: {type(_render_err).__name__}: {_render_err}", flush=True)
-                    _tb.print_exc()
+                else:
+                    try:
+                        _auto_scene = _scene_cls()
+                        _auto_scene.render()
+                        print(f"[manim] {_scene_name}.render() returned.", flush=True)
+                        # Copy rendered MP4 into the cache for next time.
+                        # Walk the scene's file_writer to find the output.
+                        try:
+                            _fw = getattr(_auto_scene, 'renderer', None)
+                            _fw = getattr(_fw, 'file_writer', None)
+                            _mp = str(getattr(_fw, 'movie_file_path', '') or '')
+                            if _mp and _Path(_mp).exists():
+                                _shutil.copy2(_mp, _cached_mp4)
+                                print(f"[manim] cached → {_cached_mp4.name}", flush=True)
+                        except Exception as _ce:
+                            print(f"[manim] cache store skipped: {_ce}", flush=True)
+                    except BaseException as _render_err:
+                        import traceback as _tb
+                        print(f"[manim] render() failed: {type(_render_err).__name__}: {_render_err}", flush=True)
+                        _tb.print_exc()
             else:
                 _log("no user-defined Scene classes in this run — skipping auto-render")
         except ImportError:

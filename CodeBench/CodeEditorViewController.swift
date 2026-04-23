@@ -3745,7 +3745,9 @@ except Exception:
         currentFileURL = url
         lastSavedText = contents
         editorFileNameLabel.text = "</> \(url.lastPathComponent)"
-        appendToTerminal("$ Loaded: \(url.lastPathComponent) (\(monacoLang))\n", isError: false)
+        // File load is reflected in the editor header label; no
+        // reason to echo it into the terminal (it's noise during
+        // every file-tab click).
         publishCurrentEditorFile(url)
     }
 
@@ -3820,7 +3822,9 @@ except Exception:
                 try text.write(to: url, atomically: true, encoding: .utf8)
                 self.lastSavedText = text
                 self.pendingSaveText = nil
-                self.appendToTerminal("$ Saved: \(url.lastPathComponent)\n", isError: false)
+                // Silent save — no terminal output. Save failures still
+                // surface below so the user isn't left thinking their
+                // work persisted when it didn't.
             } catch {
                 self.appendToTerminal("$ Save failed: \(error.localizedDescription)\n", isError: true)
             }

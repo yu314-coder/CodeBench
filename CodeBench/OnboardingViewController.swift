@@ -2,16 +2,59 @@ import UIKit
 
 final class OnboardingViewController: UIViewController {
 
-    private let pages: [(icon: String, title: String, body: String)] = [
-        ("cpu.fill", "Private AI on Your iPad",
-         "CodeBench runs powerful language models entirely on your device. Your conversations never leave your iPad."),
-        ("arrow.down.circle.fill", "Choose Your Model",
-         "Pick from three model sizes:\n\n• 0.8B — Ultra-light, instant responses\n• 4B — Balanced quality and speed\n• 9B — Highest quality reasoning"),
-        ("wifi.slash", "Works Completely Offline",
-         "Once a model is downloaded, everything runs locally. No internet needed. No cloud. No subscriptions."),
-        ("sparkles", "Get Started",
-         "Tap below to begin your private AI experience.")
-    ]
+    /// Build the onboarding pages. Runs once per VC lifetime so the
+    /// device-specific copy ("your iPhone" / "your iPad" / "your Mac")
+    /// is captured at launch — changing orientation or switching Stage
+    /// Manager doesn't re-render these strings mid-session.
+    private static func buildPages() -> [(icon: String, title: String, body: String)] {
+        // Pick a device-specific noun. Mac Catalyst / Designed-for-iPad
+        // on macOS reports iPad but users perceive it as "Mac"; the
+        // rest of the app already handles that path so we stay
+        // consistent with "device" for Mac and name the hardware
+        // directly on touch devices.
+        let device: String
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone: device = "iPhone"
+        case .pad:   device = "iPad"
+        case .mac:   device = "Mac"
+        default:     device = "device"
+        }
+
+        return [
+            ("terminal.fill",
+             "CodeBench",
+             "A full developer and scientific workstation on your \(device). "
+             + "Code, compute, write papers, and chat with local AI — "
+             + "everything runs on-device."),
+            ("chevron.left.forwardslash.chevron.right",
+             "Code in Any Language",
+             "Python 3.14 with 30+ native libraries (numpy, scipy, PyTorch, "
+             + "manim, sympy, matplotlib, transformers, Pillow, …), plus "
+             + "native C, C++, and Fortran interpreters — all with a "
+             + "Monaco editor and VS-Code-style IntelliSense."),
+            ("function",
+             "Scientific Computing + LaTeX",
+             "Real pdflatex compiles beamer / TikZ / pgfplots documents "
+             + "on-device via busytex. SwiftMath renders live math. "
+             + "Jupyter-style scientific workflows without a server."),
+            ("wifi.slash",
+             "Works Completely Offline",
+             "Everything runs locally. No internet. No cloud. No accounts. "
+             + "No subscriptions. Your code, data, and conversations "
+             + "never leave your \(device)."),
+            ("brain",
+             "Local AI, Optional",
+             "Download a language model once and chat privately — or skip "
+             + "it and use CodeBench purely as a coding environment. "
+             + "llama.cpp (GGUF) and ExecuTorch runtimes are built in."),
+            ("sparkles",
+             "Get Started",
+             "Tap below to begin.")
+        ]
+    }
+
+    private lazy var pages: [(icon: String, title: String, body: String)] =
+        OnboardingViewController.buildPages()
 
     private let scrollView = UIScrollView()
     private let pageControl = UIPageControl()

@@ -58,9 +58,29 @@ final class FilesBrowserViewController: UIViewController {
     // MARK: - State
 
     private var rootURL: URL!
-    private var currentURL: URL!
+    private var currentURL: URL! {
+        // Every time currentURL changes (navigation into / out of a
+        // dir, a Set-Root action, etc.) we throw away the old kqueue
+        // watcher and open a new one against the new dir. Without
+        // this re-arming, the watcher would stay pinned to whatever
+        // dir we first saw and stop firing after navigation.
+        didSet { installDirectoryWatcher(for: currentURL) }
+    }
     private var sortMode: SortMode = .name
     private var pathStack: [URL] = []
+
+    // Directory watcher state. Uses DispatchSource on an open file
+    // descriptor — the kernel fires our event handler when the
+    // directory's inode is written to (any create/delete/rename
+    // inside it). Covers `rmdir`, `ncdu`'s d-key delete, shell `rm`,
+    // another iOS app writing into a shared folder, etc.
+    private var dirWatcherSource: DispatchSourceFileSystemObject?
+    private var dirWatcherFD: Int32 = -1
+    // Debounce — bulk operations (ncdu deleting a whole subtree, a
+    // `tar -xf` of 500 files) fire the watcher hundreds of times in
+    // a fraction of a second. We coalesce to one reloadFiles call
+    // per ~120 ms window.
+    private var pendingReload: DispatchWorkItem?
 
     // MARK: - UI
 
@@ -534,6 +554,109 @@ final class FilesBrowserViewController: UIViewController {
 
     func refresh() {
         reloadFiles()
+    }
+
+    // MARK: - Directory watcher
+
+    /// Install a DispatchSource-backed watcher on `url`. Any
+    /// create/delete/rename inside that directory triggers a
+    /// debounced `reloadFiles()`. Call with the current dir each
+    /// time the user navigates. Safe to call repeatedly — always
+    /// tears down the old source before opening the new fd.
+    private func installDirectoryWatcher(for url: URL?) {
+        tearDownDirectoryWatcher()
+        guard let url else { return }
+        let fd = open(url.path, O_EVTONLY)
+        guard fd >= 0 else {
+            NSLog("[FilesBrowser] kqueue open(%@) failed: errno=%d",
+                  url.path, errno)
+            return
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            // .write catches files added/removed/renamed INSIDE the dir.
+            // .delete catches the dir itself being deleted (parent-side
+            // `rm -rf currentDir`).
+            // .rename catches the dir being moved.
+            // .attrib catches chmod on the dir.
+            eventMask: [.write, .delete, .rename, .attrib],
+            queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            let mask = source.data
+            if mask.contains(.delete) || mask.contains(.rename) {
+                // The dir we're looking at is gone — step out to parent.
+                // If there's a path stack, pop back. Otherwise go to
+                // rootURL. Either way, that'll set currentURL again and
+                // reinstall the watcher on the new dir via didSet.
+                if self.pathStack.count > 1 {
+                    self.pathStack.removeLast()
+                    self.currentURL = self.pathStack.last ?? self.rootURL
+                } else {
+                    self.currentURL = self.rootURL
+                }
+                self.reloadFiles()
+                return
+            }
+            // .write on the dir = contents changed. Debounce so a
+            // burst of creates/deletes doesn't hammer reloadFiles.
+            self.pendingReload?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.reloadFiles()
+            }
+            self.pendingReload = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .milliseconds(120),
+                execute: work)
+        }
+        source.setCancelHandler { [weak self] in
+            // Handler is called on the source's queue (main). Close
+            // the fd here — closing it elsewhere races with the
+            // kernel's last event dispatch and sometimes emits a
+            // "file descriptor closed" warning.
+            Darwin.close(fd)
+            if self?.dirWatcherFD == fd { self?.dirWatcherFD = -1 }
+        }
+        dirWatcherSource = source
+        dirWatcherFD = fd
+        source.resume()
+    }
+
+    private func tearDownDirectoryWatcher() {
+        pendingReload?.cancel()
+        pendingReload = nil
+        if let source = dirWatcherSource {
+            source.cancel()       // triggers the cancel handler, which closes the fd
+            dirWatcherSource = nil
+        } else if dirWatcherFD >= 0 {
+            // Defensive: source was nil'd but fd leaked somehow.
+            Darwin.close(dirWatcherFD)
+            dirWatcherFD = -1
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Pause the watcher while the view is off-screen. Reinstalls
+        // in viewDidAppear so we don't pay for idle fd + kqueue entry
+        // over the lifetime of the app.
+        tearDownDirectoryWatcher()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Arm the watcher on (re)appearance. Also reload immediately
+        // in case files changed while we were off-screen (the watcher
+        // only sees changes that happen WHILE it's armed).
+        installDirectoryWatcher(for: currentURL)
+        reloadFiles()
+    }
+
+    deinit {
+        // viewWillDisappear already calls teardown but belt+suspenders:
+        // if the VC is deallocated without the normal lifecycle (rare
+        // but possible in tabbar teardowns), close the fd here too.
+        if dirWatcherFD >= 0 { Darwin.close(dirWatcherFD) }
     }
 
     private func reloadFiles() {

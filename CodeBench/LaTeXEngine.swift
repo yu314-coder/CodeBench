@@ -458,6 +458,7 @@ import UIKit
                 self?.checkForTextRequest()
                 self?.checkForDocCompileRequest()
                 self?.checkForPreviewRequest()
+                self?.checkForEditorApplyRequest()
             }
             // Preload the WASM engine so the first pdflatex call doesn't
             // pay the cold-start tax. busytex is the default path —
@@ -479,6 +480,30 @@ import UIKit
     /// — surfaces the PDF in the editor's output preview panel. Signal
     /// file contains a single line with the absolute path to the PDF.
     var onPreviewRequest: ((_ pdfPath: String) -> Void)?
+
+    /// Fired by `offlinai_ai` when it applies an AI-authored edit.
+    /// Signal file is JSON: `{"path": "/abs/file.py", "content": "…"}`.
+    /// CodeEditorViewController hooks this to refresh the Monaco editor
+    /// so the on-screen view matches the file on disk — otherwise the
+    /// editor's in-memory buffer is stale after an `ai` edit and the
+    /// next debounced auto-save overwrites the AI's change.
+    var onEditorApplyRequest: ((_ path: String, _ content: String) -> Void)?
+
+    private func checkForEditorApplyRequest() {
+        let signalDir = NSTemporaryDirectory().appending("latex_signals/")
+        let signalFile = signalDir.appending("ai_editor_apply.json")
+        guard FileManager.default.fileExists(atPath: signalFile),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: signalFile)) else {
+            return
+        }
+        try? FileManager.default.removeItem(atPath: signalFile)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = obj["path"] as? String,
+              let content = obj["content"] as? String else {
+            return
+        }
+        onEditorApplyRequest?(path, content)
+    }
 
     private func checkForPreviewRequest() {
         let signalDir = NSTemporaryDirectory().appending("latex_signals/")

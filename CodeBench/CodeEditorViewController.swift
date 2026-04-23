@@ -530,6 +530,31 @@ final class CodeEditorViewController: UIViewController {
             DispatchQueue.main.async { self?.showImageOutput(path: pdfPath) }
         }
 
+        // AI-authored edits: when the `ai` CLI applies an edit to the
+        // currently-open file, we refresh Monaco's in-memory buffer so
+        // the user sees the new content immediately. Without this, the
+        // editor keeps showing the pre-edit content and the next
+        // debounced auto-save overwrites the AI's change from disk.
+        LaTeXEngine.shared.onEditorApplyRequest = { [weak self] path, content in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Only refresh the editor if the AI touched the file
+                // that's currently open. Edits to other files just land
+                // on disk; the user can open them later to see.
+                let openPath = self.currentFileURL?.standardizedFileURL.path
+                let editPath = URL(fileURLWithPath: path).standardizedFileURL.path
+                guard openPath == editPath else { return }
+
+                let lang = self.currentLanguage.monacoName
+                self.monacoView.setCode(content, language: lang)
+                self.codeTextView.text = content        // keep legacy mirror in sync
+                self.lastSavedText = content            // suppress next auto-save
+                self.appendToTerminal(
+                    "$ AI applied edit to \(URL(fileURLWithPath: path).lastPathComponent)\n",
+                    isError: false)
+            }
+        }
+
         // Forward LaTeX engine progress to the terminal so the user
         // sees real progress while a compile runs (instead of staring
         // at "First run: loading latex.ltx kernel…" for 60 s). Both

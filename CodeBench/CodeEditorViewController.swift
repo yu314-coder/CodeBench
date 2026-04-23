@@ -1079,17 +1079,27 @@ final class CodeEditorViewController: UIViewController {
         fileTabPill.addSubview(fileIconLabel)
         fileTabPill.addSubview(editorFileNameLabel)
 
-        // AI Assist toggle — shows as an outline pill when OFF, filled violet
-        // pill when ON. Tap toggles the inline chat panel on the right edge.
+        // AI Assist toggle — HIDDEN. The inline chat panel is deprecated
+        // in favour of the `ai` shell command which offers a much richer
+        // CLI experience (slash commands, permission modes, multi-file
+        // edits, usage stats). The button is still instantiated and
+        // wired up so the rest of the view hierarchy doesn't need
+        // conditional guards, but it's taken out of the header bar
+        // and never shown. Re-enable by setting aiToggleButton.isHidden
+        // = false and re-adding it as a subview if you want the panel
+        // back.
         aiToggleButton.translatesAutoresizingMaskIntoConstraints = false
         aiToggleButton.layer.cornerRadius = 6
         aiToggleButton.layer.cornerCurve = .continuous
         aiToggleButton.layer.borderWidth = 1
         aiToggleButton.addTarget(self, action: #selector(toggleAIChat), for: .touchUpInside)
-        applyAIToggleStyle()   // paint once for initial state (OFF)
+        aiToggleButton.isHidden = true
+        applyAIToggleStyle()
 
         editorHeaderBar.addSubview(fileTabPill)
-        editorHeaderBar.addSubview(aiToggleButton)
+        // Deliberately NOT adding aiToggleButton as a subview — hides
+        // the AI chat entry point entirely. The `ai` shell command
+        // replaces this UI path.
 
         // Monaco editor
         monacoView.translatesAutoresizingMaskIntoConstraints = false
@@ -3654,6 +3664,7 @@ except Exception:
         lastSavedText = contents
         editorFileNameLabel.text = "</> \(url.lastPathComponent)"
         appendToTerminal("$ Loaded: \(url.lastPathComponent) (\(monacoLang))\n", isError: false)
+        publishCurrentEditorFile(url)
     }
 
     func insertCode(_ code: String, language: String) {
@@ -3668,6 +3679,21 @@ except Exception:
         monacoView.setCode(code, language: currentLanguage.monacoName)
         currentFileURL = nil
         lastSavedText = nil
+        publishCurrentEditorFile(nil)
+    }
+
+    /// Expose the currently-open file path to the Python shell via a
+    /// shared signal file. The `ai` builtin reads this when invoked
+    /// with no arg so the default edit target is whatever file the
+    /// user has in the editor right now. Writes an empty file (not
+    /// deleted) when nothing's loaded, so the Python side can reliably
+    /// distinguish "no current file" from "signal file missing".
+    private func publishCurrentEditorFile(_ url: URL?) {
+        let dir = NSTemporaryDirectory().appending("latex_signals")
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/current_editor_file.txt"
+        let content = (url?.path ?? "") + "\n"
+        try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     /// Called from Monaco's textChanged bridge on every keystroke. We

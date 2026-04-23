@@ -3661,6 +3661,14 @@ final class GameViewController: UIViewController {
         // Initialize LaTeX engine (ios_system + pdftex)
         LaTeXEngine.shared.initialize()
 
+        // Wire up the AI-from-shell bridge: when the Python shell's
+        // `ai` builtin writes a request, AIEngine forwards it to this
+        // LlamaRunner instance and streams tokens back. The runner
+        // stays a per-VC instance; AIEngine holds a weak reference so
+        // a VC tear-down doesn't leak it.
+        AIEngine.shared.runner = self.runner
+        AIEngine.shared.start()
+
         // Start the IntelliSense Python daemon (answers docstring/signature queries).
         // Runs on a background thread — independent of PythonRuntime's serial queue,
         // so autocomplete stays responsive even during long-running scripts.

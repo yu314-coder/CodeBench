@@ -520,6 +520,7 @@ final class CodeEditorViewController: UIViewController {
         setupSuggestionsTable()
         loadDefaultCode()
         applyLiquidGlass()
+        setupKeyboardAvoidance()
 
         // After `pdflatex foo.tex` produces a PDF, surface it in the
         // editor's output preview panel so the user can see the result
@@ -2869,6 +2870,73 @@ except Exception:
         // On some iOS versions SwiftTerm's UITextInput surface needs a
         // reloadInputViews() kick to actually present the keyboard.
         swiftTermView.reloadInputViews()
+    }
+
+    /// Keyboard-avoidance for the terminal. Without this, when the
+    /// user taps the terminal on an iPhone / Magic-Keyboard-less iPad,
+    /// the software keyboard pops up from the bottom and covers the
+    /// most recent prompt (`euler@Eulers-iPad ~/Workspace %`), which
+    /// is always at the bottom of the terminal. The user then sees
+    /// an empty-looking terminal and doesn't realise the REPL is
+    /// waiting for input.
+    ///
+    /// Fix: observe keyboard-frame notifications and shrink the view's
+    /// usable area (`additionalSafeAreaInsets.bottom`) by the
+    /// keyboard's overlap. `mainStack` (holding the editor + terminal)
+    /// re-lays-out automatically via its safe-area-bounded constraints,
+    /// so the terminal contracts and the prompt stays visible. Then
+    /// scroll SwiftTerm to the bottom so the latest line is on screen.
+    private func setupKeyboardAvoidance() {
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(keyboardFrameWillChange(_:)),
+                       name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        nc.addObserver(self, selector: #selector(keyboardWillHide(_:)),
+                       name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardFrameWillChange(_ note: Notification) {
+        guard let info = note.userInfo,
+              let endFrameRaw = info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else { return }
+        let endFrame = endFrameRaw.cgRectValue
+        // Convert the keyboard frame into our view's coordinate space
+        // — it arrives in screen coords and we care about how much of
+        // OUR view it actually covers (Stage Manager / Split View /
+        // iPhone landscape etc. all affect the overlap).
+        let converted = view.convert(endFrame, from: nil)
+        let overlap = max(0, view.bounds.maxY - converted.minY)
+        // Subtract the existing safe-area bottom (home-indicator inset)
+        // — iOS already accounts for that, we only want the ADDITIONAL
+        // inset the keyboard introduces.
+        let delta = max(0, overlap - view.safeAreaInsets.bottom + additionalSafeAreaInsets.bottom)
+        let duration = info[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
+        let curveRaw = info[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? UIView.AnimationCurve.easeInOut.rawValue
+        UIView.animate(
+            withDuration: duration,
+            delay: 0,
+            options: UIView.AnimationOptions(rawValue: UInt(curveRaw << 16)),
+            animations: {
+                self.additionalSafeAreaInsets.bottom = delta
+                self.view.layoutIfNeeded()
+            },
+            completion: { _ in
+                // After layout settles, pull the terminal's scroll
+                // down so the most recent prompt line is still in view.
+                // SwiftTerm doesn't expose a direct scrollToBottom API,
+                // but feeding an empty string forces a redraw that
+                // respects the current visible range.
+                if self.swiftTermView.isFirstResponder {
+                    self.swiftTermView.feed(text: "")
+                }
+            })
+    }
+
+    @objc private func keyboardWillHide(_ note: Notification) {
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval) ?? 0.25
+        UIView.animate(withDuration: duration) {
+            self.additionalSafeAreaInsets.bottom = 0
+            self.view.layoutIfNeeded()
+        }
     }
 
     /// When a magic keyboard is connected we hide SwiftTerm's ESC/F1-F12

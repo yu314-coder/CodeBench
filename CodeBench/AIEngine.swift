@@ -1,5 +1,6 @@
 import Foundation
 import Darwin  // POSIX open/write/close for atomic appends to the token stream
+import llama   // GGML_TYPE_F16 and other ggml constants
 
 /// Bridge that lets the Python shell's `ai` builtin talk to the
 /// Swift-side `LlamaRunner`. Protocol is the same signal-file pattern
@@ -43,7 +44,86 @@ import Darwin  // POSIX open/write/close for atomic appends to the token stream
         try? FileManager.default.createDirectory(atPath: signalDir, withIntermediateDirectories: true)
         signalTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             self?.poll()
+            self?.pollLoadModel()
         }
+    }
+
+    /// Handle `ai_load_model.json` — writes the chosen GGUF path,
+    /// tells `LlamaRunner` to load it, and publishes the active
+    /// model name/path to `current_model.txt` (which the CLI's
+    /// `/model` command reads) once loaded.
+    ///
+    /// Request JSON: {"path": "/abs/path/to.gguf"}
+    /// Response file: `ai_model_done.txt` — "<status>\n<message>\n"
+    private func pollLoadModel() {
+        let reqPath = signalDir + "ai_load_model.json"
+        guard FileManager.default.fileExists(atPath: reqPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: reqPath)) else { return }
+        try? FileManager.default.removeItem(atPath: reqPath)
+
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = obj["path"] as? String, !path.isEmpty else {
+            writeModelDone(status: -1, message: "ai-load: malformed request.json")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            writeModelDone(status: -1, message: "ai-load: no such file: \(path)")
+            return
+        }
+        guard let runner = runner else {
+            writeModelDone(status: -2, message: "ai-load: no LlamaRunner available")
+            return
+        }
+
+        let url = URL(fileURLWithPath: path)
+        // Sensible defaults — same shape as GameViewController's
+        // loadModel(for slot:) but neutral for "whatever model the
+        // user pulled from CLI". Users who want non-default sampling
+        // can override with future /config <key>=<value> commands.
+        let config = LlamaRunner.Config(
+            contextSize: 4096,
+            batchSize: 512,
+            gpuLayers: 999,
+            offloadKQV: true,
+            opOffload: true,
+            kvUnified: false,
+            typeK: GGML_TYPE_F16,
+            typeV: GGML_TYPE_F16,
+            temperature: 0.7,
+            topP: 0.9,
+            topK: 50,
+            repeatLastN: 64,
+            repeatPenalty: 1.10,
+            frequencyPenalty: 0.0,
+            presencePenalty: 0.0)
+
+        runner.loadModel(at: url, config: config) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.publishCurrentModel(path: path)
+                    self.writeModelDone(status: 0, message: "loaded: \(url.lastPathComponent)")
+                case .failure(let err):
+                    self.writeModelDone(status: -3, message: "ai-load: \(err.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func publishCurrentModel(path: String) {
+        let url = URL(fileURLWithPath: path)
+        let name = url.deletingPathExtension().lastPathComponent
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+        let text = "\(name)\n\(path)\n\(size)\n"
+        try? text.write(toFile: signalDir + "current_model.txt",
+                        atomically: true, encoding: .utf8)
+    }
+
+    private func writeModelDone(status: Int, message: String) {
+        let text = "\(status)\n\(message)\n"
+        try? text.write(toFile: signalDir + "ai_model_done.txt",
+                        atomically: true, encoding: .utf8)
     }
 
     private func poll() {

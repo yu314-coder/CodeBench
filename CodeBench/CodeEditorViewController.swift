@@ -550,19 +550,58 @@ final class CodeEditorViewController: UIViewController {
         LaTeXEngine.shared.onEditorApplyRequest = { [weak self] path, content in
             DispatchQueue.main.async {
                 guard let self else { return }
-                // Only refresh the editor if the AI touched the file
-                // that's currently open. Edits to other files just land
-                // on disk; the user can open them later to see.
-                let openPath = self.currentFileURL?.standardizedFileURL.path
-                let editPath = URL(fileURLWithPath: path).standardizedFileURL.path
-                guard openPath == editPath else { return }
+                // Path comparison — AI's write targets an absolute path;
+                // currentFileURL might be /private/var/... while AI got
+                // /var/... (iOS has /var symlinked to /private/var) or
+                // the paths might differ only in symlink resolution.
+                // Match if ANY of: full resolved path equal, last-path-
+                // component + size equal, or raw string equal. Errs on
+                // the side of updating Monaco — worse to leave a stale
+                // buffer (next auto-save overwrites AI's disk write)
+                // than to wrongly refresh a different file.
+                let openURL = self.currentFileURL
+                let editURL = URL(fileURLWithPath: path)
+                let openResolved = openURL?.resolvingSymlinksInPath().standardizedFileURL.path
+                let editResolved = editURL.resolvingSymlinksInPath().standardizedFileURL.path
+                let openName = openURL?.lastPathComponent
+                let editName = editURL.lastPathComponent
+                let isMatch = (openResolved == editResolved)
+                    || (openURL?.path == editURL.path)
+                    || (openName != nil && openName == editName
+                        && openURL?.deletingLastPathComponent().path
+                            == editURL.deletingLastPathComponent().path)
+                if !isMatch {
+                    // Different file — don't touch Monaco, but log so
+                    // the user knows the editor won't reflect the edit
+                    // until they open that file.
+                    NSLog("[editor-apply] skipped refresh: open=%@ edit=%@",
+                          openResolved ?? "(nil)", editResolved)
+                    self.appendToTerminal(
+                        "$ AI edited \(editName) (not currently open — open it to see)\n",
+                        isError: false)
+                    return
+                }
+
+                // Kill any in-flight auto-save BEFORE setCode runs.
+                // Monaco's setValue fires onDidChangeModelContent, which
+                // arrives as a textChanged on this side and re-schedules
+                // auto-save with the new content. But a stale save
+                // queued from the user's earlier keystrokes might
+                // otherwise race ahead and overwrite the AI's disk
+                // write with its pre-AI buffer. Cancel it explicitly,
+                // then update lastSavedText so the next save (which
+                // setCode is about to trigger) sees text == lastSaved
+                // and no-ops.
+                self.autoSaveTimer?.cancel()
+                self.autoSaveTimer = nil
+                self.pendingSaveText = nil
+                self.lastSavedText = content
 
                 let lang = self.currentLanguage.monacoName
                 self.monacoView.setCode(content, language: lang)
-                self.codeTextView.text = content        // keep legacy mirror in sync
-                self.lastSavedText = content            // suppress next auto-save
+                self.codeTextView.text = content        // legacy mirror
                 self.appendToTerminal(
-                    "$ AI applied edit to \(URL(fileURLWithPath: path).lastPathComponent)\n",
+                    "$ AI applied edit to \(editName)\n",
                     isError: false)
             }
         }

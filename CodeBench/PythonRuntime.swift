@@ -539,12 +539,17 @@ print("__CODEBENCH_LIB_STATUS__=" + json.dumps(_codebench_lib_status))
             }
             if !pathLooksUsable(imagePath) {
                 let toolDir = (try? ensureToolOutputDirectory().path) ?? NSTemporaryDirectory()
-                if let recent = Self.mostRecentMediaFile(under: toolDir) {
+                // Constrain the dir-scan to media produced DURING this run
+                // — otherwise a script that doesn't render anything (e.g.
+                // a pywebview / requests / data-only run) used to surface
+                // the previous manim video as if it were the new output.
+                if let recent = Self.mostRecentMediaFile(
+                    under: toolDir, modifiedSince: execStart) {
                     imagePath = recent
                     fallbackHitNote = "[fallback] dir-scan → \(URL(fileURLWithPath: recent).lastPathComponent)"
                     diagTrail.append("[diag] dir-scan(\(toolDir)) → \(URL(fileURLWithPath: recent).lastPathComponent)")
                 } else {
-                    diagTrail.append("[diag] dir-scan(\(toolDir)) → <none>")
+                    diagTrail.append("[diag] dir-scan(\(toolDir)) → <none after \(execStart))")
                 }
             }
 
@@ -625,7 +630,8 @@ print("__CODEBENCH_LIB_STATUS__=" + json.dumps(_codebench_lib_status))
     /// when neither the Python global nor the streamed stdout has yielded
     /// a render path. Bounded to typical render outputs (mp4 / gif / png /
     /// pdf) to avoid picking up source files or unrelated artifacts.
-    private static func mostRecentMediaFile(under dir: String) -> String? {
+    private static func mostRecentMediaFile(under dir: String,
+                                            modifiedSince: Date) -> String? {
         let extensions: Set<String> = ["mp4", "mov", "webm", "m4v", "gif", "png", "jpg", "jpeg", "pdf"]
         let dirURL = URL(fileURLWithPath: dir)
         guard let enumerator = FileManager.default.enumerator(
@@ -633,12 +639,22 @@ print("__CODEBENCH_LIB_STATUS__=" + json.dumps(_codebench_lib_status))
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else { return nil }
+        // Reject anything older than `modifiedSince` MINUS a small grace
+        // window. Without this, a Python script that produces no media
+        // (e.g. a pywebview / requests / data-only run) silently surfaced
+        // the LAST run's manim video because the dir-scan picked it up.
+        // The grace window absorbs filesystem-mtime granularity (HFS+
+        // tracks 1 s; APFS is finer but still not always sub-frame) and
+        // any small clock skew between when execStart was captured and
+        // when the script's first write actually completed.
+        let cutoff = modifiedSince.addingTimeInterval(-1.0)
         var best: (String, Date)?
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
             guard values?.isRegularFile == true,
                   extensions.contains(url.pathExtension.lowercased()),
-                  let modDate = values?.contentModificationDate else { continue }
+                  let modDate = values?.contentModificationDate,
+                  modDate >= cutoff else { continue }
             // Prefer combined_scenes.mp4 / non-partial files over per-frame
             // partials. Skip anything inside a `partial_movie_files/` subdir
             // — those are fragments, not the final output.

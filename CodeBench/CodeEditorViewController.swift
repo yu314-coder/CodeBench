@@ -4358,6 +4358,16 @@ except Exception:
         outputImageView.isHidden = true
         outputImageView.image = nil
         outputWebView.isHidden = true
+        // Stop any in-flight load and drop the previous DOM. Without
+        // this, a manim _video_player.html from the prior run kept
+        // playing in the (hidden) WebView and would briefly flash
+        // through whenever the WebView was unhidden for the next page
+        // — the new content's loadFileURL is async, so the old DOM
+        // had time to render before the swap.
+        outputWebView.stopLoading()
+        outputWebView.loadHTMLString(
+            "<!doctype html><body style='background:#0a0a0f;margin:0'></body>",
+            baseURL: nil)
         outputPDFView.isHidden = true
         outputPDFView.document = nil
         outputPlaceholderLabel.isHidden = false

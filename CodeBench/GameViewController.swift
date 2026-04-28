@@ -3661,6 +3661,11 @@ final class GameViewController: UIViewController {
         // Initialize LaTeX engine (ios_system + pdftex)
         LaTeXEngine.shared.initialize()
 
+        // Initialize JS REPL — JavaScriptCore-backed, exposed to the
+        // Python shell via the `js` builtin (file-IPC over the same
+        // signal channel LaTeXEngine uses).
+        JSEngine.shared.initialize()
+
         // Wire up the AI-from-shell bridge: when the Python shell's
         // `ai` builtin writes a request, AIEngine forwards it to this
         // LlamaRunner instance and streams tokens back. The runner

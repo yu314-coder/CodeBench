@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import PDFKit
 
 /// LaTeX rendering engine for iOS using SwiftMath (native CoreText rendering).
 /// Produces pixel-perfect math typesetting entirely offline — no WKWebView needed.
@@ -457,6 +458,7 @@ import UIKit
                 self?.checkForCompileRequest()
                 self?.checkForTextRequest()
                 self?.checkForDocCompileRequest()
+                self?.checkForMathCompileRequest()
                 self?.checkForPreviewRequest()
                 self?.checkForEditorApplyRequest()
                 self?.checkForOpenInEditorRequest()
@@ -535,10 +537,20 @@ import UIKit
             return
         }
         try? FileManager.default.removeItem(atPath: signalFile)
-        let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty,
-              FileManager.default.fileExists(atPath: path) else { return }
-        onPreviewRequest?(path)
+        let payload = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !payload.isEmpty else { return }
+        // pywebview shim sends http(s):// URLs raw — those need to be
+        // loaded by the WKWebView with their real origin (cookies,
+        // CSP, referer, first-party storage all key off scheme+host).
+        // Wrapping them in a file:// meta-refresh redirect breaks all
+        // of that. So pass the URL through as-is and let the preview
+        // controller route http(s) → URLRequest, file path → file URL.
+        if payload.hasPrefix("http://") || payload.hasPrefix("https://") {
+            onPreviewRequest?(payload)
+            return
+        }
+        guard FileManager.default.fileExists(atPath: payload) else { return }
+        onPreviewRequest?(payload)
     }
 
     // MARK: WASM-based pdflatex bridge
@@ -671,6 +683,190 @@ import UIKit
         try? text.write(toFile: markerPath, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Math compile request (manim MathTex → real LaTeX → PNG → SVG)
+    //
+    // Python (offlinai_latex.tex_to_svg) writes a request file at
+    //   $TMPDIR/latex_signals/compile_math_request.txt
+    // with format:
+    //   Line 1: request id (sha256[:16] of expression — used in done marker)
+    //   Line 2: output SVG path (Python's caller expects this written)
+    //   Line 3: foreground color hex (#FFFFFF or 6-digit, optional — defaults FFFFFF)
+    //   Line 4+: math expression (literal LaTeX, may span multiple lines
+    //            but newlines are preserved into the wrapped document)
+    //
+    // We hand the expression to BusytexEngine.compileMath which produces
+    // a real PDF via xelatex (full LaTeX, ctex/xeCJK for CJK in \text{...}),
+    // then rasterise the PDF page to a high-DPI PNG, embed as base64
+    // <image> in an SVG, and write to `svgPath`. Python polls for
+    // `math_done_<requestId>.txt` to detect completion.
+    private var compileMathInFlight = false
+    /// When the current in-flight compile started. If it overruns the
+    /// watchdog, we orphan it so a stuck WASM call doesn't permanently
+    /// block every subsequent MathTex compile (manifests as the "last
+    /// few scenes show SwiftMath placeholder" symptom).
+    private var compileMathStartedAt: Date?
+    /// Bookkeeping for the orphaned-request done marker.
+    private var compileMathInFlightId: String?
+    private var compileMathInFlightSignalDir: String?
+
+    /// Hard cap on a single math compile. Cold-start BusyTeX needs ~30 s
+    /// for WASM + texmf preload; warm compiles take 1–3 s. 90 s is a
+    /// generous ceiling — anything longer means the WASM call hung.
+    private let mathCompileWatchdogSeconds: TimeInterval = 90.0
+
+    private func checkForMathCompileRequest() {
+        // Watchdog: if the current compile has been in-flight too long,
+        // write a failure done marker for the orphaned request and let
+        // the next one through. The orphaned compile may still complete
+        // and write its SVG — manim caches by filename hash so a late
+        // overwrite is harmless.
+        if compileMathInFlight,
+           let startedAt = compileMathStartedAt,
+           Date().timeIntervalSince(startedAt) > mathCompileWatchdogSeconds {
+            if let dir = compileMathInFlightSignalDir,
+               let id = compileMathInFlightId {
+                writeMathDoneMarker(signalDir: dir, requestId: id,
+                                    status: -98, message: "compile watchdog tripped")
+            }
+            compileMathInFlight = false
+            compileMathStartedAt = nil
+            compileMathInFlightId = nil
+            compileMathInFlightSignalDir = nil
+        }
+        guard !compileMathInFlight else { return }
+        let signalDir = NSTemporaryDirectory().appending("latex_signals/")
+        let signalFile = signalDir.appending("compile_math_request.txt")
+        guard FileManager.default.fileExists(atPath: signalFile),
+              let content = try? String(contentsOfFile: signalFile, encoding: .utf8) else {
+            return
+        }
+        try? FileManager.default.removeItem(atPath: signalFile)
+
+        let lines = content.components(separatedBy: "\n")
+        guard lines.count >= 4 else { return }
+        let requestId = lines[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let svgPath = lines[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        let colorHex = lines[2].trimmingCharacters(in: .whitespacesAndNewlines)
+        let expression = lines[3...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !requestId.isEmpty, !svgPath.isEmpty, !expression.isEmpty else {
+            writeMathDoneMarker(signalDir: signalDir, requestId: requestId.isEmpty ? "unknown" : requestId,
+                                status: -10, message: "missing request fields")
+            return
+        }
+
+        compileMathInFlight = true
+        compileMathStartedAt = Date()
+        compileMathInFlightId = requestId
+        compileMathInFlightSignalDir = signalDir
+        let color = colorHex.isEmpty ? "FFFFFF" : colorHex
+
+        BusytexEngine.shared.compileMath(
+            expression: expression, colorHex: color
+        ) { [weak self] status, logText, pdfData in
+            defer {
+                // Only clear in-flight bookkeeping if this callback owns
+                // it. If the watchdog already tripped and a newer compile
+                // is now running, leave its bookkeeping alone.
+                if self?.compileMathInFlightId == requestId {
+                    self?.compileMathInFlight = false
+                    self?.compileMathStartedAt = nil
+                    self?.compileMathInFlightId = nil
+                    self?.compileMathInFlightSignalDir = nil
+                }
+            }
+            guard let self else { return }
+            // Always write a log next to the SVG for diagnostics.
+            let logPath = (svgPath as NSString).deletingPathExtension + ".latex.log"
+            try? logText.write(toFile: logPath, atomically: true, encoding: .utf8)
+
+            guard status == 0, let pdf = pdfData else {
+                self.writeMathDoneMarker(signalDir: signalDir, requestId: requestId,
+                                         status: status,
+                                         message: "xelatex failed")
+                return
+            }
+
+            // Render PDF page 1 to PNG at 4x DPI off the main thread.
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let rendered = self.renderPDFToPNG(pdfData: pdf, scale: 4.0) else {
+                    self.writeMathDoneMarker(signalDir: signalDir, requestId: requestId,
+                                              status: -11,
+                                              message: "PDF→PNG render failed")
+                    return
+                }
+                let svg = self.buildImageSVG(pngData: rendered.pngData,
+                                              widthPt: rendered.widthPt,
+                                              heightPt: rendered.heightPt)
+                do {
+                    try svg.write(toFile: svgPath, atomically: true, encoding: .utf8)
+                    self.writeMathDoneMarker(signalDir: signalDir, requestId: requestId,
+                                              status: 0,
+                                              message: "ok (\(rendered.pngData.count) bytes)")
+                } catch {
+                    self.writeMathDoneMarker(signalDir: signalDir, requestId: requestId,
+                                              status: -12,
+                                              message: "svg write failed: \(error)")
+                }
+            }
+        }
+    }
+
+    private func writeMathDoneMarker(signalDir: String, requestId: String,
+                                      status: Int, message: String) {
+        let markerPath = signalDir + "math_done_\(requestId).txt"
+        let text = "\(status)\n\(message)\n"
+        try? text.write(toFile: markerPath, atomically: true, encoding: .utf8)
+    }
+
+    /// Render the first page of `pdfData` to PNG bytes. `scale` is the
+    /// DPI multiplier — 4.0 means 288 DPI on a 72 DPI PDF, which keeps
+    /// math glyphs sharp at any reasonable manim zoom level.
+    /// Returns nil on parse / draw failure.
+    private func renderPDFToPNG(pdfData: Data, scale: CGFloat) -> (pngData: Data, widthPt: CGFloat, heightPt: CGFloat)? {
+        guard let document = PDFDocument(data: pdfData),
+              let page = document.page(at: 0) else { return nil }
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let pixelSize = CGSize(width: bounds.width * scale,
+                                height: bounds.height * scale)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        let image = renderer.image { ctx in
+            let cg = ctx.cgContext
+            // PDF coordinate system has y going up from bottom; UIKit
+            // graphics context has y going down from top — flip + scale
+            // so the page lands right-side-up at the requested DPI.
+            cg.saveGState()
+            cg.translateBy(x: 0, y: pixelSize.height)
+            cg.scaleBy(x: scale, y: -scale)
+            page.draw(with: .mediaBox, to: cg)
+            cg.restoreGState()
+        }
+        guard let pngData = image.pngData() else { return nil }
+        return (pngData, bounds.width, bounds.height)
+    }
+
+    /// Build a minimal SVG that wraps a single base64-PNG image. The
+    /// SVG dimensions are in PDF points (1pt = 1/72 inch) so manim's
+    /// SCALE_FACTOR_PER_FONT_POINT math gives the same on-screen size
+    /// as desktop dvisvgm output. Manim's patched svg_mobject.py
+    /// recognises `<image>` and produces an ImageMobject from the PNG.
+    private func buildImageSVG(pngData: Data, widthPt: CGFloat, heightPt: CGFloat) -> String {
+        let b64 = pngData.base64EncodedString()
+        let w = String(format: "%.3f", Double(widthPt))
+        let h = String(format: "%.3f", Double(heightPt))
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="\(w)pt" height="\(h)pt" viewBox="0 0 \(w) \(h)">
+        <image x="0" y="0" width="\(w)" height="\(h)" preserveAspectRatio="none" xlink:href="data:image/png;base64,\(b64)"/>
+        </svg>
+        """
+    }
+
     // MARK: LaTeX signal handler
 
     private func checkForCompileRequest() {
@@ -699,18 +895,28 @@ import UIKit
         let success = renderToSVG(expression: expression, svgPath: svgPath)
 
         if !success {
-            print("[LaTeX] SwiftMath failed, writing fallback placeholder")
+            // No silent fallback. Write a bright error SVG with the
+            // SwiftMath failure so it shows up in the rendered video.
+            // Python's `tex_to_svg` then surfaces the failure too — but
+            // even if it didn't, the user would see exactly which
+            // expression broke instead of a vague placeholder.
+            print("[LaTeX] SwiftMath failed for: \(expression.prefix(120))")
             let esc = expression
                 .replacingOccurrences(of: "&", with: "&amp;")
                 .replacingOccurrences(of: "<", with: "&lt;")
                 .replacingOccurrences(of: ">", with: "&gt;")
-            let fallback = """
+            let errSvg = """
             <?xml version="1.0" encoding="UTF-8"?>
-            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="20" viewBox="0 0 100 20">
-            <g id="unique000"><text x="2" y="14" font-size="12" fill="white">\(esc.prefix(30))</text></g>
+            <svg xmlns="http://www.w3.org/2000/svg" width="640" height="40" viewBox="0 0 640 40">
+              <rect x="0" y="0" width="640" height="40" fill="#220000"/>
+              <g id="unique000">
+                <path d="M 0 0 L 640 0 L 640 40 L 0 40 Z" fill="#ff5555"/>
+                <text x="4" y="14" font-family="monospace" font-size="11" fill="white">SwiftMath failed</text>
+                <text x="4" y="30" font-family="monospace" font-size="11" fill="white">\(esc.prefix(80))</text>
+              </g>
             </svg>
             """
-            try? fallback.write(toFile: svgPath, atomically: true, encoding: .utf8)
+            try? errSvg.write(toFile: svgPath, atomically: true, encoding: .utf8)
         }
     }
 

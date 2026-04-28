@@ -100,8 +100,12 @@ final class TerminalPaneViewController: UIViewController {
             button.translatesAutoresizingMaskIntoConstraints = false
             button.backgroundColor = color
             button.layer.cornerRadius = 6
-            button.widthAnchor.constraint(equalToConstant: 12).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 12).isActive = true
+            // Priority 999 so the 0-width temporary layout pass breaks this
+            // gracefully instead of logging a constraint conflict on launch.
+            let bw = button.widthAnchor.constraint(equalToConstant: 12)
+            let bh = button.heightAnchor.constraint(equalToConstant: 12)
+            bw.priority = .init(999); bh.priority = .init(999)
+            bw.isActive = true; bh.isActive = true
             let cfg = UIImage.SymbolConfiguration(pointSize: 8, weight: .heavy)
             if let img = UIImage(systemName: glyph, withConfiguration: cfg)?
                 .withTintColor(UIColor(white: 0.12, alpha: 1), renderingMode: .alwaysOriginal) {

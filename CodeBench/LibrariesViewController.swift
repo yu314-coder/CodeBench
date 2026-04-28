@@ -1,26 +1,25 @@
 import UIKit
 
-/// Libraries tab — combines three things in one place:
+/// Libraries tab — two segments:
 ///   1. **Installed**  — the list of Python packages currently shipped
 ///                       (app_packages/site-packages) + user-installed
 ///                       (Documents/site-packages) with version numbers.
 ///   2. **Docs**       — LibraryDocsViewController's reference material.
-///   3. **Install**    — PackageManagerViewController's pip install UI.
 ///
-/// Replaces the previous separate Docs and Packages tabs.
+/// The previous "Install" segment was removed — users can run
+/// `pip install <pkg>` directly from the main terminal, which is faster
+/// and avoids duplicating the install plumbing.
 final class LibrariesViewController: UIViewController {
 
     // Segmented control at top
-    private let segmentedControl = UISegmentedControl(items: ["Installed", "Docs", "Install"])
+    private let segmentedControl = UISegmentedControl(items: ["Installed", "Docs"])
 
-    // Three container views
+    // Two container views
     private let installedContainer = UIView()
     private let docsContainer      = UIView()
-    private let installContainer   = UIView()
 
-    // Child VCs (lazy — docs + install)
+    // Child VCs (lazy — docs)
     private var docsController:    LibraryDocsViewController?
-    private var installController: PackageManagerViewController?
 
     // Installed list
     private let installedList = InstalledLibsViewController()
@@ -54,10 +53,8 @@ final class LibrariesViewController: UIViewController {
         // Containers
         installedContainer.translatesAutoresizingMaskIntoConstraints = false
         docsContainer.translatesAutoresizingMaskIntoConstraints = false
-        installContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(installedContainer)
         view.addSubview(docsContainer)
-        view.addSubview(installContainer)
 
         NSLayoutConstraint.activate([
             segmentedControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
@@ -65,7 +62,7 @@ final class LibrariesViewController: UIViewController {
             segmentedControl.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
             segmentedControl.heightAnchor.constraint(equalToConstant: 34),
         ])
-        for c in [installedContainer, docsContainer, installContainer] {
+        for c in [installedContainer, docsContainer] {
             NSLayoutConstraint.activate([
                 c.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 10),
                 c.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -94,7 +91,6 @@ final class LibrariesViewController: UIViewController {
     private func showSegment(_ index: Int) {
         installedContainer.isHidden = index != 0
         docsContainer.isHidden      = index != 1
-        installContainer.isHidden   = index != 2
 
         // Lazily build Docs
         if index == 1 && docsController == nil {
@@ -112,27 +108,6 @@ final class LibrariesViewController: UIViewController {
             ])
             dc.didMove(toParent: self)
             docsController = dc
-        }
-
-        // Lazily build Install
-        if index == 2 && installController == nil {
-            let ic = PackageManagerViewController()
-            addChild(ic)
-            ic.view.translatesAutoresizingMaskIntoConstraints = false
-            installContainer.addSubview(ic.view)
-            NSLayoutConstraint.activate([
-                ic.view.topAnchor.constraint(equalTo: installContainer.topAnchor),
-                ic.view.leadingAnchor.constraint(equalTo: installContainer.leadingAnchor),
-                ic.view.trailingAnchor.constraint(equalTo: installContainer.trailingAnchor),
-                ic.view.bottomAnchor.constraint(equalTo: installContainer.bottomAnchor),
-            ])
-            ic.didMove(toParent: self)
-            installController = ic
-            // Refresh installed list after a successful install so the user can
-            // see new packages without having to switch tabs and come back.
-            ic.onDidFinishInstall = { [weak self] in
-                DispatchQueue.main.async { self?.installedList.refresh() }
-            }
         }
     }
 }

@@ -29,7 +29,7 @@ final class ExecuTorchEngine {
 
     private let signalDir: URL
     private let outDir: URL
-    private var watchQueue = DispatchQueue(label: "offlinai.executorch.watch", qos: .userInitiated)
+    private var watchQueue = DispatchQueue(label: "codebench.executorch.watch", qos: .userInitiated)
     private var isRunning = false
 
     private init() {

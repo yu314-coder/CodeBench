@@ -35,7 +35,7 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
     private var webView: WKWebView?
     private var isLoaded = false
     private var pendingLoadCallbacks: [() -> Void] = []
-    private let queue = DispatchQueue(label: "offlinai.latex.web", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "codebench.latex.web", qos: .userInitiated)
 
     /// Live progress reports from the engine, forwarded to whoever's
     /// watching. LaTeXEngine hooks this up to the signal-file pipeline
@@ -447,7 +447,7 @@ extension WebLaTeXEngine {
         // Serial would force every request through one worker and stall
         // the compile for minutes. Shared state (fileIndex, runtimeCache)
         // is already protected by its own locks, so concurrency is safe.
-        private let queue = DispatchQueue(label: "offlinai.latex.scheme",
+        private let queue = DispatchQueue(label: "codebench.latex.scheme",
                                           qos: .userInitiated,
                                           attributes: .concurrent)
         private var texmfRoot: URL? {
@@ -860,7 +860,7 @@ extension WebLaTeXEngine {
         }
 
         private static func err(_ msg: String) -> NSError {
-            NSError(domain: "offlinai.latex", code: -1,
+            NSError(domain: "codebench.latex", code: -1,
                     userInfo: [NSLocalizedDescriptionKey: msg])
         }
     }

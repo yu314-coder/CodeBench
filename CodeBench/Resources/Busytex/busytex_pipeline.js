@@ -262,7 +262,7 @@ class BusytexPipeline
                 bibtex8   : ['--debug', 'all'],
             },
         };
-        this.supported_drivers = ['xetex_bibtex8_dvipdfmx', 'pdftex_bibtex8', 'luahbtex_bibtex8', 'luatex_bibtex8'];
+        this.supported_drivers = ['xetex_bibtex8_dvipdfmx', 'pdftex_bibtex8', 'luahbtex_bibtex8', 'luatex_bibtex8', 'xetex_dvi_only'];
         
         this.error_messages_fatal = ['Fatal error occurred', 'That was a fatal error', ':fatal:', '! Undefined control sequence.', 'undefined old font command'];
         this.error_messages_all = this.error_messages_fatal.concat(['no output PDF file produced', 'No pages of output.']);
@@ -565,16 +565,25 @@ class BusytexPipeline
         }
         else if(driver == 'luatex_bibtex8')
         {
-            cmds = bibtex ? 
+            cmds = bibtex ?
                 [
-                    [luatex, this.error_messages_fatal, false], 
-                    [bibtex8,this.error_messages_fatal, true], 
-                    [luatex, this.error_messages_fatal, true], 
+                    [luatex, this.error_messages_fatal, false],
+                    [bibtex8,this.error_messages_fatal, true],
+                    [luatex, this.error_messages_fatal, true],
                     [luatex, this.error_messages_all, false]
-                ] : 
+                ] :
                 [
                     [luatex, this.error_messages_all, false]
                 ];
+        }
+        else if(driver == 'xetex_dvi_only')
+        {
+            // Used by manim's MathTex pipeline: run xelatex --no-pdf to
+            // produce .xdv (extended DVI), skip xdvipdfmx entirely so
+            // we can ship the XDV bytes back to Swift for native
+            // glyph-path SVG conversion. No PDF is produced — caller
+            // must read result.xdv instead of result.pdf.
+            cmds = [[xetex, this.error_messages_all, false]];
         }
         
         let exit_code = 0, stdout = '', stderr = '', log = '', aux = '';
@@ -631,10 +640,14 @@ class BusytexPipeline
         console.log('LOGS', logs);
 
         const pdf = exit_code == 0 ? this.read_all_bytes(FS, pdf_path) : null;
+        // For the xetex_dvi_only driver, read the .xdv bytes instead so
+        // Swift can do native glyph-path extraction (manim MathTex path).
+        const xdv = (exit_code == 0 && driver == 'xetex_dvi_only')
+            ? this.read_all_bytes(FS, xdv_path) : null;
         const logcat = logs.map(({cmd, texmflog, missfontlog, log, exit_code, stdout, stderr}) => ([`$ ${cmd}`, `EXITCODE: ${exit_code}`, '', 'TEXMFLOG:', texmflog, '==', 'MISSFONTLOG:', missfontlog, '==', 'LOG:', log, '==', 'STDOUT:', stdout, '==', 'STDERR:', stderr, '======'].join('\n'))).join('\n\n');
-        
+
         this.Module = this.preload == false ? null : this.Module;
-        
-        return {pdf : pdf, log : logcat, exit_code : exit_code, logs : logs};
+
+        return {pdf : pdf, xdv : xdv, log : logcat, exit_code : exit_code, logs : logs};
     }
 }

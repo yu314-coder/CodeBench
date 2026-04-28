@@ -140,13 +140,28 @@
         // Configure Monaco AMD loader
         require.config({ paths: { 'vs': 'Monaco/vs' } });
 
-        // WKWebView + file:// is strict about cross-origin, so serve the worker
-        // from the same origin (which it already is).
-        window.MonacoEnvironment = {
-            getWorkerUrl: function () {
-                return 'Monaco/vs/base/worker/workerMain.js';
+        // NB: do NOT define `window.MonacoEnvironment` here. The Vite-
+        // bundled `vs/editor/editor.main.js` we ship installs its own
+        // `self.MonacoEnvironment.getWorker` that points to the hashed
+        // worker bundles in `Monaco/vs/assets/`. The legacy
+        // `getWorkerUrl` override that used to live here pointed at
+        // `Monaco/vs/base/worker/workerMain.js`, which doesn't exist
+        // in this distribution — that's why the editor was wedging at
+        // load and we had to fall back to a UITextView. Letting
+        // editor.main set MonacoEnvironment itself is the fix.
+
+        // Surface load errors loudly so we can debug from the Xcode
+        // console next time something in this bundle goes sideways.
+        window.addEventListener('error', function (e) {
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.editor) {
+                window.webkit.messageHandlers.editor.postMessage({
+                    kind: 'jserror',
+                    msg: String(e && e.message),
+                    src: String(e && e.filename),
+                    line: (e && e.lineno) || 0
+                });
             }
-        };
+        });
 
         // Swift bridge
         function postToSwift(obj) {
@@ -362,6 +377,16 @@
                     const model = editor.getModel();
                     monaco.editor.setModelLanguage(model, language || 'python');
                     model.setValue(code);
+                },
+                setLanguage(language) {
+                    // Re-tag the syntax highlighter without touching the
+                    // buffer contents — used when the user switches the
+                    // language selector and we want their existing code
+                    // to stay put.
+                    const model = editor.getModel();
+                    if (model) {
+                        monaco.editor.setModelLanguage(model, language || 'python');
+                    }
                 },
                 insertCode(code) {
                     const selection = editor.getSelection();

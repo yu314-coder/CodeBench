@@ -11,7 +11,7 @@ final class CRuntime {
         let success: Bool
     }
 
-    private let queue = DispatchQueue(label: "ai.offlinai.c-runtime", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "ai.codebench.c-runtime", qos: .userInitiated)
 
     private init() {}
 

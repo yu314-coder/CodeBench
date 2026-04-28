@@ -4,6 +4,23 @@ import PDFKit
 import SwiftTerm
 import GameController  // magic-keyboard detection
 
+extension Notification.Name {
+    /// Posted by `CodeEditorViewController` after the editor's auto-save
+    /// successfully writes to disk. The notification's `object` is the
+    /// `URL` of the saved file. Listeners (e.g. the file browser) can
+    /// reload immediately rather than waiting for kqueue's debounce.
+    static let editorDidSaveFile = Notification.Name("CodeBench.editorDidSaveFile")
+
+    /// Posted by `FilesBrowserViewController` after a file or folder
+    /// is permanently deleted from disk. The notification's `object`
+    /// is the deleted `URL`. The editor listens for this so it can
+    /// drop its `currentFileURL` if the user just deleted the file
+    /// they had open — without this, the next auto-save would write
+    /// the buffer back out and resurrect the file the user just told
+    /// us to delete.
+    static let fileDidDelete = Notification.Name("CodeBench.fileDidDelete")
+}
+
 // MARK: - CodeEditorViewController
 
 /// Monaco-style split-view code editor with AI chat sidebar and terminal output.
@@ -334,28 +351,57 @@ final class CodeEditorViewController: UIViewController {
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
-        // Inject viewport meta + responsive CSS so Plotly/charts fill the panel.
-        // Note: the Python side ALSO writes these rules into every chart's <head>,
-        // but we inject them again here so older cached HTML files still work.
+        // Inject viewport + responsive CSS — but ONLY apply the
+        // fit-to-pane rules when the page looks like a chart (Plotly,
+        // Bokeh-style div) or a single-image artefact. For real
+        // interactive HTML/CSS/JS apps the user opens from the
+        // workspace, leave their layout alone so scrolling, custom
+        // layouts, modal overlays, etc. all work as the author
+        // intended.
         let viewportScript = WKUserScript(source: """
             (function() {
                 if (!document.querySelector('meta[name="viewport"]')) {
                     var m = document.createElement('meta');
                     m.name = 'viewport';
-                    m.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+                    m.content = 'width=device-width, initial-scale=1.0';
                     document.head.appendChild(m);
                 }
+                // Detection: chart-fit mode kicks in only for pages
+                // that already contain Plotly/Bokeh/Vega style markers,
+                // OR pages where the body's only child is a single
+                // <img>/<video>/<canvas> (the "view this artefact"
+                // shape). Everything else gets normal scrolling +
+                // no clamping so React/Vue/vanilla apps render natively.
+                var hasChart = !!document.querySelector(
+                    '.plotly-graph-div,.js-plotly-plot,.svg-container,.main-svg,' +
+                    '.bk-root,.vega-embed,canvas.chartjs-render-monitor');
+                var bodyKids = document.body ? document.body.children : [];
+                var soloMedia = bodyKids.length === 1 &&
+                    /^(IMG|VIDEO|CANVAS)$/.test(bodyKids[0].tagName);
+                var fitMode = hasChart || soloMedia;
+
                 var style = document.createElement('style');
-                style.textContent = [
-                    'html, body { margin:0 !important; padding:0 !important; width:100% !important; height:100% !important; overflow:hidden !important; background:transparent !important; }',
-                    'body > div:first-child { width:100% !important; height:100% !important; }',
-                    '.plotly-graph-div, .js-plotly-plot, .svg-container, .main-svg { width:100% !important; height:100% !important; }',
-                    'img, canvas { max-width:100% !important; max-height:100% !important; object-fit:contain; }',
-                    'video { max-width:100% !important; max-height:100% !important; object-fit:contain; }',
-                ].join('\\n');
+                if (fitMode) {
+                    style.textContent = [
+                        'html, body { margin:0 !important; padding:0 !important; width:100% !important; height:100% !important; overflow:hidden !important; background:transparent !important; }',
+                        'body > div:first-child { width:100% !important; height:100% !important; }',
+                        '.plotly-graph-div, .js-plotly-plot, .svg-container, .main-svg { width:100% !important; height:100% !important; }',
+                        'img, canvas { max-width:100% !important; max-height:100% !important; object-fit:contain; }',
+                        'video { max-width:100% !important; max-height:100% !important; object-fit:contain; }',
+                    ].join('\\n');
+                } else {
+                    // Interactive-page mode: minimal CSS — just stop
+                    // iOS Safari from auto-zooming on text inputs and
+                    // make sure the body isn't 0 height (some authors
+                    // forget html,body{height:100%}).
+                    style.textContent = [
+                        'html { -webkit-text-size-adjust: 100%; }',
+                        'body { min-height: 100vh; }',
+                    ].join('\\n');
+                }
                 document.head.appendChild(style);
 
-                // Force Plotly to re-measure after everything is in place.
+                // Force Plotly to re-measure after layout settles.
                 function _resizePlotly() {
                     if (!window.Plotly) return;
                     var plots = document.querySelectorAll('.js-plotly-plot');
@@ -363,24 +409,35 @@ final class CodeEditorViewController: UIViewController {
                         try { Plotly.Plots.resize(p); } catch (e) {}
                     });
                 }
-                _resizePlotly();
-                // Retry a few times — Plotly may still be initializing.
-                setTimeout(_resizePlotly, 60);
-                setTimeout(_resizePlotly, 200);
-                setTimeout(_resizePlotly, 500);
-                window.addEventListener('resize', _resizePlotly);
-                if (window.ResizeObserver) {
-                    var ro = new ResizeObserver(_resizePlotly);
-                    ro.observe(document.body);
+                if (fitMode) {
+                    _resizePlotly();
+                    setTimeout(_resizePlotly, 60);
+                    setTimeout(_resizePlotly, 200);
+                    setTimeout(_resizePlotly, 500);
+                    window.addEventListener('resize', _resizePlotly);
+                    if (window.ResizeObserver) {
+                        var ro = new ResizeObserver(_resizePlotly);
+                        ro.observe(document.body);
+                    }
                 }
             })();
         """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         config.userContentController.addUserScript(viewportScript)
+        // Install the pywebview JS↔Python bridge: WKScriptMessageHandler
+        // for "pywebview" messages plus the document-start bootstrap that
+        // exposes window.pywebview.api as a Proxy. Pages that don't use
+        // pywebview pay nothing — the bootstrap just sets up an unused
+        // global. See CodeBench/PywebviewBridge.swift.
+        PywebviewBridge.configure(config)
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.isOpaque = false
         wv.backgroundColor = .clear
         wv.scrollView.backgroundColor = .clear
-        wv.scrollView.isScrollEnabled = false  // Charts should fit, not scroll
+        // Scroll enabled so interactive web apps (workspace HTML/CSS/JS)
+        // can pan when content exceeds the pane. Chart-only pages keep
+        // body{overflow:hidden} via the injected CSS, so they fit-to-pane
+        // even with this on — the scrollView just becomes a passthrough.
+        wv.scrollView.isScrollEnabled = true
         wv.layer.cornerRadius = 8
         wv.clipsToBounds = true
         wv.translatesAutoresizingMaskIntoConstraints = false
@@ -518,7 +575,7 @@ final class CodeEditorViewController: UIViewController {
         setupSettingsPanel()
         setupLayout()
         setupSuggestionsTable()
-        loadDefaultCode()
+        loadInitialFile()
         applyLiquidGlass()
         setupKeyboardAvoidance()
 
@@ -529,6 +586,18 @@ final class CodeEditorViewController: UIViewController {
         LaTeXEngine.shared.onPreviewRequest = { [weak self] pdfPath in
             DispatchQueue.main.async { self?.showImageOutput(path: pdfPath) }
         }
+
+        // The file browser tells us when the user deletes a file or
+        // folder. If the deleted URL matches our currently-open file
+        // we drop all in-memory state for it — otherwise the next
+        // auto-save would write the editor buffer back to disk and
+        // resurrect the file the user just deleted, making the trash
+        // button look broken.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleFileDidDelete(_:)),
+            name: .fileDidDelete,
+            object: nil)
 
         // AI CLI asked us to open a file — happens when the user
         // runs `ai` with no file loaded and the Python side creates
@@ -1387,11 +1456,15 @@ final class CodeEditorViewController: UIViewController {
         outputPanel.addSubview(outputWebView)
         outputPanel.addSubview(outputImageView)
         outputPanel.addSubview(outputPDFView)
+        outputPanel.addSubview(outputExpandButton)
 
         // Initially hide everything except placeholder
         outputWebView.isHidden = true
         outputImageView.isHidden = true
         outputPDFView.isHidden = true
+
+        outputExpandButton.addTarget(self, action: #selector(presentFullscreenPreview),
+                                     for: .touchUpInside)
 
         NSLayoutConstraint.activate([
             outputWebView.topAnchor.constraint(equalTo: outputPanel.topAnchor),
@@ -1411,7 +1484,19 @@ final class CodeEditorViewController: UIViewController {
 
             outputPlaceholderLabel.centerXAnchor.constraint(equalTo: outputPanel.centerXAnchor),
             outputPlaceholderLabel.centerYAnchor.constraint(equalTo: outputPanel.centerYAnchor),
+
+            outputExpandButton.topAnchor.constraint(equalTo: outputPanel.topAnchor, constant: 8),
+            outputExpandButton.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor, constant: -8),
+            outputExpandButton.widthAnchor.constraint(equalToConstant: 28),
+            outputExpandButton.heightAnchor.constraint(equalToConstant: 28),
         ])
+    }
+
+    @objc private func presentFullscreenPreview() {
+        guard let path = currentOutputPath,
+              FileManager.default.fileExists(atPath: path) else { return }
+        let vc = PreviewFullscreenViewController(path: path)
+        present(vc, animated: true)
     }
 
     // MARK: - Setup Terminal
@@ -1440,8 +1525,14 @@ final class CodeEditorViewController: UIViewController {
             button.layer.cornerRadius = 6
             button.tintColor = UIColor(white: 0.12, alpha: 1)
             button.setTitle("", for: .normal)
-            button.widthAnchor.constraint(equalToConstant: 12).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 12).isActive = true
+            // Priority 999 (just below required) so the 0-width temporary
+            // layout pass doesn't fight us — UIKit logs constraint conflicts
+            // when a parent's _UITemporaryLayoutWidth=0 contradicts a 12pt
+            // child width. With 999 the temporary pass wins gracefully.
+            let bw = button.widthAnchor.constraint(equalToConstant: 12)
+            let bh = button.heightAnchor.constraint(equalToConstant: 12)
+            bw.priority = .init(999); bh.priority = .init(999)
+            bw.isActive = true; bh.isActive = true
             // Add an SF-Symbols glyph that only shows on hover/press (iOS
             // can't do hover, so we show it always, but small).
             let cfg = UIImage.SymbolConfiguration(pointSize: 8, weight: .heavy)
@@ -1464,9 +1555,9 @@ final class CodeEditorViewController: UIViewController {
 
         // Center title — follows macOS Terminal.app convention:
         //   "<user> — <shell> — <cols>×<rows>"
-        // e.g. "offlinai — python3.14 — 120×30"
+        // e.g. "CodeBench — python3.14 — 120×30"
         terminalTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        terminalTitleLabel.text = "offlinai — python3.14 — 80×24"
+        terminalTitleLabel.text = "CodeBench — python3.14 — 80×24"
         terminalTitleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         terminalTitleLabel.textColor = UIColor(white: 0.82, alpha: 1)
         terminalTitleLabel.textAlignment = .center
@@ -1933,6 +2024,19 @@ except Exception:
     private func setTerminalInitialBanner() {
         terminalLogBuffer = ""
         terminalANSIState = ANSI.State()
+        // ESC c (RIS, full terminal reset) — wipes the visible buffer,
+        // resets attributes, scroll region, character set, etc.
+        // ESC[3J — clear scrollback (RIS doesn't always purge it on
+        // SwiftTerm's xterm emulator).
+        // ESC[H — move cursor home so the banner starts in the
+        // top-left, not wherever the previous prompt left it.
+        //
+        // Without these escapes, `terminalClearButton` and
+        // `clearTerminal()` only reset our in-memory mirror — the user
+        // still sees the old output on screen and the trash icon
+        // looked broken. Sending the wipe sequences is what actually
+        // empties SwiftTerm.
+        swiftTermView.feed(text: "\u{1b}c\u{1b}[3J\u{1b}[H")
         // A single reassuring line so typing visibly works before Python
         // finishes Py_Initialize (~0.5–1 s on cold launch).
         let boot = "\u{1b}[38;5;244mstarting python… you can start typing\u{1b}[0m\r\n"
@@ -2036,16 +2140,83 @@ except Exception:
 
     // MARK: - Default Code
 
-    private func loadDefaultCode() {
-        codeTextView.text = currentLanguage.defaultCode  // mirror for legacy readers
-        monacoView.setCode(currentLanguage.defaultCode, language: currentLanguage.monacoName)
+    /// Clear the editor buffer. Used when no file is loaded — empty
+    /// buffer lets the user start writing from a blank slate rather
+    /// than fighting a hardcoded template.
+    private func loadEmptyBuffer() {
+        codeTextView.text = ""
+        monacoView.setCode("", language: currentLanguage.monacoName)
+    }
+
+    /// File-browser → editor signal: a file/folder was just permanently
+    /// deleted on disk. If it's our currently-open file, drop all
+    /// references so the next auto-save tick doesn't resurrect it.
+    /// Also catch the case where the deleted item is a parent folder
+    /// of our open file — in that case our file is gone too.
+    @objc private func handleFileDidDelete(_ note: Notification) {
+        guard let deleted = note.object as? URL,
+              let open = currentFileURL else { return }
+        let openPath = open.standardizedFileURL.path
+        let delPath = deleted.standardizedFileURL.path
+        let affected = (openPath == delPath)
+            || openPath.hasPrefix(delPath + "/")
+        guard affected else { return }
+        // Cancel the pending save and clear in-memory state for this
+        // file. The editor buffer is left intact (user might want to
+        // copy / paste into a new file) but currentFileURL goes nil
+        // so any save tries to no-op rather than re-write the deleted
+        // path. Also clear the persisted "last open" so a relaunch
+        // doesn't try to re-open the now-missing file.
+        autoSaveTimer?.cancel()
+        autoSaveTimer = nil
+        pendingSaveText = nil
+        lastSavedText = nil
+        currentFileURL = nil
+        editorFileNameLabel.text = "</> (untitled)"
+        UserDefaults.standard.removeObject(forKey: "editor.lastFilePath")
+        publishCurrentEditorFile(nil)
+        appendToTerminal("$ \(deleted.lastPathComponent) deleted — editor buffer kept, save target cleared.\n",
+                         isError: false)
+    }
+
+    /// Restore the editor to whichever file was open when the app last
+    /// quit, falling back to `~/Documents/Workspace/main.py`. The
+    /// fallback file is created EMPTY — no language template is
+    /// injected. (Earlier versions seeded `main.py` with a Python
+    /// "Hello World" template, but that was clutter for users who
+    /// already know what they want to write.)
+    private func loadInitialFile() {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let workspace = docs?.appendingPathComponent("Workspace") else {
+            loadEmptyBuffer(); return
+        }
+        try? fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        // Last-opened file (persisted in UserDefaults across app launches).
+        if let lastPath = UserDefaults.standard.string(forKey: "editor.lastFilePath"),
+           fm.fileExists(atPath: lastPath) {
+            loadFile(url: URL(fileURLWithPath: lastPath))
+            return
+        }
+
+        // Fallback: ~/Documents/Workspace/main.py — created empty.
+        let main = workspace.appendingPathComponent("main.py")
+        if !fm.fileExists(atPath: main.path) {
+            try? "".write(to: main, atomically: true, encoding: .utf8)
+        }
+        loadFile(url: main)
     }
 
     // MARK: - Actions
 
     @objc private func languageChanged() {
         currentLanguage = Language(rawValue: languageControl.selectedSegmentIndex) ?? .python
-        loadDefaultCode()
+        // Just retag Monaco's syntax highlighting — DON'T overwrite
+        // the buffer with a template. The user's existing code stays
+        // put; if they switched languages and the old code happens to
+        // be invalid for the new one, that's their call.
+        monacoView.setLanguage(currentLanguage.monacoName)
     }
 
     @objc private func runTapped() {
@@ -2064,19 +2235,147 @@ except Exception:
         }
     }
 
+    /// Regex-scan Python source for `class X(<base>):` definitions whose
+    /// base class chain mentions `Scene`. Returns the class names in
+    /// definition order. Catches stock manim `Scene`, `MovingCameraScene`,
+    /// `ThreeDScene`, `LinearTransformationScene`, `ZoomedScene`,
+    /// `VectorScene`, `GraphScene`, `SpecialThreeDScene`, and any user
+    /// subclass like `MyBaseScene` because we just check whether `Scene`
+    /// appears anywhere in the parens.
+    ///
+    /// This is heuristic-only — Python's actual class detection happens
+    /// in the wrapper after exec, but we need the names BEFORE the run
+    /// to populate the picker. False positives (a base class with
+    /// "Scene" in the name that isn't a manim Scene) just mean the
+    /// picker offers an option that the wrapper then can't find — which
+    /// falls back to "render all" so it's not fatal.
+    static func detectSceneClasses(in code: String) -> [String] {
+        // class <Name>(<bases-with-Scene-anywhere>):
+        // - Multiline-comment / string-aware: not really, but `class ` at
+        //   line start outside a multiline string is the overwhelming case.
+        // - We deduplicate while preserving order in case the user has
+        //   the same name twice (last definition wins in Python anyway).
+        let pattern = #"(?m)^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsRange = NSRange(code.startIndex..<code.endIndex, in: code)
+        let matches = re.matches(in: code, options: [], range: nsRange)
+        var seen = Set<String>()
+        var result: [String] = []
+        for m in matches where m.numberOfRanges == 3 {
+            guard let nameRange = Range(m.range(at: 1), in: code),
+                  let basesRange = Range(m.range(at: 2), in: code) else { continue }
+            let name = String(code[nameRange])
+            let bases = String(code[basesRange])
+            // Underscored names are convention-private — manim's auto-
+            // render skips them, mirror that here so they don't clutter
+            // the picker.
+            guard !name.hasPrefix("_") else { continue }
+            guard bases.contains("Scene") else { continue }
+            if seen.insert(name).inserted {
+                result.append(name)
+            }
+        }
+        return result
+    }
+
+    /// Show a picker action sheet for the detected Scene subclasses.
+    /// `completion(nil)` is called if the user cancels (run is aborted),
+    /// `completion("*")` for "render all" (legacy behaviour), or the
+    /// bare class name for a single-scene render.
+    private func presentScenePicker(scenes: [String], completion: @escaping (String?) -> Void) {
+        let alert = UIAlertController(
+            title: "Pick a Scene",
+            message: "This script defines \(scenes.count) Scene subclasses. Pick one to render — or render them all.",
+            preferredStyle: .actionSheet)
+
+        for name in scenes {
+            alert.addAction(UIAlertAction(title: name, style: .default) { _ in
+                completion(name)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Render all (\(scenes.count))", style: .default) { _ in
+            completion("*")
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            completion(nil)
+        })
+
+        // iPad popovers must be anchored. Anchor on the run button, with
+        // a sensible fallback to the toolbar's frame if the button isn't
+        // in the hierarchy yet (shouldn't happen, but defensive).
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = runButton
+            popover.sourceRect = runButton.bounds
+            popover.permittedArrowDirections = [.any]
+        }
+
+        present(alert, animated: true)
+    }
+
     private func _runWithCode(_ code: String) {
         guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             appendToTerminal("$ No code to run.\n", isError: true)
             return
         }
 
+        // Manim-only: if the script defines more than one Scene
+        // subclass, ask which one to render BEFORE we burn 10 minutes
+        // auto-rendering all of them. Single-Scene scripts skip the
+        // dialog and run straight through.
+        if currentLanguage == .python {
+            let scenes = Self.detectSceneClasses(in: code)
+            if scenes.count >= 2 {
+                presentScenePicker(scenes: scenes) { [weak self] choice in
+                    guard let self else { return }
+                    guard let choice else {
+                        // User cancelled the picker — abort rather than
+                        // running with an unintended default.
+                        self.appendToTerminal("$ Run cancelled.\n", isError: false)
+                        return
+                    }
+                    self._runWithCodeAndScene(code, scene: choice)
+                }
+                return
+            }
+        }
+
+        _runWithCodeAndScene(code, scene: nil)
+    }
+
+    private func _runWithCodeAndScene(_ code: String, scene: String?) {
         // Reset ANSI state so a color leaked by a previous crash can't
         // recolor the next run's output.
         terminalANSIState = ANSI.State()
 
         runButton.isEnabled = false
         setTerminalStatus(.running)
-        appendToTerminal("$ Running \(currentLanguage.title)…\n", isError: false)
+        if let scene, scene != "*" {
+            appendToTerminal("$ Running \(currentLanguage.title) (scene: \(scene))…\n", isError: false)
+        } else {
+            appendToTerminal("$ Running \(currentLanguage.title)…\n", isError: false)
+        }
+
+        // Background-execution guard. DEFAULT: ON. The user can opt out
+        // by setting UserDefaults "background_execution_enabled" = false
+        // (e.g. from a future Settings toggle). Using object-lookup
+        // rather than bool() so an absent key means "use the default",
+        // not "false".
+        let bgEnabled = (UserDefaults.standard.object(
+            forKey: "background_execution_enabled") as? Bool) ?? true
+        if bgEnabled {
+            // Pass the file name + selected scene so the Live Activity
+            // and lock-screen fallback notification show what's actually
+            // running, not a generic "CodeBench" string.
+            let activityTitle = currentFileURL?.lastPathComponent ?? "Untitled"
+            let activitySubtitle: String
+            if let scene, scene != "*" {
+                activitySubtitle = "Rendering \(scene)…"
+            } else {
+                activitySubtitle = "Running \(currentLanguage.title)…"
+            }
+            BackgroundExecutionGuard.shared.start(
+                title: activityTitle, subtitle: activitySubtitle)
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -2089,9 +2388,14 @@ except Exception:
             switch self.currentLanguage {
             case .python:
                 didStream = true
-                let result = PythonRuntime.shared.execute(code: code) { [weak self] chunk in
+                let result = PythonRuntime.shared.execute(code: code, targetScene: scene) { [weak self] chunk in
                     DispatchQueue.main.async {
-                        self?.appendToTerminal(chunk, isError: false)
+                        // Filter out internal-debug prefixes ([diag],
+                        // [fallback], [py-exec], [manim-font], [manim
+                        // rendered]) — they're routed to NSLog instead
+                        // so the in-app terminal stays focused on what
+                        // the user's script actually prints.
+                        self?.appendToTerminalFiltered(chunk, isError: false)
                     }
                 }
                 output = result.output.isEmpty ? "" : result.output
@@ -2129,6 +2433,13 @@ except Exception:
             let elapsed = CFAbsoluteTimeGetCurrent() - start
 
             DispatchQueue.main.async {
+                // Pair with the start() above (only call stop() if we
+                // actually called start() — otherwise the depth counter
+                // would underflow).
+                if bgEnabled {
+                    BackgroundExecutionGuard.shared.stop()
+                }
+
                 self.runButton.isEnabled = true
                 self.showImageOutput(path: resultImagePath)
 
@@ -2140,6 +2451,16 @@ except Exception:
                         if !stderrOnly.isEmpty {
                             self.appendToTerminal(stderrOnly + "\n", isError: true)
                         }
+                    }
+                    // Diag/fallback notes used to print into the in-app
+                    // terminal — they're noisy and only useful while
+                    // debugging path-discovery, so they now go to NSLog
+                    // (visible in Xcode console / Console.app) instead.
+                    let lines = output.components(separatedBy: "\n").filter {
+                        $0.hasPrefix("[diag]") || $0.hasPrefix("[fallback]")
+                    }
+                    for line in lines {
+                        NSLog("[py] %@", line)
                     }
                 } else {
                     self.appendToTerminal("> \(output)\n", isError: hasError)
@@ -2829,7 +3150,7 @@ except Exception:
         let cols = UInt16(max(10, term.cols))
         let rows = UInt16(max(3,  term.rows))
         PTYBridge.shared.updateWindowSize(cols: cols, rows: rows)
-        terminalTitleLabel.text = "offlinai — python3.14 — \(cols)×\(rows)"
+        terminalTitleLabel.text = "CodeBench — python3.14 — \(cols)×\(rows)"
     }
 
     override func viewDidLayoutSubviews() {
@@ -2928,7 +3249,20 @@ except Exception:
     }
 
     @objc private func terminalCtrlC() {
-        PTYBridge.shared.send(source: swiftTermView, data: ArraySlice([0x03]))
+        // Route through LineBuffer.handle() so the full Ctrl-C path fires
+        // — including AI-mode behavior (palette dismissal + writing
+        // `ai_cancel.txt` so AIEngine can stop the LlamaRunner during
+        // generation). The previous version sent 0x03 straight to the
+        // PTY pipe, bypassing LineBuffer entirely, which is why Ctrl-C
+        // didn't cancel generation in the `ai` REPL — Python was polling
+        // Swift's response file, not reading stdin, so the raw byte had
+        // nothing to do.
+        let tv = swiftTermView
+        LineBuffer.shared.handle(bytes: ArraySlice([0x03]),
+                                 terminalView: tv,
+                                 pipeWrite: { bytes in
+            PTYBridge.shared.send(source: tv, data: ArraySlice(bytes))
+        })
         PythonRuntime.shared.interruptPythonMainThread()
     }
 
@@ -3231,6 +3565,62 @@ except Exception:
             let cut = terminalLogBuffer.index(terminalLogBuffer.startIndex,
                                               offsetBy: terminalLogBuffer.count / 2)
             terminalLogBuffer = String(terminalLogBuffer[cut...])
+        }
+    }
+
+    /// Internal-tag prefixes whose lines are diagnostic noise (manim
+    /// font setup, fallback path-discovery probes, py-exec timing) —
+    /// useful while debugging from Xcode but pure clutter in the
+    /// in-app terminal where users are actually watching their
+    /// program run. Lines matching any of these get NSLog'd (so they
+    /// surface in the Xcode console / Console.app) and dropped from
+    /// the terminal feed.
+    private static let _terminalNoisePrefixes: [String] = [
+        "[diag]", "[fallback]",
+        "[py-exec]", "[manim-font]", "[manim rendered]",
+        // Per-frame encode chatter from the iOS-patched scene_file_writer
+        // (see app_packages/.../manim/scene/scene_file_writer.py — 21
+        // print sites that write at frame / batch / partial granularity).
+        // For a 119-animation render that's ≈800 lines of pure noise;
+        // route to NSLog so Xcode console keeps it but the user-visible
+        // terminal stays focused on print() output.
+        "[manim-debug]",
+    ]
+
+    /// Like `appendToTerminal`, but routes lines that match the
+    /// internal-debug prefixes (see `_terminalNoisePrefixes`) to
+    /// NSLog instead of the terminal. Use for output streamed from
+    /// the Python runtime — keeps the user-visible terminal focused
+    /// on what their script actually printed.
+    private func appendToTerminalFiltered(_ text: String, isError: Bool) {
+        // Fast path: if the chunk contains nothing that looks like a
+        // tagged debug line, just forward it straight through.
+        let prefixes = Self._terminalNoisePrefixes
+        if !prefixes.contains(where: { text.contains($0) }) {
+            appendToTerminal(text, isError: isError)
+            return
+        }
+        // Mixed or all-noisy chunk — split per-line, route each.
+        // Preserve the chunk's trailing newline by tracking it
+        // explicitly (otherwise the terminal collapses two prints
+        // onto one line).
+        let endsWithNewline = text.hasSuffix("\n")
+        let lines = text.split(separator: "\n",
+                               omittingEmptySubsequences: false)
+            .map(String.init)
+        var keep: [String] = []
+        for line in lines {
+            if prefixes.contains(where: { line.hasPrefix($0) }) {
+                NSLog("[py] %@", line)
+            } else {
+                keep.append(line)
+            }
+        }
+        if keep.isEmpty { return }
+        var out = keep.joined(separator: "\n")
+        if endsWithNewline && !out.hasSuffix("\n") { out += "\n" }
+        if !out.isEmpty {
+            appendToTerminal(out, isError: isError)
         }
     }
 
@@ -3659,6 +4049,20 @@ except Exception:
 
     private var currentFileURL: URL?
     private var currentOutputPath: String?
+    /// Floating "expand to fullscreen" button overlaid on the preview
+    /// pane. Hidden until an artefact is loaded.
+    private let outputExpandButton: UIButton = {
+        let b = UIButton(type: .system)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        b.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right",
+                           withConfiguration: cfg), for: .normal)
+        b.tintColor = .white
+        b.backgroundColor = UIColor(white: 0, alpha: 0.55)
+        b.layer.cornerRadius = 14
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.isHidden = true
+        return b
+    }()
     /// Debounced auto-save: Monaco fires `onTextChanged` every ~150 ms while
     /// the user types, but hitting disk on every keystroke thrashes iCloud
     /// sync and makes battery sad. Coalesce to one write per ~600 ms of
@@ -3687,9 +4091,26 @@ except Exception:
             appendToTerminal("$ Cannot read \(url.lastPathComponent)\n", isError: true)
             return
         }
-        // Before switching files, flush any pending edit to the OLD file
-        // so we don't lose it when we clobber currentFileURL.
-        flushAutoSave()
+        // Before switching files, pull Monaco's very latest text and
+        // flush it to the OLD file synchronously-enough that we don't
+        // race the new file's setCode. `flushAutoSave()` alone isn't
+        // enough: Monaco has its own ~150 ms textChanged debounce, so
+        // a user who types then quickly taps another file can arrive
+        // here with `pendingSaveText == nil` even though Monaco still
+        // holds unsaved keystrokes. Capture the OLD url + do getText,
+        // and write to that captured url even after we swap Monaco's
+        // content — the closure holds the right reference.
+        if let oldURL = currentFileURL {
+            let priorLastSaved = lastSavedText
+            monacoView.getText { [oldURL, priorLastSaved] text in
+                if text != priorLastSaved {
+                    try? text.write(to: oldURL, atomically: true, encoding: .utf8)
+                }
+            }
+        }
+        autoSaveTimer?.cancel()
+        autoSaveTimer = nil
+        pendingSaveText = nil
         // Auto-detect language from file extension. For formats Monaco
         // doesn't tokenize (log, txt, tex, md, json, yaml, ...), we still
         // pass a language string so Monaco applies the right renderer
@@ -3730,9 +4151,12 @@ except Exception:
         case "css":
             currentLanguage = .python
             monacoLang = "css"
-        case "js":
+        case "js", "mjs", "cjs":
             currentLanguage = .python
             monacoLang = "javascript"
+        case "ts", "tsx":
+            currentLanguage = .python
+            monacoLang = "typescript"
         case "sh", "bash", "zsh":
             currentLanguage = .python
             monacoLang = "shell"
@@ -3745,10 +4169,37 @@ except Exception:
         currentFileURL = url
         lastSavedText = contents
         editorFileNameLabel.text = "</> \(url.lastPathComponent)"
+        // Persist this as the "last opened file" so the next launch
+        // restores it (loadInitialFile in viewDidLoad reads this key).
+        UserDefaults.standard.set(url.path, forKey: "editor.lastFilePath")
         // File load is reflected in the editor header label; no
         // reason to echo it into the terminal (it's noise during
         // every file-tab click).
         publishCurrentEditorFile(url)
+        // Live HTML preview: if the user opens an .html / .htm file,
+        // mirror it into the preview pane so they can edit + see the
+        // rendered result side-by-side. The preview re-renders on every
+        // save (see flushAutoSave). For non-HTML files we leave the
+        // preview alone — it might be showing the last script run's
+        // output, which the user probably still wants visible.
+        //
+        // Workspace dev-server convention: if the user opens a CSS / JS
+        // / asset file that lives next to an `index.html`, surface the
+        // index.html in the preview pane. Editing the asset will then
+        // trigger a refresh via flushAutoSave's same-dir asset rule —
+        // matches the behaviour of a real dev server.
+        if ext == "html" || ext == "htm" {
+            showImageOutput(path: url.path)
+        } else {
+            let webAssetExts: Set<String> = ["css", "js", "mjs", "json", "svg"]
+            if webAssetExts.contains(ext) {
+                let dir = url.deletingLastPathComponent()
+                let candidate = dir.appendingPathComponent("index.html")
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    showImageOutput(path: candidate.path)
+                }
+            }
+        }
     }
 
     func insertCode(_ code: String, language: String) {
@@ -3781,17 +4232,46 @@ except Exception:
     }
 
     /// Called from Monaco's textChanged bridge on every keystroke. We
-    /// schedule a disk write for ~600 ms later, cancelling any previously
-    /// pending timer so only the most recent text hits disk.
+    /// schedule a disk write for ~200 ms later, cancelling any previously
+    /// pending timer so only the most recent text hits disk. The old
+    /// 600 ms debounce produced a visible "unsaved window" — if the user
+    /// switched files or ran a script within it, their latest edit never
+    /// made it to disk and subsequent re-reads picked up stale content.
     func scheduleAutoSave(text: String) {
         guard currentFileURL != nil else { return }
         pendingSaveText = text
         autoSaveTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + .milliseconds(600))
+        timer.schedule(deadline: .now() + .milliseconds(200))
         timer.setEventHandler { [weak self] in self?.flushAutoSave() }
         timer.resume()
         autoSaveTimer = timer
+    }
+
+    /// Fetch Monaco's current in-memory text and flush it to disk NOW,
+    /// bypassing both debounce layers. Use this at file-switch / run /
+    /// background time when we can't afford to miss the latest edit —
+    /// Monaco's own ~150 ms textChanged debounce means `pendingSaveText`
+    /// may be nil while the editor still holds unsaved keystrokes.
+    func forceFlushFromMonaco(completion: (() -> Void)? = nil) {
+        guard let url = currentFileURL else { completion?(); return }
+        monacoView.getText { [weak self] text in
+            guard let self else { completion?(); return }
+            self.autoSaveTimer?.cancel()
+            self.autoSaveTimer = nil
+            self.pendingSaveText = nil
+            if text != self.lastSavedText {
+                do {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                    self.lastSavedText = text
+                } catch {
+                    self.appendToTerminal(
+                        "$ Save failed: \(error.localizedDescription)\n",
+                        isError: true)
+                }
+            }
+            completion?()
+        }
     }
 
     /// Synchronously write whatever's pending to the current file URL.
@@ -3808,6 +4288,37 @@ except Exception:
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             lastSavedText = text
+            // Tell the file browser to refresh immediately. The kqueue
+            // watcher would catch this anyway via .write, but it
+            // debounces by 120ms; a direct notification skips the wait
+            // so the side tab updates the moment the save lands.
+            NotificationCenter.default.post(
+                name: .editorDidSaveFile, object: url)
+            // Live web preview: refresh the preview pane if the user
+            // just edited:
+            //   • the HTML file currently being previewed, OR
+            //   • a CSS / JS / asset file in the SAME directory as the
+            //     previewed HTML (so editing style.css with index.html
+            //     in the preview triggers a reload — that's how a real
+            //     dev-server feels).
+            // Skip otherwise so saving a .py file doesn't clobber a
+            // previously-rendered chart in the preview.
+            let ext = url.pathExtension.lowercased()
+            let assetExts: Set<String> = [
+                "css", "js", "mjs", "json", "svg",
+                "png", "jpg", "jpeg", "gif", "webp", "ico",
+                "woff", "woff2", "ttf", "otf", "wasm",
+            ]
+            if let preview = currentOutputPath {
+                let isHTMLPreview = preview.hasSuffix(".html") || preview.hasSuffix(".htm")
+                let savedDir = url.deletingLastPathComponent().standardized.path
+                let previewDir = (preview as NSString).deletingLastPathComponent
+                let inSameDir = (savedDir == previewDir)
+                let isAsset = assetExts.contains(ext)
+                if isHTMLPreview && (preview == url.path || (inSameDir && isAsset)) {
+                    showImageOutput(path: preview)
+                }
+            }
         } catch {
             appendToTerminal("$ Save failed: \(error.localizedDescription)\n",
                              isError: true)
@@ -3850,15 +4361,38 @@ except Exception:
         outputPDFView.isHidden = true
         outputPDFView.document = nil
         outputPlaceholderLabel.isHidden = false
+        outputExpandButton.isHidden = true
         currentOutputPath = path
 
         guard let path = path, !path.isEmpty else {
             appendToTerminal("$ [output] No image path\n", isError: false)
             return
         }
+
+        // pywebview shim can send http(s):// URLs straight through.
+        // Those go to the WKWebView as a real network request so the
+        // page gets the correct origin (cookies, referer, CSP, JS
+        // controls all behave the way they would in a normal browser
+        // — wrapping them in a file:// meta-refresh used to silently
+        // break things like form submits and OAuth flows).
+        if path.hasPrefix("http://") || path.hasPrefix("https://"),
+           let urlForLoad = URL(string: path) {
+            appendToTerminal("$ [output] loading URL \(path)\n", isError: false)
+            outputPlaceholderLabel.isHidden = true
+            outputWebView.isHidden = false
+            outputExpandButton.isHidden = false
+            // Bind the pywebview JS↔Python bridge to this WebView so
+            // evaluate_js / js_api round-trips work against the live
+            // page. Idempotent — safe to call on every load.
+            PywebviewBridge.shared.bind(outputWebView)
+            outputWebView.load(URLRequest(url: urlForLoad))
+            return
+        }
+
         let exists = FileManager.default.fileExists(atPath: path)
         appendToTerminal("$ [output] \(URL(fileURLWithPath: path).lastPathComponent) exists=\(exists)\n", isError: false)
         guard exists else { return }
+        outputExpandButton.isHidden = false
 
         let url = URL(fileURLWithPath: path)
         let ext = url.pathExtension.lowercased()
@@ -3866,6 +4400,9 @@ except Exception:
         if ext == "html" {
             outputPlaceholderLabel.isHidden = true
             outputWebView.isHidden = false
+            // Bind the pywebview bridge so evaluate_js / js_api work
+            // against this page too (load_html signal lands here).
+            PywebviewBridge.shared.bind(outputWebView)
             outputWebView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         } else if ext == "pdf" {
             // PDFKit's PDFView — native multi-page continuous scroll,

@@ -18,7 +18,7 @@ final class PythonSymbolIndex {
 
     private var isBuilt = false
     private let cacheKey = "python.symbol.index.v3"
-    private let queue = DispatchQueue(label: "offlinai.python.symindex", qos: .utility)
+    private let queue = DispatchQueue(label: "codebench.python.symindex", qos: .utility)
 
     private init() {
         loadFromCache()

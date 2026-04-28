@@ -315,6 +315,31 @@ final class FilesBrowserViewController: UIViewController {
         setupEmptyLabel()
         setupDataSource()
         reloadFiles()
+
+        // The editor posts this on every successful auto-save so we
+        // don't have to wait for the kqueue debounce (~120ms) to see
+        // the new mtime/size in the cell. Listening here is cheap
+        // because reloadFiles() diffs the snapshot — same listing
+        // means no UI churn.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEditorDidSave(_:)),
+            name: .editorDidSaveFile,
+            object: nil)
+    }
+
+    @objc private func handleEditorDidSave(_ note: Notification) {
+        // Only reload if the saved file lives in (or under) the dir we
+        // currently show — otherwise the snapshot wouldn't have changed
+        // anyway and we'd just churn the cells.
+        guard let savedURL = note.object as? URL else {
+            reloadFiles(); return
+        }
+        let savedDir = savedURL.deletingLastPathComponent().standardized.path
+        let curDir = currentURL.standardized.path
+        if savedDir == curDir || savedDir.hasPrefix(curDir + "/") {
+            reloadFiles()
+        }
     }
 
     // MARK: - Setup
@@ -677,6 +702,17 @@ final class FilesBrowserViewController: UIViewController {
         snapshot.appendItems(keys, toSection: 0)
         dataSource.apply(snapshot, animatingDifferences: true)
 
+        // Force the cell-config block to run again for every item still
+        // in the snapshot. The diffable data source identifies cells by
+        // file path, so a file whose CONTENTS changed (size / mtime)
+        // but whose PATH didn't is invisible to the diff — without an
+        // explicit reconfigure, the cell keeps showing the stale size.
+        // `reconfigureItems` doesn't animate; the user sees an in-place
+        // refresh of the existing cell.
+        var reconfigure = dataSource.snapshot()
+        reconfigure.reconfigureItems(reconfigure.itemIdentifiers)
+        dataSource.apply(reconfigure, animatingDifferences: false)
+
         updateBreadcrumbs()
     }
 
@@ -946,7 +982,32 @@ final class FilesBrowserViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            try? self.fileManager.removeItem(at: item.url)
+            // Tell the editor BEFORE we touch disk so its auto-save
+            // pipeline drops `currentFileURL` and any pending text.
+            // Without this, a 200ms debounced flush queued just before
+            // the delete would write the buffer back and resurrect the
+            // file we just removed. The editor matches the URL and
+            // clears its in-memory state if it's the open file.
+            NotificationCenter.default.post(
+                name: .fileDidDelete, object: item.url)
+            do {
+                // We previously used `try?` here, which silently swallowed
+                // failures — if the OS refused (in-use file, permission
+                // bit), the cell vanished from the snapshot, then
+                // reloadFiles() saw the file still on disk and brought
+                // the row back, leaving the user thinking the button
+                // was broken. Surface the real error in an alert.
+                try self.fileManager.removeItem(at: item.url)
+            } catch {
+                let err = UIAlertController(
+                    title: "Couldn't delete",
+                    message: "\(item.name): \(error.localizedDescription)",
+                    preferredStyle: .alert)
+                err.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(err, animated: true)
+                self.reloadFiles()
+                return
+            }
             // If this was a direct child of the Workspace root (where
             // starter scripts live), remember the deletion so the next
             // app launch doesn't re-seed it. See tombstone helpers.
@@ -992,8 +1053,12 @@ final class FilesBrowserViewController: UIViewController {
         "py",
         "c", "cpp", "h", "hpp", "cc", "cxx",
         "f90", "f95", "f03", "f", "for",
-        "tex", "ltx", "cls", "sty", "bib",
-        "txt", "md", "json", "xml", "csv", "yaml", "yml",
+        "tex", "ltx", "cls", "sty", "bib", "def",
+        "txt", "md", "markdown", "json", "xml", "csv", "yaml", "yml",
+        "js", "mjs", "cjs", "ts",
+        "html", "htm", "css",
+        "sh", "bash", "zsh",
+        "log", "out", "err",
     ]
 
     private func isCodeFile(_ url: URL) -> Bool {
@@ -1068,26 +1133,47 @@ extension FilesBrowserViewController: UICollectionViewDelegate {
     // frustrating if you tried to delete one — it comes back on next
     // app launch.
     //
-    // Solution: a tombstone file at `<Workspace>/.offlinai_deleted`
+    // Solution: a tombstone file at `<Workspace>/.codebench_deleted`
     // listing filenames the user has deleted. The seeder reads this
     // and skips anything listed. The shell's rm / rmdir / ncdu
     // deletions also append to this file so the stickiness works
     // regardless of which UI the user used.
+    //
+    // Renamed from `.offlinai_deleted` during the brand rename. We
+    // still READ the legacy file (so users who deleted starter scripts
+    // before the rename don't see them re-appear) but only WRITE to
+    // the new name; the old file naturally goes away when its entries
+    // are migrated on first append.
 
-    /// Path to the tombstone file in a given workspace dir.
+    /// Path to the tombstone file in a given workspace dir (current name).
     static func tombstoneURL(in workspace: URL) -> URL {
+        workspace.appendingPathComponent(".codebench_deleted")
+    }
+
+    /// Path to the legacy tombstone file (pre-rename). Read-only —
+    /// kept around so users don't lose their delete history during
+    /// the rename window.
+    private static func legacyTombstoneURL(in workspace: URL) -> URL {
         workspace.appendingPathComponent(".offlinai_deleted")
     }
 
     /// Set of basenames the user has deleted. Seeding skips these.
+    /// Reads BOTH the current and legacy tombstone files so the
+    /// brand rename doesn't make starter scripts re-appear.
     static func deletedStarterNames(in workspace: URL) -> Set<String> {
-        let url = tombstoneURL(in: workspace)
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            return []
+        var names = Set<String>()
+        for url in [tombstoneURL(in: workspace), legacyTombstoneURL(in: workspace)] {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                continue
+            }
+            for line in text.split(whereSeparator: { $0.isNewline }) {
+                let n = String(line).trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty && !n.hasPrefix("#") {
+                    names.insert(n)
+                }
+            }
         }
-        return Set(text.split(whereSeparator: { $0.isNewline })
-                        .map { String($0).trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty && !$0.hasPrefix("#") })
+        return names
     }
 
     /// Append a basename to the tombstone so it won't be re-seeded.

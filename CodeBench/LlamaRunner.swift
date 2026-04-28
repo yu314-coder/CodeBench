@@ -143,7 +143,7 @@ final class LlamaRunner {
     }
 
     private static var backendInitialized = false
-    private let queue = DispatchQueue(label: "ai.offlinai.llama", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "ai.codebench.llama", qos: .userInitiated)
 
     private var model: OpaquePointer?
     private var context: OpaquePointer?

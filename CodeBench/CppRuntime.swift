@@ -11,7 +11,7 @@ final class CppRuntime {
         let success: Bool
     }
 
-    private let queue = DispatchQueue(label: "ai.offlinai.cpp-runtime", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "ai.codebench.cpp-runtime", qos: .userInitiated)
 
     private init() {}
 

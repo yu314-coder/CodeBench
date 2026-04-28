@@ -210,7 +210,7 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
         // `slaveFD` (name kept for backwards compat). This is what
         // Python's stdout/stderr writes land in.
         let readFD = slaveFD
-        let queue = DispatchQueue(label: "offlinai.pty.reader", qos: .userInteractive)
+        let queue = DispatchQueue(label: "codebench.pty.reader", qos: .userInteractive)
         let source = DispatchSource.makeReadSource(fileDescriptor: readFD, queue: queue)
 
         source.setEventHandler { [weak self] in
@@ -224,13 +224,18 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
 
             // First pass: detect + strip our private OSC mode-switch
             // sequences. TUI apps (ncdu, vim, …) write
-            //   "\x1b]offlinai;raw\x1b\\"    — enter raw input mode
-            //   "\x1b]offlinai;cooked\x1b\\" — return to cooked mode
+            //   "\x1b]codebench;raw\x1b\\"    — enter raw input mode
+            //   "\x1b]codebench;cooked\x1b\\" — return to cooked mode
             // to tell LineBuffer to stop line-editing and forward each
             // keystroke directly. We strip them here so they never
             // reach SwiftTerm (which would show them as garbage chars).
-            let rawModeMarker: [UInt8] = Array("\u{1B}]offlinai;raw\u{1B}\\".utf8)
-            let cookedModeMarker: [UInt8] = Array("\u{1B}]offlinai;cooked\u{1B}\\".utf8)
+            let rawModeMarker: [UInt8] = Array("\u{1B}]codebench;raw\u{1B}\\".utf8)
+            let cookedModeMarker: [UInt8] = Array("\u{1B}]codebench;cooked\u{1B}\\".utf8)
+            // `ai` REPL toggles on entry/exit so the LineBuffer knows to
+            // complete `/xxx` against the AI slash-command list on Tab
+            // and to echo the list when a bare `/` is typed.
+            let aiOnMarker: [UInt8] = Array("\u{1B}]codebench;ai-on\u{1B}\\".utf8)
+            let aiOffMarker: [UInt8] = Array("\u{1B}]codebench;ai-off\u{1B}\\".utf8)
             var modeStripped: [UInt8] = []
             modeStripped.reserveCapacity(raw.count)
             var i = 0
@@ -247,6 +252,20 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
                         LineBuffer.shared.setRawMode(false)
                     }
                     i += cookedModeMarker.count
+                    continue
+                }
+                if _indexOf(aiOnMarker, in: raw, at: i) {
+                    DispatchQueue.main.async {
+                        LineBuffer.shared.setAIMode(true)
+                    }
+                    i += aiOnMarker.count
+                    continue
+                }
+                if _indexOf(aiOffMarker, in: raw, at: i) {
+                    DispatchQueue.main.async {
+                        LineBuffer.shared.setAIMode(false)
+                    }
+                    i += aiOffMarker.count
                     continue
                 }
                 modeStripped.append(raw[i])
@@ -407,6 +426,12 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         updateWindowSize(cols: UInt16(newCols), rows: UInt16(newRows))
+        // SwiftTerm reflows content on resize; any palette rows below
+        // the input line may now be in unpredictable positions. Wipe
+        // and re-render cleanly so we don't leave stale duplicates
+        // on screen. Also pass the new row count so the palette caps
+        // itself to fit without causing the terminal to scroll.
+        LineBuffer.shared.handleTerminalResize(terminalView: source, rows: newRows)
     }
 
     func setTerminalTitle(source: TerminalView, title: String) {
@@ -495,8 +520,8 @@ final class LineBuffer {
     /// byte-by-byte themselves.
     ///
     /// Python switches the mode by writing our private OSC sequence:
-    ///   "\x1b]offlinai;raw\x1b\\"     — enter raw mode
-    ///   "\x1b]offlinai;cooked\x1b\\"  — return to cooked (line-buffered)
+    ///   "\x1b]codebench;raw\x1b\\"     — enter raw mode
+    ///   "\x1b]codebench;cooked\x1b\\"  — return to cooked (line-buffered)
     /// The PTYBridge read loop detects these in outgoing bytes, strips
     /// them before feeding SwiftTerm, and calls `setRawMode`.
     private var _isRawMode = false
@@ -517,6 +542,253 @@ final class LineBuffer {
 
     var isRawMode: Bool { _isRawMode }
 
+    /// AI mode — set when the user enters the `ai` REPL. Changes Tab
+    /// behaviour (slash commands instead of shell builtins) and
+    /// shows a floating command palette when `/` is typed, matching
+    /// the UX of Claude Code / Cursor / Warp: instant appearance on
+    /// `/`, real-time filter as the user keeps typing, arrow-key
+    /// navigation, Tab/Enter to select, Esc to dismiss.
+    private var _isAIMode = false
+
+    func setAIMode(_ on: Bool) {
+        _isAIMode = on
+        if !on { hidePalette() }
+        NSLog("[LineBuffer] ai mode → \(on)")
+    }
+
+    /// The AI REPL's slash-command vocabulary + one-line descriptions.
+    /// Kept in sync with `_SLASH` in offlinai_ai/__init__.py — if
+    /// Python adds a new command, add it here too.
+    private static let aiSlashCommands: [(cmd: String, desc: String)] = [
+        ("/help",   "show command list"),
+        ("/model",  "set active model (registry slug)"),
+        ("/models", "list cached models"),
+        ("/load",   "load cached model (auto-picks if only one)"),
+        ("/pull",   "download a model (no arg → list registry)"),
+        ("/run",    "pull + load + enter AI"),
+        ("/mode",   "set mode: allow/plan/auto/bypass/nothing"),
+        ("/file",   "set target file for edits"),
+        ("/show",   "show current target file"),
+        ("/ls",     "list workspace files"),
+        ("/usage",  "show token usage"),
+        ("/reset",  "reset conversation"),
+        ("/clear",  "clear the terminal"),
+        ("/quit",   "exit ai"),
+        ("/exit",   "exit ai"),
+    ]
+
+    // MARK: - Floating slash-command palette
+
+    /// Is the palette currently drawn below the input line?
+    private var _paletteVisible = false
+    /// Number of rows the palette occupies (for cleanup).
+    private var _paletteRows = 0
+    /// Currently-highlighted entry in the filtered list.
+    private var _paletteSelected = 0
+    /// Filtered view of `aiSlashCommands` matching the current buffer.
+    private var _paletteFiltered: [(cmd: String, desc: String)] = []
+
+    /// Terminal height in cells. Tracked via `handleTerminalResize` so
+    /// the palette can cap its row count to what fits below the input
+    /// line without causing the terminal to scroll. Scrolling breaks
+    /// cursor save/restore (`\x1B[s` / `\x1B[u`) because the saved
+    /// absolute row isn't updated when lines shift up — that was the
+    /// "`/pull` appears twice as I type" symptom the user reported.
+    private var _terminalRows: Int = 24
+
+    /// Render the palette below the current input line. Uses save/
+    /// restore cursor (`\x1B[s` / `\x1B[u`) + erase-below (`\x1B[J`)
+    /// so we don't need to track how many rows we drew last time —
+    /// the erase takes care of whatever's below, even if SwiftTerm
+    /// reflowed content after a window resize. That was the bug the
+    /// user reported: "expand the terminal size by dragging, the same
+    /// thing will show twice like `/load`" — the old code tracked row
+    /// counts as integers and went stale on resize, so `clearPaletteRows`
+    /// didn't actually clear the old rows and the new rows drew on
+    /// top of them, producing a double list.
+    /// Fixed height of the palette area. Always drawn at this size so
+    /// clearing is consistent between renders — previous attempts at a
+    /// variable-height palette left stale fragments on screen when the
+    /// filter shrank between keystrokes ("/rrn" and "/reuet" corruption).
+    private static let aiPaletteHeight = 6
+
+    private func renderPalette(terminalView tv: TerminalView) {
+        guard let prefixStr = String(bytes: buf, encoding: .utf8) else { return }
+        let needle = prefixStr.isEmpty ? "/" : prefixStr
+        let filtered = Self.aiSlashCommands.filter {
+            $0.cmd.hasPrefix(needle)
+        }
+        _paletteFiltered = filtered
+        if _paletteFiltered.isEmpty {
+            clearPaletteRows(terminalView: tv)
+            hidePalette()
+            return
+        }
+        if _paletteSelected >= _paletteFiltered.count {
+            _paletteSelected = 0
+        }
+
+        // Fixed-height render: always draw exactly `aiPaletteHeight`
+        // rows below the prompt, filling with either filtered commands
+        // or blank lines. This way clearPaletteRows always knows how
+        // many to clear regardless of how the filter changed — no
+        // stale fragments. First N rows show commands (with the
+        // highlighted one around _paletteSelected), remaining rows
+        // are blank.
+        let visible = min(_paletteFiltered.count, Self.aiPaletteHeight - 1)
+        let overflow = _paletteFiltered.count - visible
+        // Scroll window so the selected entry is always in view.
+        var firstIdx = 0
+        if _paletteSelected >= visible {
+            firstIdx = _paletteSelected - visible + 1
+        }
+
+        clearPaletteRows(terminalView: tv)
+
+        let maxCmd = _paletteFiltered.map { $0.cmd.count }.max() ?? 8
+        for slot in 0..<Self.aiPaletteHeight {
+            echo([0x0D, 0x0A], tv)                   // CR+LF next row
+            echo(Array("\u{1B}[2K".utf8), tv)        // clear entire line
+            if slot < visible {
+                let i = firstIdx + slot
+                let entry = _paletteFiltered[i]
+                let padded = entry.cmd.padding(
+                    toLength: maxCmd, withPad: " ", startingAt: 0)
+                let row: String
+                if i == _paletteSelected {
+                    row = "\u{1B}[7m ▸ \(padded)  \(entry.desc)  \u{1B}[0m"
+                } else {
+                    row = "   \(padded)  \u{1B}[2m\(entry.desc)\u{1B}[0m"
+                }
+                echo(Array(row.utf8), tv)
+            } else if slot == visible && overflow > 0 {
+                // "+N more" hint row
+                let hint = "\u{1B}[2m   … \(overflow) more (↑↓ to navigate)\u{1B}[0m"
+                echo(Array(hint.utf8), tv)
+            }
+            // else: blank row, already cleared
+        }
+
+        _paletteRows = Self.aiPaletteHeight
+        _paletteVisible = true
+
+        // Return cursor to the input line.
+        let col = 4 /* "ai> " */ + Self.bufVisibleWidth(buf)
+        echo(Array("\u{1B}[\(_paletteRows)A".utf8), tv)
+        echo([0x0D], tv)
+        if col > 0 {
+            echo(Array("\u{1B}[\(col)C".utf8), tv)
+        }
+    }
+
+    /// Clear previously-drawn palette rows. Uses per-row explicit
+    /// `\x1B[2K` (clear entire line) so each old row is definitively
+    /// wiped. Consistently clears `aiPaletteHeight` rows if palette
+    /// was visible.
+    private func clearPaletteRows(terminalView tv: TerminalView) {
+        guard _paletteRows > 0 else { return }
+        let rows = _paletteRows
+        for _ in 0..<rows {
+            echo([0x0D, 0x0A], tv)
+            echo(Array("\u{1B}[2K".utf8), tv)
+        }
+        echo(Array("\u{1B}[\(rows)A".utf8), tv)
+        echo([0x0D], tv)
+        let col = 4 + Self.bufVisibleWidth(buf)
+        if col > 0 {
+            echo(Array("\u{1B}[\(col)C".utf8), tv)
+        }
+        _paletteRows = 0
+    }
+
+    /// Visible cell count of a UTF-8 byte buffer. Counts lead bytes only,
+    /// skips continuation bytes (10xxxxxx). Not wide-char-aware but fine
+    /// for the ASCII slash commands that typing `/` triggers.
+    private static func bufVisibleWidth(_ bytes: [UInt8]) -> Int {
+        var n = 0
+        for b in bytes {
+            if (b & 0xC0) != 0x80 { n += 1 }
+        }
+        return n
+    }
+
+    /// Called by PTYBridge when the TerminalView's cell grid changes
+    /// size (user drags the split, rotates the device, etc.). If a
+    /// palette is visible, its old rows may have reflowed into stale
+    /// positions — wipe the area below the input line and redraw.
+    func handleTerminalResize(terminalView tv: TerminalView, rows: Int) {
+        _terminalRows = max(4, rows)
+        guard _paletteVisible else { return }
+        // After resize, clear + redraw at the new width. Use the same
+        // relative-move approach as renderPalette — no save/restore.
+        clearPaletteRows(terminalView: tv)
+        renderPalette(terminalView: tv)
+    }
+
+    private func hidePalette() {
+        _paletteVisible = false
+        _paletteFiltered.removeAll()
+        _paletteSelected = 0
+        // Note: this does NOT clear the rows on screen — that requires
+        // a TerminalView. Call clearPaletteRows(terminalView:) first
+        // from any key handler that has tv in scope.
+    }
+
+    /// Commands that do something useful with no argument. Selecting one
+    /// from the palette submits the line immediately; commands NOT in
+    /// this set (e.g. `/model`, `/mode`, `/file`, `/run`) fill `/cmd ` and
+    /// wait for the user to provide the argument before Enter.
+    ///
+    /// `/load` is standalone: with no arg it lists cached models and
+    /// auto-loads the only one (or prompts to pick).
+    /// `/pull` is standalone: with no arg it prints the registry.
+    private static let aiStandaloneCommands: Set<String> = [
+        "/help", "/quit", "/exit", "/clear", "/usage",
+        "/models", "/reset", "/ls", "/show",
+        "/load", "/pull", "/run",
+    ]
+
+    /// Tab (or any fill action): replace the input buffer with the
+    /// highlighted palette entry + trailing space, leaving the palette
+    /// hidden. User types args or presses Enter.
+    private func fillPaletteSelection(terminalView tv: TerminalView) {
+        guard _paletteSelected < _paletteFiltered.count else { return }
+        let chosen = _paletteFiltered[_paletteSelected].cmd
+        replaceBufferWith(chosen + " ", terminalView: tv)
+        clearPaletteRows(terminalView: tv)
+        hidePalette()
+    }
+
+    /// Enter in palette: fill + submit (if command takes no args) or
+    /// fill-and-wait (if it needs an arg).
+    private func acceptPaletteSelection(terminalView tv: TerminalView,
+                                        pipeWrite: @escaping ([UInt8]) -> Void) {
+        guard _paletteSelected < _paletteFiltered.count else { return }
+        let chosen = _paletteFiltered[_paletteSelected].cmd
+        let standalone = Self.aiStandaloneCommands.contains(chosen)
+        if standalone {
+            replaceBufferWith(chosen, terminalView: tv)
+            clearPaletteRows(terminalView: tv)
+            hidePalette()
+            commitLine(terminalView: tv, pipeWrite: pipeWrite)
+        } else {
+            replaceBufferWith(chosen + " ", terminalView: tv)
+            clearPaletteRows(terminalView: tv)
+            hidePalette()
+        }
+    }
+
+    /// Replace the current input buffer with `text` in one atomic
+    /// screen update: clear the existing line, reprint prompt, print
+    /// new text. The prompt matches Python's `ai> ` (cyan + reset).
+    private func replaceBufferWith(_ text: String, terminalView tv: TerminalView) {
+        // Wipe the current input line, move to column 0, reprint prompt.
+        echo(Array("\u{1B}[2K\r\u{1B}[36mai>\u{1B}[0m ".utf8), tv)
+        buf = Array(text.utf8)
+        cursor = buf.count
+        echo(buf, tv)
+    }
+
     private init() {}
 
     // MARK: - Public entry point
@@ -534,6 +806,15 @@ final class LineBuffer {
             pipeWrite(Array(bytes))
             return
         }
+        // Scroll the terminal to the bottom so the user always sees
+        // the prompt they're typing into. This fires for keyboard
+        // events only — program output (e.g. a running `python` script
+        // writing to stdout) goes through a different path and does
+        // NOT auto-scroll, so a user who scrolled up to read earlier
+        // output stays put until they interact.
+        if !bytes.isEmpty {
+            scrollToBottom(terminalView)
+        }
         for b in bytes {
             processByte(b, terminalView: terminalView, pipeWrite: pipeWrite)
         }
@@ -548,6 +829,19 @@ final class LineBuffer {
 
     private func echo(_ s: String, _ terminalView: TerminalView) {
         echo(Array(s.utf8), terminalView)
+    }
+
+    /// Jump the TerminalView's scroll position to the bottom. Called
+    /// on every user keystroke so that typing at the prompt always
+    /// brings the prompt back into view — matches the convention of
+    /// bash/zsh/iTerm2 ("scroll-on-input"). Program output (from a
+    /// running `python` or `cc`) does NOT call this, so a user who
+    /// scrolled up to read past output stays where they were until
+    /// they type something.
+    private func scrollToBottom(_ tv: TerminalView) {
+        // SwiftTerm's TerminalView exposes `scroll(toPosition:)` on a
+        // 0.0–1.0 scale; 1.0 == fully scrolled down.
+        tv.scroll(toPosition: 1.0)
     }
 
     // MARK: - Byte dispatcher
@@ -597,6 +891,16 @@ final class LineBuffer {
         case 0x1B: // ESC
             escState = .esc
         case 0x0D, 0x0A: // Enter (CR or LF)
+            // Palette-open Enter: accept highlighted entry. If the
+            // chosen command takes no arguments (/help, /quit, /clear,
+            // /exit, /usage, /models, /reset, /ls, /show), submit it
+            // immediately. Otherwise fill it in with a trailing space
+            // and wait for the user to type an argument + Enter again.
+            if _paletteVisible && _paletteSelected < _paletteFiltered.count {
+                acceptPaletteSelection(terminalView: tv,
+                                       pipeWrite: pipeWrite)
+                return
+            }
             commitLine(terminalView: tv, pipeWrite: pipeWrite)
         case 0x7F, 0x08: // Backspace / BS
             backspace(terminalView: tv)
@@ -611,10 +915,31 @@ final class LineBuffer {
             //      pipe. We need PyErr_SetInterrupt() which asynchronously
             //      raises KeyboardInterrupt in the Python main thread at
             //      the next bytecode boundary.
+            //   3) When the `ai` REPL is mid-generation (polling Swift's
+            //      response file in a tight time.sleep loop, NOT reading
+            //      stdin), neither of the above helps. Write the cancel
+            //      signal file directly so AIEngine.pollCancel picks it
+            //      up within 150ms, calls runner.cancelGeneration(), and
+            //      writes ai_done.txt with status -130; Python's
+            //      _stream_response then returns normally with that
+            //      status and handles it as "user cancelled".
             echo([0x5e, 0x43, 0x0d, 0x0a], tv) // "^C\r\n"
             buf.removeAll(keepingCapacity: true)
             cursor = 0
             histIdx = history.count
+            // Also dismiss the palette if it's showing.
+            if _paletteVisible {
+                clearPaletteRows(terminalView: tv)
+                hidePalette()
+            }
+            if _isAIMode {
+                let sig = NSTemporaryDirectory() + "latex_signals/"
+                try? FileManager.default.createDirectory(
+                    atPath: sig, withIntermediateDirectories: true)
+                let cancelPath = sig + "ai_cancel.txt"
+                try? "1".write(toFile: cancelPath,
+                               atomically: true, encoding: .utf8)
+            }
             pipeWrite([0x03])
             PythonRuntime.shared.interruptPythonMainThread()
         case 0x04: // Ctrl-D — EOF if buffer empty, else forward-delete
@@ -636,6 +961,12 @@ final class LineBuffer {
         case 0x0C: // Ctrl-L — clear screen
             echo([0x1B, 0x5B, 0x32, 0x4A, 0x1B, 0x5B, 0x48], tv) // ESC[2J ESC[H
         case 0x09: // Tab — complete command or filename
+            if _paletteVisible && _paletteSelected < _paletteFiltered.count {
+                // Tab in palette = fill in highlighted command, wait
+                // for user to either type args or press Enter.
+                fillPaletteSelection(terminalView: tv)
+                return
+            }
             handleTab(terminalView: tv)
         default:
             if b >= 0x20 || b >= 0x80 {
@@ -650,6 +981,17 @@ final class LineBuffer {
 
     private func handleCSI(final: UInt8, params: [UInt8], terminalView tv: TerminalView) {
         let p = String(bytes: params, encoding: .ascii) ?? ""
+        // When the palette is open, arrow up/down navigates the
+        // command list instead of command history.
+        if _paletteVisible && (final == 0x41 || final == 0x42) {
+            let step = (final == 0x41) ? -1 : 1
+            let n = _paletteFiltered.count
+            if n > 0 {
+                _paletteSelected = (_paletteSelected + step + n) % n
+                renderPalette(terminalView: tv)
+            }
+            return
+        }
         switch final {
         case 0x41: historyPrev(terminalView: tv)    // A — up
         case 0x42: historyNext(terminalView: tv)    // B — down
@@ -692,6 +1034,18 @@ final class LineBuffer {
         if !tail.isEmpty {
             echo("\u{1B}[\(tail.count)D", tv)
         }
+
+        // AI-mode palette: show/update when the buffer starts with `/`,
+        // hide otherwise. Real-time filtering as user types.
+        if _isAIMode {
+            if buf.first == 0x2F /* '/' */ {
+                _paletteSelected = 0  // reset selection on edit
+                renderPalette(terminalView: tv)
+            } else if _paletteVisible {
+                clearPaletteRows(terminalView: tv)
+                hidePalette()
+            }
+        }
     }
 
     private func backspace(terminalView tv: TerminalView) {
@@ -705,6 +1059,16 @@ final class LineBuffer {
         // Move back `removed` columns, reprint tail, clear EOL, move back.
         echo(String(repeating: "\u{08}", count: removed), tv)
         redrawTail(terminalView: tv)
+        // Keep the palette in sync with the edited buffer.
+        if _isAIMode {
+            if buf.first == 0x2F /* '/' */ {
+                _paletteSelected = 0
+                renderPalette(terminalView: tv)
+            } else if _paletteVisible {
+                clearPaletteRows(terminalView: tv)
+                hidePalette()
+            }
+        }
     }
 
     private func deleteForward(terminalView tv: TerminalView) {
@@ -753,6 +1117,10 @@ final class LineBuffer {
         echo("\u{1B}[K", tv)
         buf.removeAll(keepingCapacity: true)
         cursor = 0
+        if _isAIMode && _paletteVisible {
+            clearPaletteRows(terminalView: tv)
+            hidePalette()
+        }
     }
 
     private func clearToEnd(terminalView tv: TerminalView) {
@@ -863,9 +1231,29 @@ final class LineBuffer {
             .split(whereSeparator: { $0 == " " || $0 == "\t" })
             .first.map(String.init) ?? ""
         let extFilter: Set<String>? = Self.extensionsForCommand(firstToken)
-        let candidates: [String] = isFirstWord
-            ? completeCommand(partial: partial)
-            : completePath(partial: partial, extensions: extFilter)
+        // In AI mode, a `/`-prefixed first word completes against the
+        // slash-command vocabulary. Non-slash input in AI mode is a
+        // user prompt to the model — no completion (path completion
+        // would insert random filenames into the prompt).
+        let candidates: [String]
+        if _isAIMode && isFirstWord {
+            // AI-mode first-word Tab is owned by the palette system,
+            // not the shell builtin completer — the palette is already
+            // visible (or will be when the user types `/`). Fall
+            // through to the palette-aware Tab handler at the call
+            // site instead of emitting bash-style line-dumps here.
+            return
+        } else if _isAIMode && !isFirstWord {
+            // Argument position in AI mode — the only command that
+            // benefits from path completion is `/load <file>`.
+            candidates = firstToken == "/load"
+                ? completePath(partial: partial, extensions: ["gguf"])
+                : []
+        } else {
+            candidates = isFirstWord
+                ? completeCommand(partial: partial)
+                : completePath(partial: partial, extensions: extFilter)
+        }
 
         guard !candidates.isEmpty else { return }
 

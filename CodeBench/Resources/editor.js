@@ -4,7 +4,7 @@
  * Rich, client-side-only IntelliSense — no LSP round-trip required:
  *   - 35 Python keywords with snippets (for/while/def/class/try/…)
  *   - 50 Python builtins with snippets and signatures (print/range/open/…)
- *   - 400+ library symbols with rich docs: np/plt/math/random/os/sys/re/json/datetime/collections/itertools/functools
+ *   - 500+ library symbols with rich docs: np/plt/math/random/os/sys/re/json/datetime/collections/itertools/functools/torch/transformers/huggingface_hub/manim/rich/bs4/click/yaml/jinja2/fsspec/webview/requests/scipy/sympy/tqdm
  *   - Signature help on `(` and `,` for every one
  *   - Hover docs on every symbol
  *   - Context detection: `self.`, `from X import`, alias resolution (np → numpy)
@@ -100,6 +100,7 @@ window.registerPythonProviders = function (monaco, editor) {
         sp: 'scipy',
         sym: 'sympy',
         mpl: 'matplotlib',
+        hf: 'huggingface_hub',
     };
 
     function resolveAlias(name, parsed) {
@@ -280,6 +281,27 @@ window.registerPythonProviders = function (monaco, editor) {
             s('import collections','from collections import ${1:defaultdict, Counter}\n','Import collections classes.'),
             s('import itertools',  'import itertools\n',                     'Import itertools.'),
             s('import functools',  'import functools\n',                     'Import functools.'),
+            s('import torch',      'import torch\nimport torch.nn as nn\n',  'Import PyTorch + nn module.'),
+            s('import transformers','from transformers import AutoModel, AutoTokenizer\n','Import HuggingFace transformers.'),
+            s('import huggingface_hub','from huggingface_hub import snapshot_download\n','Import HuggingFace Hub helpers.'),
+            s('import tokenizers', 'from tokenizers import Tokenizer\n',     'Import HuggingFace tokenizers.'),
+            s('import safetensors','from safetensors.torch import load_file, save_file\n','Import safetensors (torch flavor).'),
+            s('import av',         'import av\n',                            'Import PyAV (FFmpeg bindings).'),
+            s('import bs4',        'from bs4 import BeautifulSoup\n',        'Import BeautifulSoup HTML parser.'),
+            s('import click',      'import click\n',                         'Import click CLI framework.'),
+            s('import rich',       'from rich import print\nfrom rich.console import Console\nfrom rich.markdown import Markdown\n','Import rich terminal formatting.'),
+            s('import jsonschema', 'import jsonschema\n',                    'Import JSON Schema validator.'),
+            s('import yaml',       'import yaml\n',                          'Import PyYAML.'),
+            s('import jinja2',     'from jinja2 import Environment, Template\n','Import Jinja2 template engine.'),
+            s('import fsspec',     'import fsspec\n',                        'Import fsspec filesystem abstraction.'),
+            s('import certifi',    'import certifi\n',                       'Import certifi (CA bundle).'),
+            s('import pywebview',  'import webview\n',                       'Import pywebview (routes to in-app preview pane).'),
+            s('import latex',      'import offlinai_latex\n',                'Import CodeBench LaTeX bridge (Busytex).'),
+            s('import ai',         'import offlinai_ai\n',                   'Import CodeBench local-AI bridge.'),
+            s('import plotly',     'import plotly.express as px\nimport plotly.graph_objects as go\n','Import Plotly Express + graph_objects.'),
+            s('import PIL',        'from PIL import Image\n',                'Import Pillow Image.'),
+            s('import urllib3',    'import urllib3\n',                       'Import urllib3.'),
+            s('import packaging',  'from packaging.version import Version\n','Import packaging version helpers.'),
         ];
     }
 
@@ -641,6 +663,168 @@ window.registerPythonProviders = function (monaco, editor) {
             tqdm:       { sig: 'tqdm(iterable=None, desc=None, total=None, leave=True, ncols=None)', doc: 'Progress bar wrapper.\n```python\nfor x in tqdm(range(1000)):\n    do_work(x)\n```', kind: 'class' },
             trange:     { sig: 'trange(*args, **kwargs)',              doc: 'Shortcut for tqdm(range(*args)).' },
         },
+
+        // ── torch ───────────────────────────────────────────────────────────
+        torch: {
+            tensor:     { sig: 'tensor(data, dtype=None, device=None, requires_grad=False)', doc: 'Construct a tensor from data.\n```python\nx = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32)\n```' },
+            zeros:      { sig: 'zeros(*size, dtype=None, device=None)', doc: 'Tensor filled with 0.' },
+            ones:       { sig: 'ones(*size, dtype=None, device=None)',  doc: 'Tensor filled with 1.' },
+            empty:      { sig: 'empty(*size, dtype=None)',              doc: 'Uninitialized tensor.' },
+            arange:     { sig: 'arange(start, end=None, step=1)',       doc: 'Like Python range, returns 1-D tensor.' },
+            linspace:   { sig: 'linspace(start, end, steps)',           doc: 'Linearly spaced tensor.' },
+            randn:      { sig: 'randn(*size)',                          doc: 'Normal(0,1) random tensor.' },
+            rand:       { sig: 'rand(*size)',                           doc: 'Uniform[0,1) random tensor.' },
+            randint:    { sig: 'randint(low, high, size)',              doc: 'Uniform integers tensor.' },
+            from_numpy: { sig: 'from_numpy(ndarray)',                   doc: 'Zero-copy bridge from NumPy array.' },
+            cat:        { sig: 'cat(tensors, dim=0)',                   doc: 'Concatenate tensors along dim.' },
+            stack:      { sig: 'stack(tensors, dim=0)',                 doc: 'Stack tensors along a new dim.' },
+            matmul:     { sig: 'matmul(a, b)',                          doc: 'Matrix product (`a @ b`).' },
+            no_grad:    { sig: 'no_grad()',                             doc: 'Context manager: disable autograd.\n```python\nwith torch.no_grad():\n    out = model(x)\n```' },
+            inference_mode: { sig: 'inference_mode()',                  doc: 'Faster than no_grad for inference.' },
+            save:       { sig: 'save(obj, f)',                          doc: 'Serialize tensor / state_dict to disk.' },
+            load:       { sig: 'load(f, map_location=None, weights_only=False)', doc: 'Load serialized object.' },
+            nn:         { sig: 'nn',                                    doc: 'Neural network building blocks.', kind: 'mod' },
+            optim:      { sig: 'optim',                                 doc: 'Optimizers (SGD, Adam, …).', kind: 'mod' },
+            device:     { sig: 'device(name)',                          doc: '`torch.device("cpu")` etc. (no CUDA on iOS).', kind: 'class' },
+            float32:    { sig: 'float32',                               doc: '32-bit float dtype.', kind: 'const' },
+            float16:    { sig: 'float16',                               doc: '16-bit float dtype.', kind: 'const' },
+            int64:      { sig: 'int64',                                 doc: '64-bit int dtype.', kind: 'const' },
+            bool:       { sig: 'bool',                                  doc: 'Boolean dtype.', kind: 'const' },
+        },
+
+        // ── transformers ────────────────────────────────────────────────────
+        transformers: {
+            AutoModel:           { sig: 'AutoModel.from_pretrained(name_or_path, **kw)', doc: 'Load any model architecture by name.', kind: 'class' },
+            AutoModelForCausalLM:{ sig: 'AutoModelForCausalLM.from_pretrained(name_or_path)', doc: 'Causal LM (GPT-style).', kind: 'class' },
+            AutoModelForSequenceClassification: { sig: 'AutoModelForSequenceClassification.from_pretrained(name)', doc: 'Sequence classifier.', kind: 'class' },
+            AutoTokenizer:       { sig: 'AutoTokenizer.from_pretrained(name_or_path)', doc: 'Auto-detect & load the right tokenizer.', kind: 'class' },
+            AutoConfig:          { sig: 'AutoConfig.from_pretrained(name_or_path)', doc: 'Load a model config.', kind: 'class' },
+            pipeline:            { sig: 'pipeline(task, model=None, **kw)', doc: 'High-level inference pipeline.\n```python\np = pipeline("text-generation", model="gpt2")\n```' },
+            GenerationConfig:    { sig: 'GenerationConfig(**kw)',         doc: 'Generation params (temperature, top_p, …).', kind: 'class' },
+            TextStreamer:        { sig: 'TextStreamer(tokenizer)',        doc: 'Print generated tokens as they stream.', kind: 'class' },
+        },
+
+        // ── huggingface_hub ─────────────────────────────────────────────────
+        huggingface_hub: {
+            snapshot_download:   { sig: 'snapshot_download(repo_id, cache_dir=None, local_dir=None, allow_patterns=None)', doc: 'Download an entire HF repo to disk.' },
+            hf_hub_download:     { sig: 'hf_hub_download(repo_id, filename, cache_dir=None)', doc: 'Download a single file from a repo.' },
+            login:               { sig: 'login(token=None)',              doc: 'Authenticate with the HF Hub.' },
+            HfApi:               { sig: 'HfApi(endpoint=None, token=None)', doc: 'Low-level Hub HTTP client.', kind: 'class' },
+            list_models:         { sig: 'list_models(filter=None, search=None, limit=None)', doc: 'Search models on the Hub.' },
+            model_info:          { sig: 'model_info(repo_id, revision=None)', doc: 'Metadata for a single repo.' },
+        },
+
+        // ── manim ───────────────────────────────────────────────────────────
+        manim: {
+            Scene:      { sig: 'Scene()',                              doc: 'Base class for all manim scenes.\n```python\nclass MyScene(Scene):\n    def construct(self):\n        self.play(Create(Circle()))\n```', kind: 'class' },
+            Mobject:    { sig: 'Mobject()',                            doc: 'Base mathematical object.', kind: 'class' },
+            VMobject:   { sig: 'VMobject()',                           doc: 'Vectorized mobject.', kind: 'class' },
+            Circle:     { sig: 'Circle(radius=1.0, color=WHITE)',      doc: 'A circle.', kind: 'class' },
+            Square:     { sig: 'Square(side_length=2.0, color=WHITE)', doc: 'A square.', kind: 'class' },
+            Rectangle:  { sig: 'Rectangle(width=4, height=2)',         doc: 'A rectangle.', kind: 'class' },
+            Triangle:   { sig: 'Triangle()',                           doc: 'Equilateral triangle.', kind: 'class' },
+            Line:       { sig: 'Line(start, end, color=WHITE)',        doc: 'A line segment.', kind: 'class' },
+            Arrow:      { sig: 'Arrow(start, end, buff=0.25)',         doc: 'An arrow.', kind: 'class' },
+            Dot:        { sig: 'Dot(point=ORIGIN, radius=0.08)',       doc: 'A small dot.', kind: 'class' },
+            Text:       { sig: 'Text(text, font="", font_size=48)',    doc: 'Pango-rendered text (multi-script).', kind: 'class' },
+            MathTex:    { sig: 'MathTex(*tex_strings)',                doc: 'LaTeX math via offlinai_latex.', kind: 'class' },
+            Tex:        { sig: 'Tex(*tex_strings)',                    doc: 'LaTeX text mode.', kind: 'class' },
+            VGroup:     { sig: 'VGroup(*mobjects)',                    doc: 'Group of vectorized mobjects.', kind: 'class' },
+            Create:     { sig: 'Create(mobject, **kwargs)',            doc: 'Animate creation of mobject.', kind: 'class' },
+            Write:      { sig: 'Write(mobject)',                       doc: 'Animate writing of text/math.', kind: 'class' },
+            FadeIn:     { sig: 'FadeIn(mobject)',                      doc: 'Fade in animation.', kind: 'class' },
+            FadeOut:    { sig: 'FadeOut(mobject)',                     doc: 'Fade out animation.', kind: 'class' },
+            Transform:  { sig: 'Transform(mobject, target_mobject)',   doc: 'Morph one mobject into another.', kind: 'class' },
+            ReplacementTransform: { sig: 'ReplacementTransform(m1, m2)', doc: 'Transform that replaces source.', kind: 'class' },
+            UP:         { sig: 'UP',                                   doc: 'Unit vector [0, 1, 0].',  kind: 'const' },
+            DOWN:       { sig: 'DOWN',                                 doc: 'Unit vector [0, -1, 0].', kind: 'const' },
+            LEFT:       { sig: 'LEFT',                                 doc: 'Unit vector [-1, 0, 0].', kind: 'const' },
+            RIGHT:      { sig: 'RIGHT',                                doc: 'Unit vector [1, 0, 0].',  kind: 'const' },
+            ORIGIN:     { sig: 'ORIGIN',                               doc: '[0, 0, 0].',              kind: 'const' },
+            WHITE:      { sig: 'WHITE',                                doc: 'Color WHITE.',            kind: 'const' },
+            BLACK:      { sig: 'BLACK',                                doc: 'Color BLACK.',            kind: 'const' },
+            RED:        { sig: 'RED',                                  doc: 'Color RED.',              kind: 'const' },
+            GREEN:      { sig: 'GREEN',                                doc: 'Color GREEN.',            kind: 'const' },
+            BLUE:       { sig: 'BLUE',                                 doc: 'Color BLUE.',             kind: 'const' },
+            YELLOW:     { sig: 'YELLOW',                               doc: 'Color YELLOW.',           kind: 'const' },
+        },
+
+        // ── rich ────────────────────────────────────────────────────────────
+        rich: {
+            print:      { sig: 'print(*objects, **kwargs)',            doc: 'Pretty-printer with markup, colors.\n```python\nrich.print("[bold red]hi[/]")\n```' },
+            inspect:    { sig: 'inspect(obj, methods=False, help=False)', doc: 'Pretty-print an object\'s attributes.' },
+            Console:    { sig: 'Console(**kwargs)',                    doc: 'Main entry-point for rich rendering.', kind: 'class' },
+            Markdown:   { sig: 'Markdown(markup)',                     doc: 'Render a Markdown string.', kind: 'class' },
+            Table:      { sig: 'Table(title=None, **kwargs)',          doc: 'Pretty tables.', kind: 'class' },
+            Panel:      { sig: 'Panel(renderable, title=None)',        doc: 'Rectangular panel.', kind: 'class' },
+            Progress:   { sig: 'Progress(*columns)',                   doc: 'Progress bar context manager.', kind: 'class' },
+            Live:       { sig: 'Live(renderable, refresh_per_second=4)', doc: 'Live-updating renderable.', kind: 'class' },
+            Syntax:     { sig: 'Syntax(code, lexer, theme="monokai")', doc: 'Syntax-highlighted code block.', kind: 'class' },
+            Tree:       { sig: 'Tree(label, **kwargs)',                doc: 'Hierarchical tree display.', kind: 'class' },
+        },
+
+        // ── bs4 (BeautifulSoup) ─────────────────────────────────────────────
+        bs4: {
+            BeautifulSoup: { sig: 'BeautifulSoup(markup, features="html.parser")', doc: 'Parse HTML/XML.\n```python\nsoup = BeautifulSoup(html, "html.parser")\nlinks = soup.select("a[href]")\n```', kind: 'class' },
+            SoupStrainer: { sig: 'SoupStrainer(name=None, attrs={}, **kwargs)', doc: 'Limit parsing to matching tags.', kind: 'class' },
+            Tag:        { sig: 'Tag',                                  doc: 'A single HTML/XML element.', kind: 'class' },
+            NavigableString: { sig: 'NavigableString',                 doc: 'A string inside a Tag.', kind: 'class' },
+            Comment:    { sig: 'Comment',                              doc: 'An HTML comment.', kind: 'class' },
+        },
+
+        // ── click ───────────────────────────────────────────────────────────
+        click: {
+            command:    { sig: 'command(name=None, **kwargs)',         doc: 'Decorator: declare a CLI command.\n```python\n@click.command()\n@click.option("--name")\ndef hi(name): pass\n```' },
+            group:      { sig: 'group(name=None, **kwargs)',           doc: 'Decorator: declare a command group.' },
+            option:     { sig: 'option(*param_decls, **attrs)',        doc: 'Decorator: declare an option.' },
+            argument:   { sig: 'argument(*param_decls, **attrs)',      doc: 'Decorator: declare a positional argument.' },
+            echo:       { sig: 'echo(message=None, file=None, nl=True, err=False, color=None)', doc: 'Print to stdout/stderr.' },
+            secho:      { sig: 'secho(message=None, fg=None, bg=None, bold=None, **kw)', doc: 'echo with style.' },
+            style:      { sig: 'style(text, fg=None, bg=None, bold=None)', doc: 'Apply ANSI styling to text.' },
+            prompt:     { sig: 'prompt(text, default=None, hide_input=False, type=None)', doc: 'Prompt user for input.' },
+            confirm:    { sig: 'confirm(text, default=False, abort=False)', doc: 'Yes/no prompt.' },
+            Path:       { sig: 'Path(exists=False, file_okay=True, dir_okay=True)', doc: 'Path-typed parameter.', kind: 'class' },
+            Choice:     { sig: 'Choice(choices, case_sensitive=True)', doc: 'Enum-typed parameter.', kind: 'class' },
+            File:       { sig: 'File(mode="r", encoding=None, lazy=None)', doc: 'File-typed parameter.', kind: 'class' },
+        },
+
+        // ── yaml (PyYAML) ───────────────────────────────────────────────────
+        yaml: {
+            safe_load:  { sig: 'safe_load(stream)',                    doc: 'Parse a YAML document safely.' },
+            safe_dump:  { sig: 'safe_dump(data, stream=None, **kwargs)', doc: 'Serialize to YAML safely.' },
+            load:       { sig: 'load(stream, Loader)',                 doc: 'Parse YAML — REQUIRES Loader. Use safe_load instead.' },
+            dump:       { sig: 'dump(data, stream=None, Dumper=Dumper, **kw)', doc: 'Serialize to YAML.' },
+            safe_load_all: { sig: 'safe_load_all(stream)',             doc: 'Parse multi-doc YAML.' },
+            YAMLError:  { sig: 'YAMLError',                            doc: 'Base YAML parsing exception.', kind: 'class' },
+            SafeLoader: { sig: 'SafeLoader',                           doc: 'Restricted Loader (no arbitrary objects).', kind: 'class' },
+            FullLoader: { sig: 'FullLoader',                           doc: 'Full Loader (arbitrary classes).', kind: 'class' },
+        },
+
+        // ── jinja2 ──────────────────────────────────────────────────────────
+        jinja2: {
+            Environment:  { sig: 'Environment(loader=None, autoescape=False, **kwargs)', doc: 'Template engine + config.', kind: 'class' },
+            Template:     { sig: 'Template(source, **kwargs)',        doc: 'Compile + render a single template.\n```python\nTemplate("Hi {{ name }}").render(name="A")\n```', kind: 'class' },
+            FileSystemLoader: { sig: 'FileSystemLoader(searchpath, encoding="utf-8")', doc: 'Load templates from disk.', kind: 'class' },
+            DictLoader:   { sig: 'DictLoader({"name": "source"})',    doc: 'Load templates from dict.', kind: 'class' },
+            select_autoescape: { sig: 'select_autoescape(enabled_extensions=("html","htm","xml"))', doc: 'Per-extension autoescape policy.' },
+            Markup:       { sig: 'Markup(s)',                         doc: 'String marked safe (no escaping).', kind: 'class' },
+        },
+
+        // ── fsspec ──────────────────────────────────────────────────────────
+        fsspec: {
+            open:         { sig: 'open(urlpath, mode="rb", **kwargs)', doc: 'Open a file at a URL (local, http, …).\n```python\nwith fsspec.open("file:///tmp/x.txt") as f: ...\n```' },
+            open_files:   { sig: 'open_files(urlpath, mode="rb", **kwargs)', doc: 'Open multiple files matching a glob.' },
+            filesystem:   { sig: 'filesystem(protocol, **storage_options)', doc: 'Get a filesystem instance for protocol.' },
+            get_filesystem_class: { sig: 'get_filesystem_class(protocol)', doc: 'Class for a registered protocol.' },
+            url_to_fs:    { sig: 'url_to_fs(url, **kwargs)',          doc: '(filesystem, path) tuple from a URL.' },
+            available_protocols: { sig: 'available_protocols()',      doc: 'List installed protocol names.' },
+        },
+
+        // ── webview (pywebview shim) ────────────────────────────────────────
+        webview: {
+            create_window: { sig: 'create_window(title, url=None, html=None, **kw)', doc: 'CodeBench shim — routes window contents to in-app preview pane.' },
+            start:         { sig: 'start(func=None, args=(), debug=False, **kw)', doc: 'No-op on iOS — windows are created lazily.' },
+        },
     };
 
     // Module-name aliases — these map top-level names to their full module key
@@ -652,6 +836,8 @@ window.registerPythonProviders = function (monaco, editor) {
         'sym': 'sympy',
         'pd': 'pandas',
         'nx': 'networkx',
+        'hf': 'huggingface_hub',
+        'pywebview': 'webview',
     };
 
     function libSymbolsFor(qualifier) {

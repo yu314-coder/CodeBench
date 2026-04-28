@@ -33,6 +33,9 @@ import llama   // GGML_TYPE_F16 and other ggml constants
 
     private var signalTimer: Timer?
     private var inFlight = false
+    /// Set when the current generation has been cancelled via Ctrl-C.
+    /// Cleared on the next `poll()` that accepts a new request.
+    private var didRequestCancel = false
 
     private var signalDir: String { NSTemporaryDirectory().appending("latex_signals/") }
 
@@ -45,6 +48,7 @@ import llama   // GGML_TYPE_F16 and other ggml constants
         signalTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             self?.poll()
             self?.pollLoadModel()
+            self?.pollCancel()
         }
         autoLoadLastModel()
     }
@@ -123,25 +127,67 @@ import llama   // GGML_TYPE_F16 and other ggml constants
     /// successful loadModel completion.
     private static let lastModelDefaultsKey = "ai.last.model.path"
 
+    /// Crash-detection flag. Set true just before `autoLoadLastModel`
+    /// dispatches the load; cleared 5 seconds after launch if the app
+    /// is still alive. If we see it set to true on a fresh launch, it
+    /// means the previous run crashed during/after auto-load — most
+    /// commonly because the stored GGUF used an architecture the
+    /// bundled llama.cpp NULL-derefs on iOS Metal (Qwen3.5's "qwen35"
+    /// → LLM_ARCH_QWEN3NEXT SSM kernels, for example). Skipping
+    /// auto-load for one run lets the user pick a different model via
+    /// `ai /load <path>` without the app crash-looping at launch.
+    private static let autoLoadInFlightKey = "ai.autoload.inflight"
+
     /// Kick off a background load of whichever model was active last
     /// time the app ran. Called from `start()` — blocks nothing, just
     /// schedules the load so by the time the user types `ai` the
-    /// model is (likely) already warm.
+    /// model is (likely) already warm. Gated by a crash-watchdog flag
+    /// so a crash during load doesn't leave the app unlaunchable.
     private func autoLoadLastModel() {
-        guard let path = UserDefaults.standard.string(forKey: Self.lastModelDefaultsKey),
+        // Aggressive fix for launch-crash-loop: disable auto-load
+        // unconditionally, and pro-actively scrub both UserDefaults keys
+        // so the system is in a known-clean state. The watchdog-based
+        // version below still exists (kept for reference) but is
+        // unreachable — the `return` on the next line short-circuits it.
+        // When we're confident the crashes aren't from auto-load, remove
+        // this block.
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.lastModelDefaultsKey)
+        defaults.set(false, forKey: Self.autoLoadInFlightKey)
+        NSLog("[AIEngine] auto-load DISABLED — call `ai /load <path>` manually to load a model")
+        return
+        #if false
+        // Step 1: if the previous launch set the in-flight flag and
+        // never cleared it, that run crashed during auto-load. Skip
+        // the load this time, forget the stored path (so the user
+        // isn't stuck in the same loop), and tell the user why.
+        if defaults.bool(forKey: Self.autoLoadInFlightKey) {
+            let badPath = defaults.string(forKey: Self.lastModelDefaultsKey) ?? "<unknown>"
+            defaults.removeObject(forKey: Self.lastModelDefaultsKey)
+            defaults.set(false, forKey: Self.autoLoadInFlightKey)
+            NSLog("[AIEngine] previous launch crashed during auto-load of %@ — skipping auto-load this run; use `ai /load <path>` to pick a different model", badPath)
+            return
+        }
+
+        guard let path = defaults.string(forKey: Self.lastModelDefaultsKey),
               !path.isEmpty,
               FileManager.default.fileExists(atPath: path) else {
             return
         }
-        // Defer slightly so LlamaRunner's own initialisation finishes
-        // and any UI boot is through its first render cycle. 300ms is
-        // plenty for either; the load itself takes 3-10s depending on
-        // model size, and we want that to be background-ish.
+
+        // Step 2: arm the watchdog before dispatching the load.
+        defaults.set(true, forKey: Self.autoLoadInFlightKey)
+
+        // Step 3: 5s after launch, if we're still alive, disarm —
+        // whichever thread the LlamaRunner is on would have faulted
+        // long before this if the model was going to crash on load.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            UserDefaults.standard.set(false, forKey: Self.autoLoadInFlightKey)
+        }
+
+        // Step 4: schedule the load itself. Defer 300ms so LlamaRunner
+        // init + first UI render complete first.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            // Synthesise an ai_load_model.json request — same path
-            // the Python CLI uses, so the same pollLoadModel() handler
-            // picks it up. That way all load attempts go through one
-            // code path with consistent logging and state publishing.
             let sig = NSTemporaryDirectory().appending("latex_signals/")
             try? FileManager.default.createDirectory(
                 atPath: sig, withIntermediateDirectories: true)
@@ -155,6 +201,7 @@ import llama   // GGML_TYPE_F16 and other ggml constants
             }
             _ = self  // silence unused-self warning
         }
+        #endif
     }
 
     private func publishCurrentModel(path: String) {
@@ -170,6 +217,23 @@ import llama   // GGML_TYPE_F16 and other ggml constants
         let text = "\(status)\n\(message)\n"
         try? text.write(toFile: signalDir + "ai_model_done.txt",
                         atomically: true, encoding: .utf8)
+    }
+
+    /// Handle `ai_cancel.txt` — Python writes this when the user hits
+    /// Ctrl-C during generation, telling the Swift LlamaRunner to stop
+    /// producing tokens. Runner.cancelGeneration flips an internal
+    /// flag that the generation loop checks between tokens; the
+    /// existing completion handler then fires with a cancelled result
+    /// and the normal `ai_done.txt` write path runs, so Python's
+    /// _stream_response unblocks cleanly.
+    private func pollCancel() {
+        let cancelPath = signalDir + "ai_cancel.txt"
+        guard FileManager.default.fileExists(atPath: cancelPath) else { return }
+        try? FileManager.default.removeItem(atPath: cancelPath)
+        guard inFlight else { return }
+        didRequestCancel = true
+        runner?.cancelGeneration()
+        NSLog("[AIEngine] generation cancelled by user (Ctrl-C)")
     }
 
     private func poll() {
@@ -226,6 +290,16 @@ import llama   // GGML_TYPE_F16 and other ggml constants
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.inFlight = false
+                    if self.didRequestCancel {
+                        // Status -130 mirrors UNIX's "killed by SIGINT"
+                        // convention (128 + 2). Python side treats any
+                        // status == -130 as a user-initiated cancel and
+                        // prints a friendly "^C — interrupted" line
+                        // instead of a generic error.
+                        self.writeDone(status: -130, message: "cancelled by user")
+                        self.didRequestCancel = false
+                        return
+                    }
                     switch result {
                     case .success:
                         self.writeDone(status: 0, message: "ok")

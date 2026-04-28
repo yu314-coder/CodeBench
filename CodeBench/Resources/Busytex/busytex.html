@@ -233,6 +233,12 @@
                 + " (real siblings + placeholders)");
       }
       sendLog("[busytex] starting compile — main=" + name);
+      // The math.tex path uses xetex_bibtex8_dvipdfmx, where verbose=info
+      // appends `--kpathsea-debug 32 -v` to xdvipdfmx. The bundled
+      // xdvipdfmx doesn't recognise the two-dash long form, so `32`
+      // becomes a positional → "Multiple dvi filenames?". Use silent
+      // for any xetex driver so xdvipdfmx gets only `-o math.pdf math.xdv`.
+      var verboseLevel = (drv && drv.indexOf("xetex") === 0) ? "silent" : "info";
       return new Promise(function (resolve, reject) {
         if (pendingCompile) {
           resolve({ status: -1, log: "another compile already in flight", pdfBase64: "" });
@@ -248,7 +254,7 @@
           // upstream packages. Without this, pdftex wouldn't look
           // at our extra pgf/tikz/beamer files.
           texmf_local: ["/offlinai"],
-          verbose: "info",
+          verbose: verboseLevel,
           driver: drv,
           data_packages_js: DATA_PACKAGES,
         });

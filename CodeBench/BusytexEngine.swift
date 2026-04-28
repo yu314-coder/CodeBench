@@ -302,6 +302,141 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
         pendingLoadCallbacks.append(action)
     }
 
+    // MARK: - Math expression compile (manim MathTex pipeline)
+    //
+    // Wraps a bare math expression in a self-contained xelatex preamble
+    // (amsmath + xcolor + xeCJK), bundles a CJK-capable font alongside,
+    // and runs through busytex's `xetex_bibtex8_dvipdfmx` driver →
+    // returns full-quality PDF. The caller (LaTeXEngine.checkForMathCompileRequest)
+    // rasterises the PDF page to a high-DPI PNG and embeds it as
+    // `<image>` in an SVG that manim's patched svg_mobject loader
+    // recognises (svg_mobject.image_to_mobject → ImageMobject).
+    //
+    // This is the path that delivers full LaTeX (\underbrace, \boxed,
+    // amsmath operators) plus CJK in `\text{...}` — which SwiftMath's
+    // Latin-Modern-only renderer could never do.
+    func compileMath(
+        expression: String,
+        colorHex: String = "FFFFFF",
+        completion: @escaping (_ status: Int, _ log: String, _ pdfData: Data?) -> Void
+    ) {
+        DispatchQueue.main.async {
+            self.preload()
+            self.whenReady { [weak self] in
+                guard let self, let wv = self.webView else {
+                    completion(-1, "busytex engine not available", nil)
+                    return
+                }
+
+                let texSource = Self.mathPreamble(expression: expression,
+                                                   colorHex: colorHex)
+                let extraFiles = self.mathExtraFiles()
+
+                let js = "return await window.__busytex.compile(texSource, mainFileName, extraFiles, driver);"
+                let args: [String: Any] = [
+                    "texSource": texSource,
+                    "mainFileName": "math.tex",
+                    "extraFiles": extraFiles,
+                    // xelatex via xeCJK + the bundled Noto Sans JP. We
+                    // briefly tried pdflatex+CJKutf8 but busytex's
+                    // bundled texmf doesn't ship the gbsn TFM (the log
+                    // surfacing fix made this finally visible:
+                    // "Font C70/gbsn/m/n/12/5c=gbsnu5c not loadable").
+                    // pdflatex can't fontspec an arbitrary OTF either,
+                    // so xelatex is the only path that pairs with the
+                    // font we already bundle.
+                    "driver": "xetex_bibtex8_dvipdfmx",
+                ]
+                self.emitProgress("[math] busytex starting xelatex on '\(expression.prefix(60))…'")
+                wv.callAsyncJavaScript(
+                    js, arguments: args, in: nil, in: .page
+                ) { result in
+                    switch result {
+                    case .failure(let error):
+                        self.emitProgress("[math] busytex callAsyncJavaScript failed: \(error.localizedDescription)")
+                        completion(-2, "callAsyncJavaScript: \(error)", nil)
+                    case .success(let value):
+                        guard let obj = value as? [String: Any] else {
+                            completion(-3, "unexpected return shape: \(type(of: value))", nil)
+                            return
+                        }
+                        let status = (obj["status"] as? Int) ?? -4
+                        let logText = (obj["log"] as? String) ?? ""
+                        let pdfB64 = (obj["pdfBase64"] as? String) ?? ""
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let pdfData: Data? = pdfB64.isEmpty
+                                ? nil : Data(base64Encoded: pdfB64)
+                            DispatchQueue.main.async {
+                                if status == 0, let pdf = pdfData {
+                                    self.emitProgress("[math] xelatex OK — \(pdf.count) byte PDF")
+                                } else {
+                                    self.emitProgress("[math] xelatex failed (status \(status))")
+                                }
+                                completion(status, logText, pdfData)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build the xelatex source for a math expression. `standalone`
+    /// with border=2pt gives a tight bounding box; `fontspec` +
+    /// `Path=./` points at NotoSansJP-Regular.otf shipped as an
+    /// extraFile. We don't use xeCJK — it's not in busytex's bundled
+    /// texmf. xelatex's native Unicode handling picks up CJK glyphs
+    /// directly from the main font, which is enough for `\text{...}`
+    /// containing Chinese/Japanese inside math.
+    private static func mathPreamble(expression: String, colorHex: String) -> String {
+        var expr = expression
+        if expr.hasPrefix("$") && expr.hasSuffix("$") && expr.count >= 2 {
+            expr = String(expr.dropFirst().dropLast())
+        }
+        let hex = colorHex.hasPrefix("#") ? String(colorHex.dropFirst()) : colorHex
+        return """
+        \\documentclass[border=2pt,12pt]{standalone}
+        \\usepackage{amsmath,amssymb,amsfonts}
+        \\usepackage{xcolor}
+        \\usepackage{fontspec}
+        \\setmainfont[Path=./]{NotoSansJP-Regular.otf}
+        \\begin{document}
+        \\color[HTML]{\(hex)}
+        $\\displaystyle \(expr)$
+        \\end{document}
+        """
+    }
+
+    /// Read NotoSansJP-Regular.otf from the bundle and return it as a
+    /// busytex extraFiles entry (b64-encoded). Lets xeCJK find a CJK
+    /// font without relying on busytex's fontconfig knowing about one.
+    private func mathExtraFiles() -> [[String: String]] {
+        var out: [[String: String]] = []
+        // Look for the font in any of the bundled locations.
+        let candidates: [(name: String, ext: String, sub: String?)] = [
+            ("NotoSansJP-Regular", "otf", "Resources/KaTeX/fonts"),
+            ("NotoSansJP-Regular", "otf", "KaTeX/fonts"),
+            ("NotoSansJP-Regular", "otf", nil),
+        ]
+        for c in candidates {
+            let url: URL? = (c.sub != nil)
+                ? Bundle.main.url(forResource: c.name, withExtension: c.ext, subdirectory: c.sub)
+                : Bundle.main.url(forResource: c.name, withExtension: c.ext)
+            if let u = url, let data = try? Data(contentsOf: u) {
+                out.append([
+                    "path": "NotoSansJP-Regular.otf",
+                    "kind": "b64",
+                    "data": data.base64EncodedString(),
+                ])
+                return out
+            }
+        }
+        // Font missing — xeCJK will error on CJK input, but Latin math
+        // still compiles. Caller should detect the empty result.
+        emitProgress("[math] WARN: NotoSansJP-Regular.otf not found in bundle — CJK will fail")
+        return out
+    }
+
     // MARK: - Sibling file collection + missing-file placeholders
     //
     // Busytex can't fault in files on demand the way SwiftLaTeX does —
@@ -668,7 +803,7 @@ extension BusytexEngine {
 
     final class URLSchemeHandler: NSObject, WKURLSchemeHandler {
 
-        private let queue = DispatchQueue(label: "offlinai.busytex.scheme",
+        private let queue = DispatchQueue(label: "codebench.busytex.scheme",
                                           qos: .userInitiated,
                                           attributes: .concurrent)
 
@@ -753,7 +888,7 @@ extension BusytexEngine {
         }
 
         private static func err(_ msg: String) -> NSError {
-            NSError(domain: "offlinai.busytex", code: -1,
+            NSError(domain: "codebench.busytex", code: -1,
                     userInfo: [NSLocalizedDescriptionKey: msg])
         }
     }

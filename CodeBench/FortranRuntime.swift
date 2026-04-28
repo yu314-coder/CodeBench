@@ -11,7 +11,7 @@ final class FortranRuntime {
         let success: Bool
     }
 
-    private let queue = DispatchQueue(label: "ai.offlinai.fortran-runtime", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "ai.codebench.fortran-runtime", qos: .userInitiated)
 
     private init() {}
 

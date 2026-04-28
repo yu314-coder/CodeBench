@@ -83,6 +83,14 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
     /// Whether setup() has successfully run once. Guards against
     /// double-dup2 if called again.
     private(set) var isReady = false
+    /// Serializes setupIfNeeded so concurrent callers (main thread from
+    /// CodeEditorViewController.viewDidLoad + the runtime queue thread
+    /// from PythonRuntime.ensureRuntimeReady) can't both pass the
+    /// `guard !isReady` check and end up double-piping / double-dup2'ing
+    /// fd 0. That race manifests as intermittent app-launch crashes
+    /// where one read loop ends up bound to a stale FD and the REPL
+    /// thread reads garbage on its first input.
+    private let setupLock = NSLock()
 
     private override init() {
         super.init()
@@ -103,6 +111,12 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
     /// handled in `send(source:data:)` by feeding typed bytes back
     /// into the terminal view directly.
     func setupIfNeeded() {
+        // Lock + re-check pattern: double-checked locking in Swift is
+        // unsafe without a memory barrier, so we always lock. setup is
+        // a one-time, ~milliseconds-long operation — the lock cost is
+        // irrelevant.
+        setupLock.lock()
+        defer { setupLock.unlock() }
         guard !isReady else { return }
 
         // stdin pipe: [0]=read end (dup2'd onto fd 0, Python reads),

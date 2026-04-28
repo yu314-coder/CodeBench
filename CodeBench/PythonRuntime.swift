@@ -257,7 +257,19 @@ final class PythonRuntime {
             let gil = PyGILState_Ensure()
             defer { PyGILState_Release(gil) }
             let ok = PyRun_SimpleString("""
-            import threading, traceback, sys
+            import threading, traceback, sys, faulthandler
+            # Enable faulthandler at the bootstrap level so any C-level
+            # crash during `import offlinai_shell` (or its transitive
+            # imports — manimpango, torch, av, …) prints a Python stack
+            # trace to stderr instead of surfacing as a bare
+            # EXC_BAD_ACCESS in the codebench-repl thread with no clue
+            # where it came from. The shell's repl() re-enables it
+            # later with all_threads=True; this earlier call covers
+            # the import window.
+            try:
+                faulthandler.enable(file=sys.stderr, all_threads=True)
+            except Exception as _fh_err:
+                sys.stderr.write(f"[shell-bootstrap] faulthandler init failed: {_fh_err}\\n")
             def _codebench_start_repl():
                 try:
                     import offlinai_shell  # module name kept (renaming would cascade-break dist-info + all `import` sites)

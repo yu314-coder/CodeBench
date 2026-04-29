@@ -28,6 +28,146 @@
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
+    <!--
+        Document type registration. Lets the user choose CodeBench from the
+        Files app's "Open With…" sheet, the Share Sheet, and Finder's
+        right-click menu (on Mac Catalyst / Designed-for-iPad). One CFBundle-
+        DocumentTypes entry per logical group; LSItemContentTypes lists the
+        UTIs we accept. We use Apple's public.* UTIs where available and
+        custom UTIs (declared in UTImportedTypeDeclarations below) for
+        languages Apple doesn't recognize natively (TeX, Fortran, etc.).
+    -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Source Code</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <!-- Generic source-code umbrella: matches anything UTI-tagged
+                     as source code that we don't list explicitly below. -->
+                <string>public.source-code</string>
+                <!-- Python -->
+                <string>public.python-script</string>
+                <!-- C / C++ / Objective-C -->
+                <string>public.c-source</string>
+                <string>public.c-plus-plus-source</string>
+                <string>public.c-header</string>
+                <string>public.c-plus-plus-header</string>
+                <string>public.objective-c-source</string>
+                <string>public.objective-c-plus-plus-source</string>
+                <!-- Swift -->
+                <string>public.swift-source</string>
+                <!-- Web -->
+                <string>public.html</string>
+                <string>public.css</string>
+                <string>com.netscape.javascript-source</string>
+                <!-- Shell -->
+                <string>public.shell-script</string>
+                <!-- Custom (declared below) -->
+                <string>ai.codebench.tex</string>
+                <string>ai.codebench.fortran</string>
+                <string>ai.codebench.typescript</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Text Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>public.text</string>
+                <string>public.utf8-plain-text</string>
+                <string>public.log</string>
+                <string>net.daringfireball.markdown</string>
+                <string>public.json</string>
+                <string>public.xml</string>
+                <string>public.yaml</string>
+            </array>
+        </dict>
+    </array>
+    <!--
+        Custom UTIs for file types Apple doesn't ship a public UTI for.
+        Marked as "Imported" (not Exported) so we don't claim ownership —
+        if Apple ever adds a public UTI for these, theirs takes precedence.
+    -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.tex</string>
+            <key>UTTypeDescription</key>
+            <string>TeX/LaTeX Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>tex</string>
+                    <string>ltx</string>
+                    <string>sty</string>
+                    <string>cls</string>
+                    <string>bib</string>
+                    <string>def</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.fortran</string>
+            <key>UTTypeDescription</key>
+            <string>Fortran Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>f</string>
+                    <string>for</string>
+                    <string>f90</string>
+                    <string>f95</string>
+                    <string>f03</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.typescript</string>
+            <key>UTTypeDescription</key>
+            <string>TypeScript Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>ts</string>
+                    <string>tsx</string>
+                    <string>mjs</string>
+                    <string>cjs</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
     <key>UIRequiredDeviceCapabilities</key>

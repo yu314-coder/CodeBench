@@ -19,6 +19,14 @@ extension Notification.Name {
     /// the buffer back out and resurrect the file the user just told
     /// us to delete.
     static let fileDidDelete = Notification.Name("CodeBench.fileDidDelete")
+
+    /// Posted by `SceneDelegate` when iOS hands us a file via "Open With…"
+    /// (Files app, Share Sheet, drag-and-drop). The notification's
+    /// `object` is the imported `URL` (already inside our Documents/
+    /// directory — see SceneDelegate.handleIncomingURL for the security-
+    /// scoped copy logic). The editor listens for this so it can call
+    /// loadFile(url:) on whichever editor instance is foreground.
+    static let openExternalFile = Notification.Name("CodeBench.openExternalFile")
 }
 
 // MARK: - CodeEditorViewController
@@ -597,6 +605,15 @@ final class CodeEditorViewController: UIViewController {
             self,
             selector: #selector(handleFileDidDelete(_:)),
             name: .fileDidDelete,
+            object: nil)
+
+        // SceneDelegate hands us files from "Open With…" / Share Sheet /
+        // drag-drop. Observer here loads the most recent imported file
+        // into the editor — same path as tapping it in the file browser.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenExternalFile(_:)),
+            name: .openExternalFile,
             object: nil)
 
         // AI CLI asked us to open a file — happens when the user
@@ -2177,6 +2194,23 @@ except Exception:
         publishCurrentEditorFile(nil)
         appendToTerminal("$ \(deleted.lastPathComponent) deleted — editor buffer kept, save target cleared.\n",
                          isError: false)
+    }
+
+    /// SceneDelegate → editor signal: user picked CodeBench from the
+    /// Files-app "Open With…" sheet, dropped a file on our icon, or
+    /// shared one from another app. SceneDelegate has already copied
+    /// the file into Documents/Imported/ (so we own a stable, non-
+    /// security-scoped URL we can edit + auto-save freely).
+    @objc private func handleOpenExternalFile(_ note: Notification) {
+        guard let url = note.object as? URL else { return }
+        // Flush any pending edits to the currently-open file before
+        // swapping — so the user doesn't lose unsaved changes when
+        // they tap "Open With…" mid-edit.
+        if currentFileURL != nil {
+            flushAutoSave()
+        }
+        loadFile(url: url)
+        appendToTerminal("$ Imported \(url.lastPathComponent)\n", isError: false)
     }
 
     /// Restore the editor to whichever file was open when the app last

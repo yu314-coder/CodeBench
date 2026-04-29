@@ -195,6 +195,15 @@
     <array>
         <string>processing</string>
     </array>
+    <!-- Required when UIBackgroundModes contains "processing": Apple
+         validator rejects the archive otherwise. CodeBench schedules
+         long-running renders (manim, scipy) via BGTaskScheduler so they
+         can survive screen-lock / app-backgrounding. -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>ai.codebench.background-render</string>
+        <string>ai.codebench.background-ai</string>
+    </array>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>

@@ -18,15 +18,10 @@
 		A1B2C3D4E5F6789012345678 /* Monaco in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6789012345679 /* Monaco */; };
 		A63BD55BBE3746868E10CA1F /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE440FAB6ABE468783D3B3AD /* Accelerate.framework */; };
 		EF00000000000000000000E1 /* executorch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F1 /* executorch.xcframework */; };
-		EF00000000000000000000E2 /* executorch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F1 /* executorch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000E3 /* backend_xnnpack.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F2 /* backend_xnnpack.xcframework */; };
-		EF00000000000000000000E4 /* backend_xnnpack.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F2 /* backend_xnnpack.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000E5 /* backend_coreml.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F3 /* backend_coreml.xcframework */; };
-		EF00000000000000000000E6 /* backend_coreml.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F3 /* backend_coreml.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000E7 /* kernels_optimized.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F4 /* kernels_optimized.xcframework */; };
-		EF00000000000000000000E8 /* kernels_optimized.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F4 /* kernels_optimized.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000E9 /* threadpool.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F5 /* threadpool.xcframework */; };
-		EF00000000000000000000EA /* threadpool.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F5 /* threadpool.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000EB /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F6 /* CoreML.framework */; };
 		EF00000000000000000000EC /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F7 /* libsqlite3.tbd */; };
 		ST00000000000000000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = ST00000000000000000001 /* SwiftTerm */; };
@@ -41,11 +36,6 @@
 			files = (
 				82528BD41E84475ABD7306EA /* Python.xcframework in Embed Frameworks */,
 				0F5FF228CE7F457AA86ACE6E /* llama.xcframework in Embed Frameworks */,
-				EF00000000000000000000E2 /* executorch.xcframework in Embed Frameworks */,
-				EF00000000000000000000E4 /* backend_xnnpack.xcframework in Embed Frameworks */,
-				EF00000000000000000000E6 /* backend_coreml.xcframework in Embed Frameworks */,
-				EF00000000000000000000E8 /* kernels_optimized.xcframework in Embed Frameworks */,
-				EF00000000000000000000EA /* threadpool.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -154,6 +144,7 @@
 				B98F68122F2E4478007FD74B /* Frameworks */,
 				B98F68132F2E4478007FD74B /* Resources */,
 				FE439133A26945B5B2FB0E5B /* Install Python */,
+				B946978B2FA1E00000CDEDED /* ShellScript */,
 				8F797F20F7514EB9BD301A4F /* Embed Frameworks */,
 			);
 			buildRules = (
@@ -223,6 +214,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		B946978B2FA1E00000CDEDED /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 12;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "bash \"${PROJECT_DIR}/scripts/wrap-loose-dylibs.sh\"\n";
+		};
 		FE439133A26945B5B2FB0E5B /* Install Python */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -387,8 +396,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = HBSD8CP766;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = LYK4LV2859;
+				ENABLE_BITCODE = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -399,6 +409,8 @@
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = BenchCode;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -419,7 +431,7 @@
 					"-framework",
 					ios_system,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = euler.CodeBench;
+				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -438,8 +450,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = HBSD8CP766;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = LYK4LV2859;
+				ENABLE_BITCODE = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -450,6 +463,8 @@
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = BenchCode;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -470,7 +485,7 @@
 					"-framework",
 					ios_system,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = euler.CodeBench;
+				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

@@ -22,8 +22,29 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <!--
+        App-Store encryption disclosure. We bundle Python's _ssl and
+        _hashlib (OpenSSL) for standard TLS/HTTPS / SHA / AES — purely
+        for normal HTTPS and the user's own data. This qualifies for
+        the U.S. EAR §740.17(b)(1) mass-market consumer-app exemption,
+        so we don't need to submit annual encryption-classification
+        reports or upload encryption documentation.
+
+        ITSAppUsesNonExemptEncryption = false  →  "the app uses
+        encryption, but only encryption that's already exempt." Apple
+        skips the encryption-questionnaire prompt for every future
+        upload. (Don't read the false as 'no encryption' — Apple's key
+        name is misleading. The semantics is: 'no NON-exempt encryption
+        in this app'.)
+    -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>CodeBench saves rendered videos (manim, matplotlib) and images to your Photos library when you tap the save button.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>CodeBench may access the camera if you choose to capture a photo or video to use as input for an OpenCV/PyAV/Pillow Python script. The camera is never accessed without your action.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>CodeBench may access the microphone if you choose to record audio to use as input for an audio-processing Python script. The microphone is never accessed without your action.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
@@ -72,6 +93,16 @@
                 <string>ai.codebench.tex</string>
                 <string>ai.codebench.fortran</string>
                 <string>ai.codebench.typescript</string>
+                <string>ai.codebench.web</string>
+                <string>ai.codebench.lua</string>
+                <string>ai.codebench.rust</string>
+                <string>ai.codebench.go</string>
+                <string>ai.codebench.kotlin</string>
+                <string>ai.codebench.dart</string>
+                <string>ai.codebench.r-source</string>
+                <string>ai.codebench.julia</string>
+                <string>ai.codebench.toml</string>
+                <string>ai.codebench.config</string>
             </array>
         </dict>
         <dict>
@@ -91,6 +122,7 @@
                 <string>public.json</string>
                 <string>public.xml</string>
                 <string>public.yaml</string>
+                <string>ai.codebench.markdown-extra</string>
             </array>
         </dict>
     </array>
@@ -164,6 +196,217 @@
                     <string>tsx</string>
                     <string>mjs</string>
                     <string>cjs</string>
+                </array>
+            </dict>
+        </dict>
+        <!-- Modern web extras: Vue, Svelte, Less, Sass, JSX, JSON5 -->
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.web</string>
+            <key>UTTypeDescription</key>
+            <string>Web Source (Vue/Svelte/Sass/JSX)</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>vue</string>
+                    <string>svelte</string>
+                    <string>jsx</string>
+                    <string>scss</string>
+                    <string>sass</string>
+                    <string>less</string>
+                    <string>styl</string>
+                    <string>postcss</string>
+                    <string>json5</string>
+                    <string>jsonc</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.lua</string>
+            <key>UTTypeDescription</key>
+            <string>Lua Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>lua</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.rust</string>
+            <key>UTTypeDescription</key>
+            <string>Rust Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>rs</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.go</string>
+            <key>UTTypeDescription</key>
+            <string>Go Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>go</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.kotlin</string>
+            <key>UTTypeDescription</key>
+            <string>Kotlin Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>kt</string>
+                    <string>kts</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.dart</string>
+            <key>UTTypeDescription</key>
+            <string>Dart Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>dart</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.r-source</string>
+            <key>UTTypeDescription</key>
+            <string>R Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>r</string>
+                    <string>R</string>
+                    <string>Rmd</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.julia</string>
+            <key>UTTypeDescription</key>
+            <string>Julia Source</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>jl</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.toml</string>
+            <key>UTTypeDescription</key>
+            <string>TOML Config</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>toml</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.config</string>
+            <key>UTTypeDescription</key>
+            <string>Config File</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>ini</string>
+                    <string>conf</string>
+                    <string>cfg</string>
+                    <string>env</string>
+                    <string>properties</string>
+                    <string>gitignore</string>
+                    <string>gitattributes</string>
+                    <string>editorconfig</string>
+                    <string>dockerfile</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>ai.codebench.markdown-extra</string>
+            <key>UTTypeDescription</key>
+            <string>Markdown Variants</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>net.daringfireball.markdown</string>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>markdown</string>
+                    <string>mdx</string>
+                    <string>mdown</string>
+                    <string>mkd</string>
+                    <string>rst</string>
+                    <string>org</string>
                 </array>
             </dict>
         </dict>

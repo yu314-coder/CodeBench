@@ -1020,15 +1020,28 @@ try:
     import os as _os_stub
     _candidates = []
     # (1) Derive from entries of sys.path that point into the app bundle.
+    # The wrap-loose-dylibs.sh build script wraps libfortran_io_stubs.dylib
+    # as Frameworks/libfortran_io_stubs.framework/libfortran_io_stubs (App
+    # Store requires .framework wrapping; loose .dylibs are rejected).
+    # We try the new wrapped path first, then fall back to the old loose
+    # path for builds that haven't run wrap-loose-dylibs.sh yet.
     for _p in sys.path:
         if _p and "CodeBench.app" in _p:
-            # Trim everything after CodeBench.app to get bundle root.
             _root = _p.split("CodeBench.app", 1)[0] + "CodeBench.app"
-            _candidates.append(_os_stub.path.join(_root, "Frameworks", "libfortran_io_stubs.dylib"))
+            # New (post-wrap) path: framework-wrapped binary
+            _candidates.append(_os_stub.path.join(
+                _root, "Frameworks",
+                "libfortran_io_stubs.framework",
+                "libfortran_io_stubs"))
+            # Old (pre-wrap) path: loose dylib in Frameworks/
+            _candidates.append(_os_stub.path.join(
+                _root, "Frameworks", "libfortran_io_stubs.dylib"))
             break
-    # (2) Fallbacks
+    # (2) Fallbacks via dyld's @rpath / @executable_path search
     _candidates += [
+        "@rpath/libfortran_io_stubs.framework/libfortran_io_stubs",
         "@rpath/libfortran_io_stubs.dylib",
+        "@executable_path/Frameworks/libfortran_io_stubs.framework/libfortran_io_stubs",
         "libfortran_io_stubs.dylib",
     ]
     _loaded = False
@@ -1323,15 +1336,40 @@ try:
                 break
         _font_dir = None
         if _bundle_root:
+            # Probe order:
+            #   1. Subdir layouts that exist if KaTeX/ was added as a true
+            #      folder reference (preserves structure).
+            #   2. The bundle root itself — iOS .app's Resources convention
+            #      flattens individual file references to the root, and
+            #      that's where Xcode actually places these .ttf/.otf files
+            #      in this project (see ls of CodeBench.app — KaTeX_*.ttf
+            #      and NotoSans*-Regular.otf all sit alongside Info.plist).
+            #   We pick the first dir that contains a sentinel font we know
+            #   to be in the bundle (KaTeX_Main-Regular.ttf), so a stray
+            #   empty 'katex/fonts/' from the build script doesn't hijack
+            #   the lookup.
             for _rel in ("katex/fonts", "Frameworks/katex/fonts",
-                         "KaTeX/fonts", "Frameworks/KaTeX/fonts"):
-                _cand_dir = os.path.join(_bundle_root, _rel)
-                if os.path.isdir(_cand_dir):
+                         "KaTeX/fonts", "Frameworks/KaTeX/fonts", ""):
+                _cand_dir = os.path.join(_bundle_root, _rel) if _rel else _bundle_root
+                if os.path.isdir(_cand_dir) and os.path.exists(
+                    os.path.join(_cand_dir, "KaTeX_Main-Regular.ttf")
+                ):
                     _font_dir = _cand_dir
                     break
         if _font_dir:
             _fc_file_pre = os.path.join(__codebench_tool_dir, "fonts.conf")
-            _prefer_pre = "<family>KaTeX_Main</family><family>Noto Sans JP</family>"
+            # CJK fallback order: Noto Sans SC has the broadest unified-Han
+            # coverage (Simplified Chinese ⊃ most Traditional ideographs the
+            # average user types), then Noto Sans JP for kana + Japanese-only
+            # kanji, then Noto Sans KR for Hangul + Korean Hanja. Listed in
+            # descending coverage so fontconfig finds a match for any CJK
+            # codepoint without fanning out to expensive system scans.
+            _prefer_pre = (
+                "<family>KaTeX_Main</family>"
+                "<family>Noto Sans SC</family>"
+                "<family>Noto Sans JP</family>"
+                "<family>Noto Sans KR</family>"
+            )
             _fc_lines_pre = [
                 "<fontconfig>",
                 "  <dir>" + _font_dir + "</dir>",
@@ -1396,21 +1434,43 @@ try:
             _log(f"[manim-font] bundle_root={_bundle_root}")
             _font_dir = None
             _font_path = None
-            _cjk_font_path = None
+            # All three Noto Sans CJK subset fonts the bundle may contain.
+            # SC is required for Simplified Chinese; JP carries kana +
+            # Japanese-only kanji; KR carries Hangul. We register every
+            # one that's actually present so the build is forgiving if a
+            # particular .otf is missing (e.g. fetch_cjk_fonts.sh hasn't
+            # been run yet on a fresh checkout).
+            _cjk_fonts = []  # list of (family_name_for_log, full_path)
             if _bundle_root:
+                # Same probe order as the pre-import setup: prefer subdirs
+                # if they exist, fall back to the bundle root itself (where
+                # iOS Xcode actually places these flattened font files).
+                # Sentinel match on KaTeX_Main-Regular.ttf to skip empty
+                # katex/fonts/ scaffolding the build script may have made.
                 for _rel in ("katex/fonts", "Frameworks/katex/fonts",
-                             "KaTeX/fonts", "Frameworks/KaTeX/fonts"):
-                    _cand_dir = os.path.join(_bundle_root, _rel)
-                    if os.path.isdir(_cand_dir):
-                        _font_dir = _cand_dir
-                        _ttf = os.path.join(_cand_dir, "KaTeX_Main-Regular.ttf")
-                        if os.path.exists(_ttf):
-                            _font_path = _ttf
-                        _cjk = os.path.join(_cand_dir, "NotoSansJP-Regular.otf")
-                        if os.path.exists(_cjk):
-                            _cjk_font_path = _cjk
-                        break
-            _log(f"[manim-font] font_dir={_font_dir} latin={_font_path} cjk={_cjk_font_path}")
+                             "KaTeX/fonts", "Frameworks/KaTeX/fonts", ""):
+                    _cand_dir = os.path.join(_bundle_root, _rel) if _rel else _bundle_root
+                    if not os.path.isdir(_cand_dir):
+                        continue
+                    _ttf = os.path.join(_cand_dir, "KaTeX_Main-Regular.ttf")
+                    if not os.path.exists(_ttf):
+                        continue
+                    _font_dir = _cand_dir
+                    _font_path = _ttf
+                    for _label, _fname in (
+                        ("Noto Sans SC", "NotoSansSC-Regular.otf"),
+                        ("Noto Sans JP", "NotoSansJP-Regular.otf"),
+                        ("Noto Sans KR", "NotoSansKR-Regular.otf"),
+                    ):
+                        _p = os.path.join(_cand_dir, _fname)
+                        if os.path.exists(_p):
+                            _cjk_fonts.append((_label, _p))
+                    break
+            _log(f"[manim-font] font_dir={_font_dir} latin={_font_path}")
+            for _lbl, _p in _cjk_fonts:
+                _log(f"[manim-font] cjk={_lbl} -> {_p}")
+            # Keep _cjk_font_path defined for back-compat with later log lines.
+            _cjk_font_path = _cjk_fonts[0][1] if _cjk_fonts else None
 
             if _font_dir:
                 # Write a fonts.conf that maps Pango's default families to
@@ -1422,8 +1482,11 @@ try:
                 # back to Noto Sans JP on Hanzi/Kanji/Kana.
                 _fc_file = os.path.join(__codebench_tool_dir, "fonts.conf")
                 _prefer = "<family>KaTeX_Main</family>"
-                if _cjk_font_path:
-                    _prefer += "<family>Noto Sans JP</family>"
+                # Append every bundled CJK font as a fallback. Order =
+                # descending unified-Han coverage so fontconfig finds the
+                # cheapest match per codepoint: SC → JP → KR.
+                for _lbl, _ in _cjk_fonts:
+                    _prefer += f"<family>{_lbl}</family>"
                 _lines = [
                     "<fontconfig>",
                     "  <dir>" + _font_dir + "</dir>",
@@ -1454,9 +1517,15 @@ try:
                 if _font_path and hasattr(_mp, "register_font"):
                     _ok = _mp.register_font(_font_path)
                     _log(f"[manim-font] register_font latin = {_ok}")
-                if _cjk_font_path and hasattr(_mp, "register_font"):
-                    _ok2 = _mp.register_font(_cjk_font_path)
-                    _log(f"[manim-font] register_font cjk = {_ok2}")
+                # Register every bundled CJK font with manimpango. This is
+                # belt-and-braces alongside the fontconfig <prefer> chain:
+                # Pango's fc_config picks up codepoint fallback automatically,
+                # but register_font ensures direct family-name lookups
+                # (e.g. Text("中文", font="Noto Sans SC")) work too.
+                if hasattr(_mp, "register_font"):
+                    for _lbl, _p in _cjk_fonts:
+                        _ok2 = _mp.register_font(_p)
+                        _log(f"[manim-font] register_font {_lbl} = {_ok2}")
                 manim.config.font = "KaTeX_Main"
             except BaseException as _e2:
                 _log(f"[manim-font] manimpango.register_font failed: {_e2}")
@@ -1538,48 +1607,65 @@ try:
                         # The bundled folder is "KaTeX/fonts" (capital K),
                         # not lowercase "katex/fonts" — the lowercase entries
                         # below remain only as defensive fallbacks for older
-                        # bundle layouts. List capital-K paths first so the
-                        # actual bundled file is picked on the first hit.
-                        for _rel in ("KaTeX/fonts/KaTeX_Main-Regular.ttf",
-                                     "Frameworks/KaTeX/fonts/KaTeX_Main-Regular.ttf",
-                                     "Frameworks/katex/fonts/KaTeX_Main-Regular.ttf",
-                                     "katex/fonts/KaTeX_Main-Regular.ttf"):
-                            _cand = _os_f.path.join(_bundle_root, _rel)
+                        # bundle layouts. The empty string "" probes the
+                        # bundle root itself, where iOS Xcode flattens
+                        # individual file references — that's actually
+                        # where these .ttf/.otf land in this project.
+                        # List capital-K subdirs first, then root.
+                        for _rel in ("KaTeX/fonts",
+                                     "Frameworks/KaTeX/fonts",
+                                     "Frameworks/katex/fonts",
+                                     "katex/fonts",
+                                     ""):
+                            _cand = _os_f.path.join(_bundle_root, _rel,
+                                                    "KaTeX_Main-Regular.ttf")
                             if _os_f.path.exists(_cand):
                                 _font_path = _cand
                                 break
-                        # Also locate the bundled NotoSansJP for the CJK
-                        # fallback chain. manimpango's register_font supports
-                        # multiple fonts, so registering NotoSansJP here lets
-                        # native Pango pick it up automatically when a string
-                        # contains CJK codepoints — this complements the
-                        # PIL-based CJK Text shim further down (the shim is
-                        # for plain `Text("中文")`, this is for inline mixed
-                        # content like axis labels and MathTex with CJK).
-                        for _rel in ("KaTeX/fonts/NotoSansJP-Regular.otf",
-                                     "Frameworks/KaTeX/fonts/NotoSansJP-Regular.otf",
-                                     "katex/fonts/NotoSansJP-Regular.otf"):
-                            _cand = _os_f.path.join(_bundle_root, _rel)
-                            if _os_f.path.exists(_cand):
-                                _cjk_font_path = _cand
-                                break
+                        # Discover every bundled CJK font we can find. We
+                        # register them ALL with manimpango — Pango's
+                        # fontconfig fallback chain then picks per-codepoint
+                        # so Hanzi → Noto Sans SC, kana → Noto Sans JP,
+                        # Hangul → Noto Sans KR. List ordered by descending
+                        # unified-Han coverage. Same dir layout as above.
+                        _cjk_font_paths = []
+                        for _rel in ("KaTeX/fonts",
+                                     "Frameworks/KaTeX/fonts",
+                                     "Frameworks/katex/fonts",
+                                     "katex/fonts",
+                                     ""):
+                            _dir = _os_f.path.join(_bundle_root, _rel) if _rel else _bundle_root
+                            if not _os_f.path.exists(_os_f.path.join(_dir, "KaTeX_Main-Regular.ttf")):
+                                continue
+                            for _cjk_name in ("NotoSansSC-Regular.otf",
+                                              "NotoSansJP-Regular.otf",
+                                              "NotoSansKR-Regular.otf"):
+                                _cand = _os_f.path.join(_dir, _cjk_name)
+                                if _os_f.path.exists(_cand):
+                                    _cjk_font_paths.append(_cand)
+                            break
+                        # Keep _cjk_font_path defined (single path) for the
+                        # legacy log line below. The new loop registers all.
+                        _cjk_font_path = _cjk_font_paths[0] if _cjk_font_paths else None
                     if _font_path and hasattr(_mp, "register_font"):
                         _mp.register_font(_font_path)
                         print(f"[manim] registered font {_font_path}", flush=True)
                         # Make sure Text uses it by default
                         _m.config.font = "KaTeX_Main"
-                        # Register CJK font too if available — Pango's
+                        # Register every bundled CJK font — Pango's
                         # fontconfig fallback chain will pull from any
                         # registered font for codepoints the primary
-                        # font can't render.
-                        if _cjk_font_path:
+                        # font can't render. The list may be empty on a
+                        # build that didn't run scripts/fetch_cjk_fonts.sh.
+                        for _cjkp in _cjk_font_paths:
                             try:
-                                _mp.register_font(_cjk_font_path)
-                                print(f"[manim] registered CJK font {_cjk_font_path}",
+                                _mp.register_font(_cjkp)
+                                print(f"[manim] registered CJK font {_cjkp}",
                                       flush=True)
                             except Exception as _cjke:
-                                print(f"[manim] CJK font register failed: "
-                                      f"{type(_cjke).__name__}: {_cjke}", flush=True)
+                                print(f"[manim] CJK font register failed for "
+                                      f"{_cjkp}: {type(_cjke).__name__}: {_cjke}",
+                                      flush=True)
                     else:
                         print(f"[manim] WARN: no bundled font found (root={_bundle_root})", flush=True)
                 except Exception as _fe:
@@ -1754,6 +1840,78 @@ try:
         # return an `ImageMobject` instead of the SVG-derived VMobject.
         # Non-CJK strings still go through the original Text class so
         # LaTeX / English / math text is unaffected.
+        # manimpango's text2svg now uses fontTools to extract OTF/TTF
+        # glyph outlines directly, bypassing Cairo's toy API entirely.
+        # That means CJK works the same way Latin does — read the cmap,
+        # pull the bezier outline via SVGPathPen, emit <path> per glyph.
+        # The only failure mode is fontTools not being importable (the
+        # iOS bundle doesn't include the wheel). Probe for that, and
+        # also confirm at least one registered font has both a CJK
+        # codepoint AND a distinct outline for it (defense against
+        # bundled font being a Latin-only subset).
+        def _fonttools_can_extract_cjk():
+            try:
+                from fontTools.ttLib import TTFont
+                from fontTools.pens.svgPathPen import SVGPathPen
+            except ImportError:
+                _log("[manim] fontTools not bundled — falling back to "
+                     "PIL rasterizer for CJK")
+                return False
+            # Walk our font discovery probe order to confirm at least
+            # one OTF in the bundle is a real CJK font.
+            _candidate_fonts = []
+            if _bundle_root:
+                for _fname in ("NotoSansSC-Regular.otf",
+                               "NotoSansJP-Regular.otf",
+                               "NotoSansKR-Regular.otf"):
+                    for _rel in ("KaTeX/fonts", "katex/fonts",
+                                 "Frameworks/KaTeX/fonts",
+                                 "Frameworks/katex/fonts", ""):
+                        _dir = os.path.join(_bundle_root, _rel) if _rel else _bundle_root
+                        _cand = os.path.join(_dir, _fname)
+                        if os.path.exists(_cand):
+                            _candidate_fonts.append(_cand)
+                            break
+            if not _candidate_fonts:
+                _log("[manim] fontTools available but no CJK font "
+                     "bundled — falling back to PIL rasterizer")
+                return False
+            for _fpath in _candidate_fonts:
+                try:
+                    _ttf = TTFont(_fpath, lazy=True, recalcBBoxes=False,
+                                  recalcTimestamp=False)
+                    _cmap = _ttf.getBestCmap()
+                    if 0x4E2D not in _cmap or 0x56FD not in _cmap:
+                        continue
+                    _gs = _ttf.getGlyphSet()
+                    _pen_a = SVGPathPen(_gs)
+                    _pen_b = SVGPathPen(_gs)
+                    _gs[_cmap[0x4E2D]].draw(_pen_a)  # 中
+                    _gs[_cmap[0x56FD]].draw(_pen_b)  # 国
+                    _da, _db = _pen_a.getCommands(), _pen_b.getCommands()
+                    if (_da and _db and _da != _db
+                            and len(_da) > 30 and len(_db) > 30):
+                        _log(f"[manim] fontTools CJK probe OK: "
+                             f"{os.path.basename(_fpath)} "
+                             f"中={len(_da)}c 国={len(_db)}c")
+                        return True
+                except Exception as _e:
+                    _log(f"[manim] fontTools probe error on "
+                         f"{os.path.basename(_fpath)}: {_e}")
+                    continue
+            return False
+
+        _cairo_cjk_ok = _fonttools_can_extract_cjk()
+        _log(f"[manim] CJK extraction "
+             f"{'via fontTools (real Write/Create stroke trace)' if _cairo_cjk_ok else 'unavailable — PIL-rasterize fallback'}")
+
+        # The defensive ImageMobject shims below ALWAYS install (regardless
+        # of the Cairo probe outcome) because LaTeX/BusyTeX, user code,
+        # or any other path can still produce ImageMobjects inside a
+        # VGroup. The PIL rasterizer + manim.Text replacement, on the
+        # other hand, is gated on `not _cairo_cjk_ok` — when Cairo can
+        # extract CJK paths natively, manim.Text runs unchanged so we
+        # get real Write/Create stroke-trace animations on bezier curves.
         if not getattr(manim, "_offlinai_cjk_text_patched", False):
             _orig_Text = manim.Text
             _cjk_png_dir = os.path.join(_manim_media, "cjk_text")
@@ -1776,9 +1934,19 @@ try:
                 text_arg = args[0] if args else kwargs.get("text", "")
                 if not isinstance(text_arg, str) or not _has_cjk(text_arg):
                     return _orig_Text(*args, **kwargs)
-                # Rasterize the whole string as one PNG and wrap in an
-                # ImageMobject. Stable hash of (text, size, color) gives
-                # us caching across re-renders.
+                # Rasterize per-character into a VGroup of ImageMobjects.
+                # This gives manim a multi-child target for animations
+                # like Write / Create. Manim's animation.py has an iOS
+                # image-fallback patch in `interpolate_mobject` that,
+                # for any introducer/remover animation, walks the family
+                # and ramps each ImageMobject's opacity per-child using
+                # `self.get_sub_alpha(...)` — so Write's smart
+                # `lag_ratio = min(4.0/N, 0.2)` produces a typewriter
+                # reveal across these per-char children.
+                #
+                # Per-char PNGs are cached by (char, size, color, font),
+                # so repeated renders / repeated runs in the same shell
+                # only do PIL work for newly-seen glyphs.
                 try:
                     from PIL import Image, ImageDraw, ImageFont
                     import hashlib, manim as _mm
@@ -1793,51 +1961,130 @@ try:
                                        int(_b * 255), 255)
                     except Exception:
                         pass
-                    _key = hashlib.sha256(
-                        f"{text_arg}|{_size_px}|{_color_rgba}".encode("utf-8")
-                    ).hexdigest()[:16]
-                    _png = os.path.join(_cjk_png_dir, f"{_key}.png")
-                    if not os.path.exists(_png):
-                        # Find the bundled CJK font
-                        _font_file = None
-                        for _rel in ("KaTeX/fonts/NotoSansJP-Regular.otf",
-                                     "katex/fonts/NotoSansJP-Regular.otf"):
-                            if _bundle_root:
-                                _cand = os.path.join(_bundle_root, _rel)
+                    # Find the best-matching bundled CJK font for this
+                    # specific text. PIL ImageFont.truetype only takes
+                    # ONE font (no per-glyph fallback), so we pick the
+                    # font whose script most likely covers the string:
+                    #   Hangul present → Noto Sans KR
+                    #   Hiragana/Katakana present → Noto Sans JP
+                    #   else (CJK Unified Ideographs only) → Noto Sans SC
+                    # Each candidate is tried at every probable bundle
+                    # location ("" = bundle root, where iOS flattens).
+                    def _has_range(s, lo, hi):
+                        return any(lo <= ord(_c) <= hi for _c in s)
+                    if _has_range(text_arg, 0xAC00, 0xD7AF):
+                        _preferred = ("NotoSansKR-Regular.otf",
+                                      "NotoSansSC-Regular.otf",
+                                      "NotoSansJP-Regular.otf")
+                    elif _has_range(text_arg, 0x3040, 0x30FF):
+                        _preferred = ("NotoSansJP-Regular.otf",
+                                      "NotoSansSC-Regular.otf",
+                                      "NotoSansKR-Regular.otf")
+                    else:
+                        _preferred = ("NotoSansSC-Regular.otf",
+                                      "NotoSansJP-Regular.otf",
+                                      "NotoSansKR-Regular.otf")
+                    _font_file = None
+                    if _bundle_root:
+                        for _fname in _preferred:
+                            for _rel in ("KaTeX/fonts", "katex/fonts",
+                                         "Frameworks/KaTeX/fonts",
+                                         "Frameworks/katex/fonts", ""):
+                                _dir = os.path.join(_bundle_root, _rel) if _rel else _bundle_root
+                                _cand = os.path.join(_dir, _fname)
                                 if os.path.exists(_cand):
                                     _font_file = _cand
                                     break
-                        if _font_file is None:
-                            print("[manim] CJK font not found; falling back to Text()",
-                                  flush=True)
-                            return _orig_Text(*args, **kwargs)
-                        _font = ImageFont.truetype(_font_file, _size_px)
-                        # Measure + add a small padding so antialiased
-                        # edges don't touch the image border.
-                        _bbox = _font.getbbox(text_arg)
-                        _w = (_bbox[2] - _bbox[0]) + 8
-                        _h = (_bbox[3] - _bbox[1]) + 8
-                        _img = Image.new("RGBA", (_w, _h), (0, 0, 0, 0))
-                        _draw = ImageDraw.Draw(_img)
-                        _draw.text((-_bbox[0] + 4, -_bbox[1] + 4),
-                                   text_arg, font=_font, fill=_color_rgba)
-                        _img.save(_png)
+                            if _font_file:
+                                break
+                    if _font_file is None:
+                        print("[manim] CJK font not found; falling back to Text()",
+                              flush=True)
+                        return _orig_Text(*args, **kwargs)
+                    _font = ImageFont.truetype(_font_file, _size_px)
+                    # Per-character rasterization so the result is a
+                    # VGroup of N ImageMobjects (one per char) instead
+                    # of a single image. Combined with manim's iOS
+                    # image-fallback in animation.py (which now staggers
+                    # opacity by lag_ratio across image siblings),
+                    # `Write(Text("中文"))` produces a typewriter reveal:
+                    # Write's smart default `lag_ratio = min(4.0/N, 0.2)`
+                    # makes char `i` fade in at `i * lag_ratio * run_time`,
+                    # which is exactly what Write does on Latin VMobject
+                    # children. No hardcoded values; the timing scales
+                    # naturally with the string length.
+                    _ascent, _descent = _font.getmetrics()
+                    _line_h = max(1, _ascent + _descent)
+                    _font_basename = os.path.basename(_font_file)
+                    _char_pngs = []
+                    # Swift triple-quoted strings expand \\n / \\r as literal
+                    # newlines before Python parses the source — use chr()
+                    # codes here to avoid string-literal corruption.
+                    _NL_CHAR = chr(10)
+                    _CR_CHAR = chr(13)
+                    for _ch in text_arg:
+                        if _ch == _NL_CHAR or _ch == _CR_CHAR:
+                            # Manim multi-line CJK isn't supported here;
+                            # collapse newlines to a wide blank space so
+                            # the user at least sees a gap.
+                            _ch_w = int(_size_px * 1.0)
+                            _ch_key = f"_nl_{_size_px}"
+                            _is_blank = True
+                        elif _ch.isspace():
+                            _ch_w = int(_size_px * 0.4)
+                            _ch_key = f"_sp_{_size_px}"
+                            _is_blank = True
+                        else:
+                            _ch_w = max(1, int(round(_font.getlength(_ch))))
+                            _ch_key = hashlib.sha256(
+                                f"{_ch}|{_size_px}|{_color_rgba}|"
+                                f"{_font_basename}".encode("utf-8")
+                            ).hexdigest()[:16]
+                            _is_blank = False
+                        _ch_png = os.path.join(_cjk_png_dir,
+                                               f"ch_{_ch_key}.png")
+                        if not os.path.exists(_ch_png):
+                            _ch_img = Image.new("RGBA",
+                                                (_ch_w, _line_h),
+                                                (0, 0, 0, 0))
+                            if not _is_blank:
+                                _ch_draw = ImageDraw.Draw(_ch_img)
+                                _ch_draw.text((0, 0), _ch, font=_font,
+                                              fill=_color_rgba)
+                            _ch_img.save(_ch_png)
+                        _char_pngs.append(_ch_png)
                     # Height in manim units — roughly match what Text()
                     # would produce for the same font_size.
-                    _mob = _mm.ImageMobject(_png)
                     _font_size_units = kwargs.get("font_size",
                                                   _mm.DEFAULT_FONT_SIZE)
-                    _target_h = _font_size_units / 48.0  # ~Text height rule of thumb
-                    _mob.scale_to_fit_height(_target_h)
-                    return _mob
+                    _target_h = _font_size_units / 48.0
+                    _vg = _mm.VGroup()
+                    for _png_path in _char_pngs:
+                        _imob = _mm.ImageMobject(_png_path)
+                        _imob.scale_to_fit_height(_target_h)
+                        _vg.add(_imob)
+                    if len(_vg.submobjects) > 1:
+                        _vg.arrange(_mm.RIGHT, buff=0)
+                    elif len(_vg.submobjects) == 1:
+                        # Single-char group: nothing to arrange.
+                        pass
+                    return _vg
                 except BaseException as _ce:
                     print(f"[manim] CJK rasterize failed: {type(_ce).__name__}: {_ce} — falling back to Text()",
                           flush=True)
                     return _orig_Text(*args, **kwargs)
 
-            manim.Text = _cjk_factory
+            # Only swap manim.Text for the PIL rasterizer when Cairo can't
+            # extract CJK paths natively. With native Cairo extraction,
+            # manim.Text → manimpango.text2svg → SVG <path d="..."/> per
+            # glyph → SVGMobject (real VMobject with bezier curves), and
+            # Write/Create trace strokes the way desktop manim does.
+            if not _cairo_cjk_ok:
+                manim.Text = _cjk_factory
+                _log("[manim] CJK-aware Text factory installed (PIL rasterize)")
+            else:
+                _log("[manim] manim.Text left native — fontTools extracts CJK paths")
             manim._offlinai_cjk_text_patched = True
-            _log("[manim] CJK-aware Text factory installed")
 
             # Make VGroup accept ImageMobject children. Our CJK Text
             # factory returns ImageMobject (rasterized via Pillow, since
@@ -1888,7 +2135,7 @@ try:
                 # contribution. Without this, mixed VGroups raise
                 # `AttributeError: ImageMobject has no attribute
                 # 'anchors'` as soon as you call `.arrange()`.
-                if not hasattr(_ImageMobject, "_offlinai_has_get_anchors"):
+                if "_offlinai_has_get_anchors" not in _ImageMobject.__dict__:
                     def _image_get_anchors(self):
                         try:
                             _pts = self.points
@@ -1911,7 +2158,10 @@ try:
                 # 4 were given". No-ops are safe because images don't
                 # have vector fill/stroke; fade/transparency still works
                 # via set_opacity (which ImageMobject provides natively).
-                if not hasattr(_ImageMobject, "_offlinai_has_vmobject_setters"):
+                # Same __dict__ guard as below: Mobject.__getattr__
+                # auto-generates attrs, so hasattr / getattr would falsely
+                # report this flag as present.
+                if "_offlinai_has_vmobject_setters" not in _ImageMobject.__dict__:
                     def _image_noop_setter(*_args, **_kwargs):
                         return _args[0] if _args else None
                     for _name in ("set_fill", "set_stroke",
@@ -1922,7 +2172,17 @@ try:
                                   "match_style",
                                   "pointwise_become_partial",
                                   "set_anchors_and_handles"):
-                        if not hasattr(_ImageMobject, _name):
+                        # Cannot use hasattr() to guard here: Mobject's
+                        # __getattr__ auto-generates a 2-arg setter on
+                        # demand for any unknown attribute, so hasattr()
+                        # always returns True. That auto-setter is exactly
+                        # the one that breaks VGroup.set_fill propagation
+                        # (it calls `submobject.set_fill(color, opacity,
+                        # family)` — 3 args — but the auto-setter only
+                        # accepts 1). Use __dict__ to check if WE'VE
+                        # explicitly defined the method on the class
+                        # itself, and if not, install our flexible no-op.
+                        if _name not in _ImageMobject.__dict__:
                             setattr(_ImageMobject, _name, _image_noop_setter)
                     # VMobject-style scalar attrs. manim's get_X
                     # auto-getter does `getattr(self, 'X')` and raises
@@ -1948,6 +2208,100 @@ try:
                             setattr(_ImageMobject, _name, _default)
                     _ImageMobject._offlinai_has_vmobject_setters = True
                     _log("[manim] ImageMobject VMobject shims installed")
+
+                # ───────────────────────────────────────────────────
+                # Stroke-trace animations (Write / Create / etc.) need
+                # vector outlines. When the user writes Write(Text("中文"))
+                # our CJK shim returns an ImageMobject — the existing
+                # VMobject scalar-attr defaults (stroke_width=0,
+                # fill_opacity=1) make these animations a NO-OP on the
+                # image, which the user perceives as "the text never
+                # appears" or "appears instantly at the end".
+                #
+                # Re-route the common stroke-trace animations to FadeIn
+                # (and Unwrite/Uncreate to FadeOut) when the entire
+                # animation target is ImageMobject-only. Mixed VMobject +
+                # ImageMobject targets fall through to the original
+                # animation — its stroke phase still works on the
+                # VMobject children, and the ImageMobject children skip
+                # their outline (handled by the no-op setters above).
+                #
+                # Implementation: rebind __class__ on the animation
+                # instance during __init__ to the fallback class, then
+                # call its __init__ with the original args. All manim
+                # Animation subclasses share the same memory layout
+                # (no __slots__), so __class__ swap is well-defined.
+                def _has_image_in_family(_m, _seen=None):
+                    if _seen is None:
+                        _seen = set()
+                    _id = id(_m)
+                    if _id in _seen:
+                        return False
+                    _seen.add(_id)
+                    if isinstance(_m, _ImageMobject):
+                        return True
+                    for _c in getattr(_m, "submobjects", []) or []:
+                        if _has_image_in_family(_c, _seen):
+                            return True
+                    return False
+
+                def _all_image_in_family(_m, _seen=None):
+                    if _seen is None:
+                        _seen = set()
+                    _id = id(_m)
+                    if _id in _seen:
+                        return True
+                    _seen.add(_id)
+                    _kids = getattr(_m, "submobjects", []) or []
+                    if not _kids:
+                        return isinstance(_m, _ImageMobject)
+                    return all(_all_image_in_family(_c, _seen) for _c in _kids)
+
+                # NOTE on stroke-trace animations (Write / Create / etc.):
+                # We DON'T __class__-swap them to FadeIn here. Manim's
+                # animation.py has an iOS image-fallback patch in
+                # `interpolate_mobject` that, for any introducer or
+                # remover animation, walks the family and ramps each
+                # ImageMobject's opacity using `self.get_sub_alpha(...)` —
+                # so the animation's OWN `lag_ratio` is honored. Write
+                # computes a smart default (`min(4.0/N, 0.2)` for N
+                # children) inside its `__init__`, which gives a
+                # noticeable typewriter reveal across per-character
+                # ImageMobject children of our CJK Text VGroup. Letting
+                # Write run natively preserves that smart default;
+                # swapping to FadeIn replaces it with FadeIn's lag=0.
+
+                # Transform between two CJK Texts: manim's vertex
+                # interpolation can't bridge ImageMobject → ImageMobject,
+                # so substitute with FadeTransform (cross-fade). For
+                # ReplacementTransform the API is identical (target
+                # replaces source after the animation), so the same
+                # substitution works.
+                _FadeTransform = getattr(manim, "FadeTransform", None)
+                def _patch_transform(_anim_cls, _label):
+                    if _anim_cls is None or _FadeTransform is None:
+                        return
+                    if getattr(_anim_cls, "_offlinai_image_aware", False):
+                        return
+                    _orig_init = _anim_cls.__init__
+                    def _new_init(_self, _mob_a, _mob_b=None, *_a, **_kw):
+                        if (_mob_a is not None and _mob_b is not None
+                                and _has_image_in_family(_mob_a)
+                                and _has_image_in_family(_mob_b)):
+                            _self.__class__ = _FadeTransform
+                            _FadeTransform.__init__(_self, _mob_a, _mob_b,
+                                                    *_a, **_kw)
+                            return
+                        _orig_init(_self, _mob_a, _mob_b, *_a, **_kw) \
+                            if _mob_b is not None else \
+                            _orig_init(_self, _mob_a, *_a, **_kw)
+                    _anim_cls.__init__ = _new_init
+                    _anim_cls._offlinai_image_aware = True
+                    _log(f"[manim] {_label} → FadeTransform on ImageMobject pairs")
+
+                for _n in ("Transform", "ReplacementTransform",
+                           "TransformFromCopy"):
+                    _patch_transform(getattr(manim, _n, None), _n)
             except Exception as _vge:
                 _log(f"[manim] VGroup patch failed: {_vge}")
         _log("manim configured for iOS (Cairo → GIF animation)")

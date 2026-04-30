@@ -58,8 +58,16 @@ final class OnboardingViewController: UIViewController {
 
     private let scrollView = UIScrollView()
     private let pageControl = UIPageControl()
-    private let getStartedButton = UIButton(type: .system)
+    private let actionButton = UIButton(type: .system)   // morphs Next → Get Started
+    private let backButton   = UIButton(type: .system)
+    private let skipButton   = UIButton(type: .system)
     private var cardViews: [UIView] = []
+
+    /// Mac Catalyst / iPad keyboards / accessibility need this VC to
+    /// be in the responder chain to receive keyCommands. Returning
+    /// `true` from canBecomeFirstResponder + a becomeFirstResponder()
+    /// call in viewDidAppear gets us there reliably.
+    override var canBecomeFirstResponder: Bool { true }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -67,8 +75,13 @@ final class OnboardingViewController: UIViewController {
         setupBackground()
         setupScrollView()
         setupPageControl()
-        setupGetStartedButton()
+        setupNavButtons()
         buildPages()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        becomeFirstResponder()
     }
 
     override func viewDidLayoutSubviews() {
@@ -109,6 +122,11 @@ final class OnboardingViewController: UIViewController {
         pageControl.currentPage = 0
         pageControl.currentPageIndicatorTintColor = WorkspaceStyle.accent
         pageControl.pageIndicatorTintColor = WorkspaceStyle.mutedText.withAlphaComponent(0.3)
+        // Tapping a dot jumps directly to that page — Mac Catalyst /
+        // iPad-with-cursor users expect this; without the target, the
+        // dots are decorative-only.
+        pageControl.addTarget(self, action: #selector(pageControlChanged),
+                              for: .valueChanged)
         pageControl.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageControl)
         NSLayoutConstraint.activate([
@@ -117,23 +135,63 @@ final class OnboardingViewController: UIViewController {
         ])
     }
 
-    private func setupGetStartedButton() {
+    /// Three buttons: Skip (top-right, always visible until last page),
+    /// Back (bottom-left, hidden on first page), and the morphing
+    /// Next/Get-Started action button (bottom-center, always visible).
+    /// Designed so cursor users always have a clickable target — the
+    /// previous build relied entirely on swipe gestures, which don't
+    /// work with a trackpad/mouse on Catalyst.
+    private func setupNavButtons() {
+        // Action button (Next → Get Started)
         var config = UIButton.Configuration.filled()
-        config.title = "Get Started"
         config.baseBackgroundColor = WorkspaceStyle.accent
         config.baseForegroundColor = .white
         config.cornerStyle = .capsule
-        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 40, bottom: 14, trailing: 40)
-        getStartedButton.configuration = config
-        getStartedButton.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
-        getStartedButton.addTarget(self, action: #selector(getStartedTapped), for: .touchUpInside)
-        getStartedButton.translatesAutoresizingMaskIntoConstraints = false
-        getStartedButton.alpha = 0
-        view.addSubview(getStartedButton)
+        config.contentInsets = NSDirectionalEdgeInsets(
+            top: 14, leading: 40, bottom: 14, trailing: 40)
+        actionButton.configuration = config
+        actionButton.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        actionButton.addTarget(self, action: #selector(actionTapped),
+                               for: .touchUpInside)
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // Back button — plain link style
+        var backConfig = UIButton.Configuration.plain()
+        backConfig.title = "Back"
+        backConfig.image = UIImage(systemName: "chevron.left")
+        backConfig.imagePadding = 4
+        backConfig.imagePlacement = .leading
+        backConfig.baseForegroundColor = WorkspaceStyle.secondaryText
+        backButton.configuration = backConfig
+        backButton.addTarget(self, action: #selector(backTapped),
+                             for: .touchUpInside)
+        backButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // Skip button — corner placement; dismisses immediately
+        var skipConfig = UIButton.Configuration.plain()
+        skipConfig.title = "Skip"
+        skipConfig.baseForegroundColor = WorkspaceStyle.secondaryText
+        skipButton.configuration = skipConfig
+        skipButton.addTarget(self, action: #selector(skipTapped),
+                             for: .touchUpInside)
+        skipButton.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(actionButton)
+        view.addSubview(backButton)
+        view.addSubview(skipButton)
+
         NSLayoutConstraint.activate([
-            getStartedButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            getStartedButton.topAnchor.constraint(equalTo: pageControl.bottomAnchor, constant: 16)
+            actionButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            actionButton.topAnchor.constraint(equalTo: pageControl.bottomAnchor, constant: 16),
+
+            backButton.centerYAnchor.constraint(equalTo: actionButton.centerYAnchor),
+            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+
+            skipButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            skipButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24)
         ])
+
+        updateNavState()
     }
 
     private func buildPages() {
@@ -205,24 +263,116 @@ final class OnboardingViewController: UIViewController {
         return card
     }
 
-    @objc private func getStartedTapped() {
+    // MARK: - Navigation
+
+    private func currentPage() -> Int {
+        let w = max(1, scrollView.bounds.width)
+        return Int(round(scrollView.contentOffset.x / w))
+    }
+
+    private func goToPage(_ index: Int, animated: Bool = true) {
+        let bounded = max(0, min(index, pages.count - 1))
+        let w = scrollView.bounds.width
+        scrollView.setContentOffset(
+            CGPoint(x: CGFloat(bounded) * w, y: 0), animated: animated)
+        pageControl.currentPage = bounded
+        updateNavState()
+    }
+
+    @objc private func pageControlChanged() {
+        // Tapping the dots only fires .valueChanged; sync the scroll view.
+        goToPage(pageControl.currentPage)
+    }
+
+    @objc private func actionTapped() {
+        HapticService.shared.tapLight()
+        let page = currentPage()
+        if page >= pages.count - 1 {
+            finishOnboarding()
+        } else {
+            goToPage(page + 1)
+        }
+    }
+
+    @objc private func backTapped() {
+        HapticService.shared.tapLight()
+        goToPage(currentPage() - 1)
+    }
+
+    @objc private func skipTapped() {
+        finishOnboarding()
+    }
+
+    private func finishOnboarding() {
         HapticService.shared.success()
         UserDefaults.standard.set(true, forKey: "onboarding.completed")
         dismiss(animated: true)
     }
 
-    private func updateGetStartedVisibility() {
-        let isLastPage = pageControl.currentPage == pages.count - 1
-        UIView.animate(withDuration: 0.3) {
-            self.getStartedButton.alpha = isLastPage ? 1 : 0
+    /// Refresh the action / back / skip button labels based on which
+    /// page is current. Called from scrollViewDidScroll, page-tap,
+    /// and key-command handlers so it stays in sync no matter how
+    /// the page changed.
+    private func updateNavState() {
+        let page = currentPage()
+        let isLast  = page >= pages.count - 1
+        let isFirst = page == 0
+
+        actionButton.configuration?.title = isLast ? "Get Started" : "Next"
+        actionButton.configuration?.image =
+            isLast ? UIImage(systemName: "sparkles")
+                   : UIImage(systemName: "chevron.right")
+        actionButton.configuration?.imagePlacement = .trailing
+        actionButton.configuration?.imagePadding = 6
+
+        UIView.animate(withDuration: 0.18) {
+            self.backButton.alpha = isFirst ? 0 : 1
+            self.skipButton.alpha = isLast ? 0 : 1
         }
+        backButton.isUserInteractionEnabled = !isFirst
+        skipButton.isUserInteractionEnabled = !isLast
+    }
+
+    // MARK: - Keyboard support (Mac Catalyst, iPad with keyboard)
+
+    /// Arrow keys / Tab / Space / Return / Escape navigate the
+    /// onboarding without needing the trackpad. Mac Designed-for-iPad
+    /// in particular has no swipe-affordance, so a keyboard path is
+    /// the only fast way through the cards.
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            UIKeyCommand(input: UIKeyCommand.inputRightArrow,
+                         modifierFlags: [],
+                         action: #selector(actionTapped)),
+            UIKeyCommand(input: UIKeyCommand.inputDownArrow,
+                         modifierFlags: [],
+                         action: #selector(actionTapped)),
+            UIKeyCommand(input: "\t", modifierFlags: [],
+                         action: #selector(actionTapped)),
+            UIKeyCommand(input: " ",  modifierFlags: [],
+                         action: #selector(actionTapped)),
+            UIKeyCommand(input: "\r", modifierFlags: [],
+                         action: #selector(actionTapped)),
+            UIKeyCommand(input: UIKeyCommand.inputLeftArrow,
+                         modifierFlags: [],
+                         action: #selector(backTapped)),
+            UIKeyCommand(input: UIKeyCommand.inputUpArrow,
+                         modifierFlags: [],
+                         action: #selector(backTapped)),
+            UIKeyCommand(input: UIKeyCommand.inputEscape,
+                         modifierFlags: [],
+                         action: #selector(skipTapped)),
+        ]
     }
 }
 
 extension OnboardingViewController: UIScrollViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let page = Int(round(scrollView.contentOffset.x / max(1, scrollView.bounds.width)))
-        pageControl.currentPage = max(0, min(page, pages.count - 1))
-        updateGetStartedVisibility()
+        let page = currentPage()
+        let bounded = max(0, min(page, pages.count - 1))
+        if pageControl.currentPage != bounded {
+            pageControl.currentPage = bounded
+        }
+        updateNavState()
     }
 }

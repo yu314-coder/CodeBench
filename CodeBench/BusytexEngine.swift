@@ -172,10 +172,26 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
         DispatchQueue.main.async {
             self.verboseProgress = true
             self.userWorkingDir = workingDir
+            // Auto-route pdflatex → xelatex when the source contains CJK.
+            // pdflatex + inputenc has no native CJK story (CJKutf8 needs
+            // Type1 CJK fonts that aren't in busytex's bundled texmf), so
+            // the only working path is xelatex with the bundled NotoSansJP
+            // font — same engine the math compile already uses. We inject
+            // a fontspec preamble after \documentclass and ship the font
+            // as an extraFile.
+            var effectiveDriver = driver
+            let needsCJK = effectiveDriver.contains("pdftex")
+                && Self.containsCJK(texSource)
+                && self.cjkFontExtraFiles().isEmpty == false
+            if needsCJK {
+                effectiveDriver = "xetex_bibtex8_dvipdfmx"
+                self.emitProgress(
+                    "CJK detected — auto-switching pdflatex → xelatex (busytex pdflatex can't render CJK without Type1 fonts)")
+            }
             // Human-readable command name for progress messages —
             // maps the pipeline driver back to what the user typed.
             let cmdName: String = {
-                switch driver {
+                switch effectiveDriver {
                 case "xetex_bibtex8_dvipdfmx": return "xelatex"
                 case "luatex_bibtex8": return "lualatex"
                 case "luahbtex_bibtex8": return "luahblatex"
@@ -203,7 +219,7 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                 // chars were in the output PDF. Only pdflatex drivers
                 // need this; xetex/luatex handle Unicode natively.
                 var (sourceForEngine, replacedCount): (String, Int) =
-                    driver.contains("pdftex")
+                    effectiveDriver.contains("pdftex")
                         ? Self.sanitizeForPdflatex(texSource)
                         : (texSource, 0)
                 if replacedCount > 0 {
@@ -218,12 +234,24 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                 // via mktexpk → needs fork() → unavailable in WASM →
                 // "Font tcrm1095 at 600 not found" mid-compile. lmodern
                 // provides native T1 Type1 fonts, so no font generation.
-                if driver.contains("pdftex") {
+                if effectiveDriver.contains("pdftex") {
                     let (patched, injected) = Self.injectLmodernIfNeeded(sourceForEngine)
                     if injected {
                         sourceForEngine = patched
                         self.emitProgress(
                             "injected \\usepackage{lmodern} (T1 fontenc needs it on WASM)")
+                    }
+                }
+                // For the auto-CJK route, inject fontspec + setmainfont
+                // pointing at NotoSansJP-Regular.otf (shipped via
+                // extraFiles below). Skip if the user already has a
+                // \setmainfont directive — they know what they want.
+                if needsCJK {
+                    let (patched, injected) = Self.injectCJKFontspecIfNeeded(sourceForEngine)
+                    if injected {
+                        sourceForEngine = patched
+                        self.emitProgress(
+                            "injected \\usepackage{fontspec} + NotoSansJP main font for CJK")
                     }
                 }
                 // Build the files[] array the pipeline needs. Unlike
@@ -233,15 +261,18 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                 // up front. For referenced files that don't exist on
                 // disk, we synthesize a 1×1 placeholder so
                 // \includegraphics{missing} doesn't abort the build.
-                let extraFiles = self.buildSiblingFiles(
+                var extraFiles = self.buildSiblingFiles(
                     texSource: sourceForEngine,
                     workingDir: workingDir)
+                if needsCJK {
+                    extraFiles.append(contentsOf: self.cjkFontExtraFiles())
+                }
                 let js = "return await window.__busytex.compile(texSource, mainFileName, extraFiles, driver);"
                 let args: [String: Any] = [
                     "texSource": sourceForEngine,
                     "mainFileName": mainFileName,
                     "extraFiles": extraFiles,
-                    "driver": driver,
+                    "driver": effectiveDriver,
                 ]
                 wv.callAsyncJavaScript(
                     js, arguments: args, in: nil, in: .page
@@ -330,7 +361,7 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
 
                 let texSource = Self.mathPreamble(expression: expression,
                                                    colorHex: colorHex)
-                let extraFiles = self.mathExtraFiles()
+                let extraFiles = self.cjkFontExtraFiles()
 
                 let js = "return await window.__busytex.compile(texSource, mainFileName, extraFiles, driver);"
                 let args: [String: Any] = [
@@ -407,34 +438,61 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
         """
     }
 
-    /// Read NotoSansJP-Regular.otf from the bundle and return it as a
-    /// busytex extraFiles entry (b64-encoded). Lets xeCJK find a CJK
+    /// Read all bundled Noto CJK font OTFs (JP, KR, SC) and return
+    /// busytex extraFiles entries (b64-encoded). Lets xelatex find a CJK
     /// font without relying on busytex's fontconfig knowing about one.
-    private func mathExtraFiles() -> [[String: String]] {
+    /// Used by both the math compile (always xelatex) and the auto-CJK
+    /// route in the regular doc compile (pdflatex → xelatex auto-switch).
+    /// Returns whatever is present — JP alone is enough for math; the
+    /// doc path emits a fontspec preamble that names whichever font we
+    /// pick by predominant script.
+    fileprivate func cjkFontExtraFiles() -> [[String: String]] {
         var out: [[String: String]] = []
-        // Look for the font in any of the bundled locations.
-        let candidates: [(name: String, ext: String, sub: String?)] = [
-            ("NotoSansJP-Regular", "otf", "Resources/KaTeX/fonts"),
-            ("NotoSansJP-Regular", "otf", "KaTeX/fonts"),
-            ("NotoSansJP-Regular", "otf", nil),
-        ]
-        for c in candidates {
-            let url: URL? = (c.sub != nil)
-                ? Bundle.main.url(forResource: c.name, withExtension: c.ext, subdirectory: c.sub)
-                : Bundle.main.url(forResource: c.name, withExtension: c.ext)
-            if let u = url, let data = try? Data(contentsOf: u) {
-                out.append([
-                    "path": "NotoSansJP-Regular.otf",
-                    "kind": "b64",
-                    "data": data.base64EncodedString(),
-                ])
-                return out
+        let fonts = ["NotoSansJP-Regular", "NotoSansKR-Regular",
+                     "NotoSansSC-Regular"]
+        let subdirs: [String?] = ["Resources/KaTeX/fonts", "KaTeX/fonts", nil]
+        for name in fonts {
+            for sub in subdirs {
+                let url: URL? = (sub != nil)
+                    ? Bundle.main.url(forResource: name, withExtension: "otf", subdirectory: sub)
+                    : Bundle.main.url(forResource: name, withExtension: "otf")
+                if let u = url, let data = try? Data(contentsOf: u) {
+                    out.append([
+                        "path": "\(name).otf",
+                        "kind": "b64",
+                        "data": data.base64EncodedString(),
+                    ])
+                    break
+                }
             }
         }
-        // Font missing — xeCJK will error on CJK input, but Latin math
-        // still compiles. Caller should detect the empty result.
-        emitProgress("[math] WARN: NotoSansJP-Regular.otf not found in bundle — CJK will fail")
+        if out.isEmpty {
+            emitProgress("WARN: no Noto CJK fonts found in bundle — CJK will fail")
+        }
         return out
+    }
+
+    /// Pick the best CJK main font for a given source. Hangul → KR,
+    /// Hiragana/Katakana → JP, Han-only (Chinese) → SC. Falls back to
+    /// SC since its Han coverage is broadest. Caller is responsible
+    /// for verifying the font is actually bundled.
+    static func pickCJKMainFont(_ source: String) -> String {
+        var hasHangul = false
+        var hasKana = false
+        var hasHan = false
+        for s in source.unicodeScalars {
+            let c = s.value
+            if c >= 0xAC00 && c <= 0xD7AF { hasHangul = true }
+            else if (c >= 0x3040 && c <= 0x30FF) ||
+                    (c >= 0x31F0 && c <= 0x31FF) { hasKana = true }
+            else if (c >= 0x3400 && c <= 0x4DBF) ||
+                    (c >= 0x4E00 && c <= 0x9FFF) ||
+                    (c >= 0xF900 && c <= 0xFAFF) { hasHan = true }
+        }
+        if hasHangul { return "NotoSansKR-Regular.otf" }
+        if hasKana   { return "NotoSansJP-Regular.otf" }
+        if hasHan    { return "NotoSansSC-Regular.otf" }
+        return "NotoSansSC-Regular.otf"
     }
 
     // MARK: - Sibling file collection + missing-file placeholders
@@ -654,6 +712,64 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
             return (source, false)
         }
         let injection = "\\usepackage{lmodern}% auto-injected by CodeBench — T1 font compat (no mktexpk in WASM)\n"
+        var out = source
+        out.insert(contentsOf: injection, at: matchRange.upperBound)
+        return (out, true)
+    }
+
+    /// Detect CJK content in the source. Used to auto-route pdflatex
+    /// → xelatex when the user's doc has Chinese/Japanese/Korean —
+    /// pdflatex+inputenc has no CJK story in busytex's bundled texmf.
+    /// Ranges follow the same blocks the math/SVG paths classify as CJK.
+    static func containsCJK(_ source: String) -> Bool {
+        for scalar in source.unicodeScalars {
+            let c = scalar.value
+            // CJK Unified Ideographs + Extension A + CJK Symbols and
+            // Punctuation + Hiragana/Katakana + Hangul Syllables +
+            // Compatibility Ideographs + Fullwidth Forms.
+            if (c >= 0x3000 && c <= 0x9FFF) ||
+               (c >= 0xAC00 && c <= 0xD7AF) ||
+               (c >= 0xF900 && c <= 0xFAFF) ||
+               (c >= 0xFF00 && c <= 0xFFEF) ||
+               (c >= 0x20000 && c <= 0x2FA1F) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Inject `\usepackage{fontspec}\setmainfont[Path=./]{NotoSansJP-...otf}`
+    /// after `\documentclass{...}` for the auto-CJK route. Skips when:
+    ///   • the user already declared `\setmainfont` (their font wins)
+    ///   • there's no `\documentclass` to anchor the insertion point
+    ///     (e.g. plain TeX — caller is on their own)
+    static func injectCJKFontspecIfNeeded(_ source: String) -> (String, Bool) {
+        if source.range(of: "\\\\setmainfont",
+                        options: .regularExpression) != nil {
+            return (source, false)
+        }
+        let docClassRegex = try? NSRegularExpression(
+            pattern: "\\\\documentclass(?:\\[[^\\]]*\\])?\\{[^{}]+\\}[\\s]*\\n?",
+            options: [])
+        guard let regex = docClassRegex else { return (source, false) }
+        let nsRange = NSRange(source.startIndex..., in: source)
+        guard let match = regex.firstMatch(in: source, range: nsRange),
+              let matchRange = Range(match.range, in: source) else {
+            return (source, false)
+        }
+        let mainFont = Self.pickCJKMainFont(source)
+        // Declare the other two CJK fonts as alternative families so
+        // mixed-script docs can opt in via {\jpfont ...} / {\krfont ...}
+        // / {\scfont ...}. We can't auto-fall-back without xeCJK, but
+        // exposing the families is cheap.
+        let injection = """
+        \\usepackage{fontspec}% auto-injected by CodeBench for CJK
+        \\setmainfont[Path=./]{\(mainFont)}
+        \\newfontfamily\\jpfont[Path=./]{NotoSansJP-Regular.otf}
+        \\newfontfamily\\krfont[Path=./]{NotoSansKR-Regular.otf}
+        \\newfontfamily\\scfont[Path=./]{NotoSansSC-Regular.otf}
+
+        """
         var out = source
         out.insert(contentsOf: injection, at: matchRange.upperBound)
         return (out, true)

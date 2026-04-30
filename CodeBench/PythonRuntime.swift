@@ -226,6 +226,29 @@ final class PythonRuntime {
                             sys.stderr = _w
                     except Exception as _e:
                         pass
+
+                    # Pre-warm platform.uname() on this single thread BEFORE
+                    # the REPL thread or any user code can race on it. The
+                    # iOS implementation (Lib/_ios_support.py) reads the
+                    # device's name/version/model via ctypes → libobjc's
+                    # objc_msgSend, and it mutates `objc.objc_msgSend.restype`
+                    # (c_void_p, then c_char_p for UTF8String) on a SHARED
+                    # function-pointer attribute. Two threads concurrently
+                    # calling platform.uname() race on that restype — one
+                    # thread's objc_msgSend returns an object pointer that
+                    # the other thread's still-c_char_p reader dereferences
+                    # via z_get → strlen, hitting a PAC failure on a
+                    # signed/object pointer that isn't a real C string.
+                    # Surfaces as intermittent EXC_BAD_ACCESS during launch
+                    # (faulting thread "codebench-repl", stack ends in
+                    # _ctypes.z_get +28 → strlen → PAC).
+                    # Once `_uname_cache` is populated, subsequent calls hit
+                    # it and skip the racy ctypes path entirely.
+                    try:
+                        import platform
+                        platform.uname()
+                    except Exception as _e:
+                        sys.__stderr__.write(f"[bootstrap] uname pre-warm failed: {_e}\\n")
                     """
                     _ = redirectSrc.withCString { PyRun_SimpleString($0) }
 
@@ -410,6 +433,22 @@ print("__CODEBENCH_LIB_STATUS__=" + json.dumps(_codebench_lib_status))
                 except Exception as _e:
                     import sys as _sys
                     _sys.__stderr__.write(f"[stdio redirect failed: {_e}]\\n")
+
+                # Pre-warm platform.uname() — see ensureRuntimeReady for
+                # the full explanation. Short version: iOS Python's
+                # _ios_support.get_platform_ios() races on the shared
+                # `objc.objc_msgSend.restype` attribute (c_void_p vs
+                # c_char_p) when called concurrently from multiple
+                # threads, intermittently crashing in _ctypes.z_get with
+                # PAC failure. Forcing the call here on the bootstrap
+                # thread populates platform._uname_cache so all later
+                # callers hit the cache instead of re-entering ctypes.
+                try:
+                    import platform
+                    platform.uname()
+                except Exception as _e:
+                    import sys as _sys
+                    _sys.__stderr__.write(f"[bootstrap] uname pre-warm failed: {_e}\\n")
                 """
                 _ = redirectStdioSource.withCString { PyRun_SimpleString($0) }
 

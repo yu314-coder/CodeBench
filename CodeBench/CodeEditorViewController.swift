@@ -3,6 +3,7 @@ import WebKit
 import PDFKit
 import SwiftTerm
 import GameController  // magic-keyboard detection
+import UniformTypeIdentifiers  // UTType for the toolbar "Open" picker
 
 extension Notification.Name {
     /// Posted by `CodeEditorViewController` after the editor's auto-save
@@ -307,6 +308,7 @@ final class CodeEditorViewController: UIViewController {
     private let languageControl = UISegmentedControl(items: ["Python", "C", "C++", "Fortran"])  // hidden, kept for internal state
     private let runButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
+    private let openFileButton = UIButton(type: .system)
     private let templatesButton = UIButton(type: .system)  // unused but kept for compile compat
     private let aiToggleButton = UIButton(type: .system)
     private let latexTestButton = UIButton(type: .system)
@@ -1158,6 +1160,20 @@ final class CodeEditorViewController: UIViewController {
         clearButton.addTarget(self, action: #selector(clearTerminal), for: .touchUpInside)
         clearButton.translatesAutoresizingMaskIntoConstraints = false
 
+        // "Open file" button — surfaces UIDocumentPicker for any source
+        // file the user wants to load into the editor. Uses the indigo
+        // accent so it reads as a primary action without competing
+        // with the green Run button.
+        var openConfig = UIButton.Configuration.plain()
+        openConfig.image = UIImage(systemName: "folder.badge.plus")
+        openConfig.title = "Open"
+        openConfig.imagePadding = 4
+        openConfig.baseForegroundColor = EditorTheme.accent
+        openConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+        openFileButton.configuration = openConfig
+        openFileButton.addTarget(self, action: #selector(openFileTapped), for: .touchUpInside)
+        openFileButton.translatesAutoresizingMaskIntoConstraints = false
+
         // Templates button removed from toolbar (templates accessible via file explorer)
 
         // AI Assist button is configured in setupEditor() — nothing to do here.
@@ -1186,7 +1202,7 @@ final class CodeEditorViewController: UIViewController {
         // Docs button removed — Docs available via top-level Docs tab
         // AI Assist button moved to editor header (see setupEditor)
 
-        let toolbarStack = UIStackView(arrangedSubviews: [runButton, clearButton, spacer, latexTestButton, settingsButton])
+        let toolbarStack = UIStackView(arrangedSubviews: [runButton, openFileButton, clearButton, spacer, latexTestButton, settingsButton])
         toolbarStack.axis = .horizontal
         toolbarStack.spacing = 12
         toolbarStack.alignment = .center
@@ -2519,6 +2535,32 @@ except Exception:
 
         terminalHeightConstraint.constant = 200
         view.layoutIfNeeded()
+    }
+
+    /// "Open" toolbar button — present the system document picker so the
+    /// user can browse the Files app for any source file (including
+    /// iCloud Drive, OneDrive, Dropbox, On My iPad…) and load it into
+    /// the editor. Accepts every UTI we declared in Info.plist's
+    /// CFBundleDocumentTypes / UTImportedTypeDeclarations plus the
+    /// generic .text / .sourceCode / .data fallbacks so files without a
+    /// registered UTI (.toml, .lock, .gitignore, custom configs) still
+    /// open. The picker copies the file into the app sandbox by default;
+    /// loadFile() then reads it via the same path used for taps in the
+    /// in-app file browser, so syntax highlighting / autocomplete / the
+    /// editor's recent-file list all light up automatically.
+    @objc private func openFileTapped() {
+        let types: [UTType] = [
+            .pythonScript, .sourceCode, .swiftSource, .cSource, .cPlusPlusSource,
+            .objectiveCSource, .objectiveCPlusPlusSource, .cHeader, .cPlusPlusHeader,
+            .shellScript, .json, .xml, .html, .javaScript, .plainText,
+            .utf8PlainText, .utf16PlainText, .text, .data,
+        ]
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: types, asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        picker.modalPresentationStyle = .formSheet
+        present(picker, animated: true)
     }
 
     @objc private func toggleAIChat() {
@@ -4908,6 +4950,25 @@ final class MinimalTerminalAccessory: UIInputView {
 extension CodeEditorViewController: UIPopoverPresentationControllerDelegate {
     func adaptivePresentationStyle(for controller: UIPresentationController) -> UIModalPresentationStyle {
         return .none
+    }
+}
+
+// MARK: - UIDocumentPickerDelegate — for the toolbar "Open" button.
+
+extension CodeEditorViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController,
+                        didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        // The picker was created with `asCopy: true`, so the URL points
+        // at a copy in the app's sandbox — we own it and don't need
+        // startAccessingSecurityScopedResource. Just hand it to
+        // loadFile, which is the same code path the file browser tap
+        // uses (syntax highlighting, autocomplete, recent-file list).
+        loadFile(url: url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // No-op — user dismissed the picker without choosing a file.
     }
 }
 

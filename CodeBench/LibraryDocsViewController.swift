@@ -35,6 +35,15 @@ final class LibraryDocsViewController: UIViewController {
     private var allSections: [LibrarySection] = []
     private var filteredSections: [LibrarySection] = []
     private var expandedSections: Set<Int> = []
+    /// Live data from importlib.metadata — refreshed on every
+    /// viewWillAppear so `pip install <new-pkg>` is reflected the next
+    /// time the user opens this tab. Indexed by lowercased name so
+    /// the static catalog can pick up live version + size + location.
+    private var installedLibraries: [String: PythonRuntime.InstalledLibraryInfo] = [:]
+    /// Newly-installed packages (in ~/Documents/site-packages) that are
+    /// NOT in the static catalog. Surfaced as their own section at the
+    /// top of the table so freshly pip-installed libs are easy to find.
+    private var userInstalledOnly: [PythonRuntime.InstalledLibraryInfo] = []
 
     // Deep dark theme — matches editor
     private let bgColor = UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1)       // #191a1d
@@ -57,6 +66,76 @@ final class LibraryDocsViewController: UIViewController {
         if let sel = tableView.indexPathForSelectedRow {
             tableView.deselectRow(at: sel, animated: true)
         }
+        refreshInstalledLibraries()
+    }
+
+    /// Pull the latest importlib.metadata snapshot from the running
+    /// interpreter and rebuild the dynamic sections. Called on every
+    /// viewWillAppear so a `pip install <pkg>` the user just ran in
+    /// the terminal shows up the moment they switch back to this tab.
+    /// The expensive part (du-walking every package's install dir)
+    /// runs on a background queue; UI update bounces back to main.
+    private func refreshInstalledLibraries() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let pkgs = PythonRuntime.shared.enumerateInstalledLibraries()
+            let byName = Dictionary(uniqueKeysWithValues:
+                pkgs.map { ($0.name.lowercased().replacingOccurrences(of: "_", with: "-"), $0) })
+            // Names already in the static catalog get folded back into
+            // their existing cards; the rest become a top-level
+            // "User installed" section so freshly-installed packages
+            // are immediately findable.
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.installedLibraries = byName
+                let staticNames = Set(self.allSections.flatMap(\.modules).map {
+                    $0.name.lowercased().replacingOccurrences(of: "_", with: "-")
+                } + self.allSections.map {
+                    $0.name.lowercased().replacingOccurrences(of: "_", with: "-")
+                })
+                self.userInstalledOnly = pkgs.filter {
+                    $0.isUserInstalled
+                        && !staticNames.contains(
+                            $0.name.lowercased().replacingOccurrences(of: "_", with: "-"))
+                }
+                // Expand the "Installed via pip" pseudo-section by
+                // default so newly-installed libs are immediately
+                // visible without an extra tap. -1 is the sentinel
+                // for the pseudo-section in expandedSections.
+                if !self.userInstalledOnly.isEmpty {
+                    self.expandedSections.insert(-1)
+                }
+                self.tableView.reloadData()
+            }
+        }
+    }
+
+    /// Render an installed-library row as the bottom subtitle line —
+    /// "v1.2.3 · 4.7 MB · user-installed" — for cards whose name
+    /// matches a live importlib.metadata entry. Returns nil if no
+    /// live info available, in which case the caller falls back to
+    /// the static summary text.
+    private func liveSubtitleFor(name: String) -> String? {
+        let key = name.lowercased().replacingOccurrences(of: "_", with: "-")
+        guard let info = installedLibraries[key] else { return nil }
+        var parts: [String] = ["v\(info.version)"]
+        if info.sizeBytes > 0 {
+            parts.append(Self.formatBytes(info.sizeBytes))
+        }
+        parts.append(info.isUserInstalled ? "user-installed" : "bundled")
+        if !info.consoleScripts.isEmpty {
+            let cmds = info.consoleScripts.prefix(3).joined(separator: ", ")
+            parts.append("cmd: \(cmds)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func formatBytes(_ n: Int64) -> String {
+        let kb = 1024.0, mb = kb * 1024, gb = mb * 1024
+        let v = Double(n)
+        if v >= gb { return String(format: "%.1f GB", v / gb) }
+        if v >= mb { return String(format: "%.1f MB", v / mb) }
+        if v >= kb { return String(format: "%.0f KB", v / kb) }
+        return "\(n) B"
     }
 
     // MARK: - UI Setup
@@ -234,19 +313,50 @@ extension LibraryDocsViewController: UISearchBarDelegate {
 
 extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate {
 
-    func numberOfSections(in tableView: UITableView) -> Int { filteredSections.count }
+    /// "User installed" pseudo-section index. -1 when the user has no
+    /// pip-installed-only packages (we just hide the section).
+    private var userInstalledSectionIndex: Int {
+        userInstalledOnly.isEmpty ? -1 : 0
+    }
+
+    /// Map a tableView section index back to the underlying static
+    /// `filteredSections` index, accounting for the optional dynamic
+    /// "User installed" section that may sit at the top.
+    private func staticSectionIndex(for displaySection: Int) -> Int {
+        userInstalledOnly.isEmpty ? displaySection : displaySection - 1
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        filteredSections.count + (userInstalledOnly.isEmpty ? 0 : 1)
+    }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        expandedSections.contains(section) ? filteredSections[section].modules.count : 0
+        if section == userInstalledSectionIndex {
+            return expandedSections.contains(-1) ? userInstalledOnly.count : 0
+        }
+        let idx = staticSectionIndex(for: section)
+        return expandedSections.contains(idx) ? filteredSections[idx].modules.count : 0
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
         guard let header = tableView.dequeueReusableHeaderFooterView(withIdentifier: SectionHeaderView.id) as? SectionHeaderView else { return nil }
-        let s = filteredSections[section]
-        let expanded = expandedSections.contains(section)
+        if section == userInstalledSectionIndex {
+            // Pseudo-section keyed by the special index -1 in
+            // expandedSections so it doesn't collide with real indices.
+            let expanded = expandedSections.contains(-1)
+            header.configure(title: "Installed via pip", icon: "shippingbox",
+                             moduleCount: userInstalledOnly.count, expanded: expanded,
+                             bgColor: bgColor, textColor: textColor,
+                             accentColor: UIColor.systemGreen, dimColor: dimTextColor)
+            header.onTap = { [weak self] in self?.togglePseudoSection() }
+            return header
+        }
+        let idx = staticSectionIndex(for: section)
+        let s = filteredSections[idx]
+        let expanded = expandedSections.contains(idx)
         header.configure(title: s.name, icon: s.icon, moduleCount: s.modules.count, expanded: expanded,
                          bgColor: bgColor, textColor: textColor, accentColor: accentColor, dimColor: dimTextColor)
-        header.onTap = { [weak self] in self?.toggleSection(section) }
+        header.onTap = { [weak self] in self?.toggleSection(idx) }
         return header
     }
 
@@ -255,14 +365,80 @@ extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate 
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: ModuleCell.id, for: indexPath) as! ModuleCell
-        let mod = filteredSections[indexPath.section].modules[indexPath.row]
+        if indexPath.section == userInstalledSectionIndex {
+            // Render a pip-installed package as a synthetic LibraryModule
+            // — name + summary + version-tagged subtitle. The real
+            // metadata is stored in installedLibraries; we just need
+            // enough shape to fill the existing cell.
+            let info = userInstalledOnly[indexPath.row]
+            let subtitle: String = {
+                var parts: [String] = ["v\(info.version)"]
+                if info.sizeBytes > 0 { parts.append(Self.formatBytes(info.sizeBytes)) }
+                if !info.consoleScripts.isEmpty {
+                    let cmds = info.consoleScripts.prefix(2).joined(separator: ", ")
+                    parts.append("cmd: \(cmds)")
+                }
+                return parts.joined(separator: " · ")
+            }()
+            let synthetic = LibraryModule(
+                name: info.name,
+                summary: info.summary.isEmpty ? subtitle : "\(info.summary)\n\(subtitle)",
+                importLine: "import \(info.name.replacingOccurrences(of: "-", with: "_").lowercased())",
+                items: info.requires,
+                example: ""
+            )
+            cell.configure(module: synthetic, bgColor: bgColor, surfaceColor: surfaceColor,
+                           textColor: textColor, dimColor: dimTextColor, accentColor: accentColor)
+            return cell
+        }
+        let idx = staticSectionIndex(for: indexPath.section)
+        var mod = filteredSections[idx].modules[indexPath.row]
+        // Fold the live importlib.metadata data (version, size,
+        // user/bundled tag) into the static catalog's summary line so
+        // the cards stay accurate after a fresh `pip install <pkg>`.
+        if let live = liveSubtitleFor(name: filteredSections[idx].name) {
+            mod = LibraryModule(
+                name: mod.name,
+                summary: "\(mod.summary)\n\(live)",
+                importLine: mod.importLine,
+                items: mod.items,
+                example: mod.example,
+                language: mod.language
+            )
+        }
         cell.configure(module: mod, bgColor: bgColor, surfaceColor: surfaceColor,
                        textColor: textColor, dimColor: dimTextColor, accentColor: accentColor)
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        let section = filteredSections[indexPath.section]
+        if indexPath.section == userInstalledSectionIndex {
+            // Tap on a user-installed package shows a quick-info alert
+            // (no rich docs to navigate to since these aren't in the
+            // static catalog). The user can copy `import <pkg>` to
+            // the editor.
+            let info = userInstalledOnly[indexPath.row]
+            let modName = info.name.replacingOccurrences(of: "-", with: "_").lowercased()
+            let body = """
+                version  \(info.version)
+                size     \(info.sizeBytes > 0 ? Self.formatBytes(info.sizeBytes) : "?")
+                location user-installed
+                \(info.consoleScripts.isEmpty ? "" : "\nCLI commands:\n  " + info.consoleScripts.joined(separator: ", "))
+                \(info.requires.isEmpty ? "" : "\nRequires:\n  " + info.requires.prefix(8).joined(separator: "\n  "))
+                """
+            let alert = UIAlertController(title: info.name, message: body,
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Insert `import \(modName)`",
+                                          style: .default) { [weak self] _ in
+                guard let self else { return }
+                self.delegate?.libraryDocs(self, didRequestOpenCode: "import \(modName)\n", language: "python")
+            })
+            alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+            present(alert, animated: true)
+            return
+        }
+        let idx = staticSectionIndex(for: indexPath.section)
+        let section = filteredSections[idx]
         let mod = section.modules[indexPath.row]
         let detail = ModuleDetailViewController(
             module: mod, libraryName: section.name,
@@ -288,16 +464,26 @@ extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate 
         }
     }
 
-    private func toggleSection(_ section: Int) {
-        let wasExpanded = expandedSections.contains(section)
-        if wasExpanded { expandedSections.remove(section) } else { expandedSections.insert(section) }
-        let count = filteredSections[section].modules.count
-        let paths = (0..<count).map { IndexPath(row: $0, section: section) }
+    private func togglePseudoSection() {
+        let wasExpanded = expandedSections.contains(-1)
+        if wasExpanded { expandedSections.remove(-1) } else { expandedSections.insert(-1) }
+        tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+    }
+
+    private func toggleSection(_ staticIdx: Int) {
+        let wasExpanded = expandedSections.contains(staticIdx)
+        if wasExpanded { expandedSections.remove(staticIdx) } else { expandedSections.insert(staticIdx) }
+        let count = filteredSections[staticIdx].modules.count
+        // Translate the static index back to the display section,
+        // accounting for the optional "Installed via pip" pseudo-
+        // section at index 0 when userInstalledOnly is non-empty.
+        let displaySection = userInstalledOnly.isEmpty ? staticIdx : staticIdx + 1
+        let paths = (0..<count).map { IndexPath(row: $0, section: displaySection) }
         tableView.beginUpdates()
         if wasExpanded { tableView.deleteRows(at: paths, with: .fade) }
         else { tableView.insertRows(at: paths, with: .fade) }
         tableView.endUpdates()
-        if let header = tableView.headerView(forSection: section) as? SectionHeaderView {
+        if let header = tableView.headerView(forSection: displaySection) as? SectionHeaderView {
             header.setExpanded(!wasExpanded, animated: true)
         }
     }

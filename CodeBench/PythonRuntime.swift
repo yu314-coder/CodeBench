@@ -47,6 +47,23 @@ final class PythonRuntime {
         let detail: String?
     }
 
+    /// Rich metadata for one installed Python distribution. Returned in
+    /// bulk by `enumerateInstalledLibraries()` and consumed by
+    /// LibraryDocsViewController to render the "Installed packages"
+    /// section that refreshes on every tab visit (so newly pip-installed
+    /// libs show up without a restart).
+    struct InstalledLibraryInfo: Equatable {
+        let name: String
+        let version: String
+        let summary: String
+        let homepage: String
+        let location: String
+        let isUserInstalled: Bool   // ~/Documents/site-packages vs bundled
+        let sizeBytes: Int64
+        let consoleScripts: [String]
+        let requires: [String]
+    }
+
     private enum RuntimeError: LocalizedError {
         case message(String)
 
@@ -373,6 +390,120 @@ print("__CODEBENCH_LIB_STATUS__=" + json.dumps(_codebench_lib_status))
             let state = LibraryProbe.State(rawValue: rawState) ?? .error
             let detail = entry["detail"] as? String
             return LibraryProbe(name: name, state: state, detail: detail)
+        }
+    }
+
+    /// Enumerate every installed Python distribution via importlib.metadata
+    /// and return rich per-package info: name, version, summary, location
+    /// (bundled vs ~/Documents/site-packages user install), on-disk size,
+    /// homepage URL, console-scripts entry points, and direct deps.
+    ///
+    /// Refreshable: each call re-walks importlib.metadata so freshly
+    /// pip-installed packages appear without restarting the interpreter.
+    /// Used by LibraryDocsViewController.viewWillAppear to keep the
+    /// libraries tab in sync with `pip install` / `pip uninstall`.
+    func enumerateInstalledLibraries() -> [InstalledLibraryInfo] {
+        let script = """
+import importlib.metadata as _md
+import json, os, sys
+
+def _du(path):
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            if "__pycache__" in root:
+                continue
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+USER_SITE = os.path.expanduser("~/Documents/site-packages")
+_codebench_pkgs = []
+for dist in _md.distributions():
+    try:
+        meta = dist.metadata
+        name = meta["Name"] or "?"
+        version = dist.version
+        summary = meta.get("Summary", "") or ""
+        homepage = meta.get("Home-page", "") or ""
+        try:
+            loc = str(dist.locate_file("") or "")
+        except Exception:
+            loc = ""
+        # Walk to the package's installed root for du.
+        pkg_dir = ""
+        try:
+            files = list(dist.files or [])
+            if files:
+                pkg_dir = str(dist.locate_file(files[0])).rsplit("/", 1)[0]
+        except Exception:
+            pass
+        if not pkg_dir:
+            pkg_dir = loc
+        size = _du(pkg_dir)
+        is_user = bool(loc) and (USER_SITE in loc or "/Documents/site-packages" in loc)
+        eps = []
+        try:
+            for ep in dist.entry_points:
+                if ep.group == "console_scripts":
+                    eps.append(ep.name)
+        except Exception:
+            pass
+        try:
+            requires = list(meta.get_all("Requires-Dist") or [])
+        except Exception:
+            requires = []
+        _codebench_pkgs.append({
+            "name": name,
+            "version": version,
+            "summary": summary[:200],
+            "homepage": homepage,
+            "location": loc,
+            "is_user_installed": is_user,
+            "size_bytes": size,
+            "console_scripts": eps,
+            "requires": requires[:20],
+        })
+    except Exception:
+        continue
+print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
+"""
+        let result = execute(code: script)
+        let output = result.output
+        guard let markerRange = output.range(of: "__CODEBENCH_INSTALLED__=") else {
+            return []
+        }
+        let jsonText = output[markerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = jsonText.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { entry -> InstalledLibraryInfo? in
+            guard let name = entry["name"] as? String, !name.isEmpty else { return nil }
+            return InstalledLibraryInfo(
+                name: name,
+                version: (entry["version"] as? String) ?? "?",
+                summary: (entry["summary"] as? String) ?? "",
+                homepage: (entry["homepage"] as? String) ?? "",
+                location: (entry["location"] as? String) ?? "",
+                isUserInstalled: (entry["is_user_installed"] as? Bool) ?? false,
+                sizeBytes: (entry["size_bytes"] as? Int64) ?? 0,
+                consoleScripts: (entry["console_scripts"] as? [String]) ?? [],
+                requires: (entry["requires"] as? [String]) ?? []
+            )
+        }.sorted { lhs, rhs in
+            // User-installed first (newest changes), then alphabetical.
+            if lhs.isUserInstalled != rhs.isUserInstalled {
+                return lhs.isUserInstalled && !rhs.isUserInstalled
+            }
+            return lhs.name.lowercased() < rhs.name.lowercased()
         }
     }
 

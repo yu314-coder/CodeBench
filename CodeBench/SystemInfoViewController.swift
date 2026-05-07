@@ -290,18 +290,54 @@ final class SystemInfoViewController: UIViewController {
     }
 
     private func runtimesRows() -> [(String, String)] {
-        let bundle = Bundle.main.bundlePath
         let fm = FileManager.default
-        func has(_ relPath: String) -> String {
-            fm.fileExists(atPath: bundle + "/" + relPath) ? "✓ available" : "— missing"
+        let bundle = Bundle.main.bundlePath
+        let appPkg = bundle + "/app_packages/site-packages"
+
+        // Probe each artifact at the location it ACTUALLY lands at
+        // runtime — different from where it lives in source:
+        //   • busytex.wasm: source is CodeBench/Resources/Busytex/, but
+        //     Xcode 16's PBXFileSystemSynchronizedRootGroup flattens
+        //     subfolders into the bundle root → use Bundle.main.url
+        //     to find it wherever Xcode placed it.
+        //   • llama.xcframework: gets resolved at build time to a
+        //     concrete .framework matching the build platform.
+        //   • executorch.xcframework: linked statically, NOT a file in
+        //     the bundle; detect via the executorch Python package.
+        //   • torch: a Python package in app_packages/site-packages,
+        //     not a framework.
+
+        func bundleHas(_ name: String, ext: String) -> Bool {
+            Bundle.main.url(forResource: name, withExtension: ext) != nil
         }
+
+        let busytexOK = bundleHas("busytex", ext: "wasm")
+        let llamaFwOK = fm.fileExists(atPath: bundle + "/Frameworks/llama.framework/llama")
+        let llamaXcOK = fm.fileExists(atPath: bundle + "/Frameworks/llama.xcframework")
+        let llamaOK = llamaFwOK || llamaXcOK
+        let pythonFwOK = fm.fileExists(atPath: bundle + "/Frameworks/Python.framework/Python")
+        let pythonAltOK = fm.fileExists(atPath: bundle + "/python")
+
+        let torchOK = fm.fileExists(atPath: appPkg + "/torch/__init__.py")
+        let executorchOK = fm.fileExists(atPath: appPkg + "/executorch/__init__.py")
+            || fm.fileExists(atPath: appPkg + "/executorch")
+
+        // C / C++ / Fortran are in-process runtimes (clang+lld + flang
+        // statically linked into the app binary). We can't introspect
+        // them via a path, but we can verify our wrapper classes exist
+        // at module load — which they do because the file references
+        // resolve at compile time. So just say "available" for those.
+
+        func mark(_ ok: Bool) -> String { ok ? "✓ available" : "— not found" }
+
         return [
-            ("Python",    has("Frameworks/Python.framework") + " or " + has("python")),
-            ("C / C++",   "via in-process clang+lld (CRuntime / CppRuntime)"),
-            ("Fortran",   "via flang+lld (FortranRuntime)"),
-            ("LaTeX",     has("Resources/Busytex/busytex.wasm")),
-            ("ExecuTorch", has("Frameworks/executorch.xcframework")),
-            ("llama.cpp", has("Frameworks/llama.xcframework")),
+            ("Python",     mark(pythonFwOK || pythonAltOK)),
+            ("C / C++",    "✓ via in-process clang+lld"),
+            ("Fortran",    "✓ via in-process flang+lld"),
+            ("LaTeX",      mark(busytexOK) + (busytexOK ? " (busytex pdftex/xelatex/lualatex)" : "")),
+            ("ExecuTorch", mark(executorchOK) + (executorchOK ? " (statically linked)" : "")),
+            ("llama.cpp",  mark(llamaOK) + (llamaOK ? " (Frameworks/llama.framework)" : "")),
+            ("PyTorch",    mark(torchOK) + (torchOK ? " (app_packages/site-packages/torch)" : "")),
         ]
     }
 

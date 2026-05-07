@@ -179,13 +179,12 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
         isReady = true
         NSLog("[PTY] ready (pipes): stdin_w=\(stdinPipe[1]) stdout_r=\(stdoutPipe[0])")
 
-        // Write one visible line through the stdout pipe's write end
-        // directly (NOT fd 1 — that's Swift's print() territory and we
-        // don't want to hijack it anymore).
-        let banner = "\u{1b}[38;5;244m[terminal ready — type to Python]\u{1b}[0m\r\n"
-        banner.withCString { cs in
-            _ = Darwin.write(stdoutPipeWriteFD, cs, strlen(cs))
-        }
+        // No banner here. The terminal view (CodeEditorViewController.
+        // setTerminalInitialBanner) renders an instant prompt the
+        // moment the editor view loads — much faster than waiting for
+        // PTY bytes to flow round-trip through the read loop, and
+        // visually cleaner without the "[terminal ready]" line racing
+        // the prompt at unpredictable intervals.
 
         installMagicKeyboardObservers()
     }

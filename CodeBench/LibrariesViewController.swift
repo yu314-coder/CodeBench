@@ -1,114 +1,42 @@
 import UIKit
 
-/// Libraries tab — two segments:
-///   1. **Installed**  — the list of Python packages currently shipped
-///                       (app_packages/site-packages) + user-installed
-///                       (Documents/site-packages) with version numbers.
-///   2. **Docs**       — LibraryDocsViewController's reference material.
-///
-/// The previous "Install" segment was removed — users can run
-/// `pip install <pkg>` directly from the main terminal, which is faster
-/// and avoids duplicating the install plumbing.
+/// Libraries tab — modernized to a single live view of every Python
+/// package the running interpreter can see (bundled
+/// `app_packages/site-packages` + user-installed `Documents/site-packages`)
+/// with version numbers and a tap-to-open PyPI docs link. The earlier
+/// segmented control with a "Docs" tab housing a static catalog of
+/// hand-curated module summaries has been removed — that data was
+/// always stale relative to what was actually installed, and the
+/// modern PyPI page (which every published package has) is a better
+/// docs source we don't have to maintain.
 final class LibrariesViewController: UIViewController {
 
-    // Segmented control at top
-    private let segmentedControl = UISegmentedControl(items: ["Installed", "Docs"])
-
-    // Two container views
-    private let installedContainer = UIView()
-    private let docsContainer      = UIView()
-
-    // Child VCs (lazy — docs)
-    private var docsController:    LibraryDocsViewController?
-
-    // Installed list
+    // Single child: the live installed-packages list.
     private let installedList = InstalledLibsViewController()
 
-    // Delegate forwarded from LibraryDocsViewController — hosted screens can
-    // use this to pipe example code into the editor, just like before.
+    // Delegate kept for source-compat with sites still passing one in
+    // (GameViewController). Currently unused — InstalledLibsViewController
+    // surfaces docs via Safari rather than piping example code into
+    // the editor.
     weak var docsDelegate: LibraryDocsDelegate?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(red: 0.075, green: 0.078, blue: 0.090, alpha: 1.0) // #131417
         buildUI()
-        showSegment(0)
     }
 
     private func buildUI() {
-        // Segmented control (dark-theme styled)
-        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
-        segmentedControl.selectedSegmentIndex = 0
-        segmentedControl.backgroundColor = UIColor(white: 0.13, alpha: 1)
-        segmentedControl.selectedSegmentTintColor = UIColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0)
-        segmentedControl.setTitleTextAttributes(
-            [.foregroundColor: UIColor(white: 0.6, alpha: 1), .font: UIFont.systemFont(ofSize: 13, weight: .semibold)],
-            for: .normal)
-        segmentedControl.setTitleTextAttributes(
-            [.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 13, weight: .semibold)],
-            for: .selected)
-        segmentedControl.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
-        view.addSubview(segmentedControl)
-
-        // Containers
-        installedContainer.translatesAutoresizingMaskIntoConstraints = false
-        docsContainer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(installedContainer)
-        view.addSubview(docsContainer)
-
-        NSLayoutConstraint.activate([
-            segmentedControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
-            segmentedControl.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            segmentedControl.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            segmentedControl.heightAnchor.constraint(equalToConstant: 34),
-        ])
-        for c in [installedContainer, docsContainer] {
-            NSLayoutConstraint.activate([
-                c.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 10),
-                c.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                c.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                c.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-        }
-
-        // Embed the "Installed" VC eagerly (cheap — just a table)
         addChild(installedList)
         installedList.view.translatesAutoresizingMaskIntoConstraints = false
-        installedContainer.addSubview(installedList.view)
+        view.addSubview(installedList.view)
         NSLayoutConstraint.activate([
-            installedList.view.topAnchor.constraint(equalTo: installedContainer.topAnchor),
-            installedList.view.leadingAnchor.constraint(equalTo: installedContainer.leadingAnchor),
-            installedList.view.trailingAnchor.constraint(equalTo: installedContainer.trailingAnchor),
-            installedList.view.bottomAnchor.constraint(equalTo: installedContainer.bottomAnchor),
+            installedList.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            installedList.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            installedList.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            installedList.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         installedList.didMove(toParent: self)
-    }
-
-    @objc private func segmentChanged() {
-        showSegment(segmentedControl.selectedSegmentIndex)
-    }
-
-    private func showSegment(_ index: Int) {
-        installedContainer.isHidden = index != 0
-        docsContainer.isHidden      = index != 1
-
-        // Lazily build Docs
-        if index == 1 && docsController == nil {
-            let dc = LibraryDocsViewController()
-            dc.delegate = docsDelegate
-            dc.isCompactMode = false
-            addChild(dc)
-            dc.view.translatesAutoresizingMaskIntoConstraints = false
-            docsContainer.addSubview(dc.view)
-            NSLayoutConstraint.activate([
-                dc.view.topAnchor.constraint(equalTo: docsContainer.topAnchor),
-                dc.view.leadingAnchor.constraint(equalTo: docsContainer.leadingAnchor),
-                dc.view.trailingAnchor.constraint(equalTo: docsContainer.trailingAnchor),
-                dc.view.bottomAnchor.constraint(equalTo: docsContainer.bottomAnchor),
-            ])
-            dc.didMove(toParent: self)
-            docsController = dc
-        }
     }
 }
 
@@ -298,7 +226,10 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: ip)
         let pkg = filtered[ip.row]
         cell.backgroundColor = UIColor(white: 0.12, alpha: 1)
-        cell.selectionStyle = .none
+        // Default selection style + accessory chevron so the row reads
+        // as tappable (taps surface the docs link / quick info).
+        cell.selectionStyle = .default
+        cell.accessoryType = .disclosureIndicator
 
         var cfg = cell.defaultContentConfiguration()
         cfg.text = pkg.name
@@ -311,6 +242,44 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         cfg.secondaryTextProperties.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         cell.contentConfiguration = cfg
         return cell
+    }
+
+    /// Tap a row → action sheet with: open the package's docs page on
+    /// PyPI in Safari, copy `import <pkg>` to clipboard, or close.
+    /// PyPI URL works for any pip-installable name; for stdlib /
+    /// hand-shipped packages without a PyPI presence the user just
+    /// gets a 404 page, but that's fine.
+    func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
+        tv.deselectRow(at: ip, animated: true)
+        let pkg = filtered[ip.row]
+        let slug = pkg.name
+            .replacingOccurrences(of: " ", with: "-")
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pkg.name
+        let pypi = URL(string: "https://pypi.org/project/\(slug)/")
+        let modName = pkg.name
+            .replacingOccurrences(of: "-", with: "_")
+            .lowercased()
+
+        let body = "version  \(pkg.version)\norigin   \(pkg.origin)"
+        let alert = UIAlertController(title: pkg.name, message: body,
+                                      preferredStyle: .actionSheet)
+        if let url = pypi {
+            alert.addAction(UIAlertAction(title: "View docs on PyPI", style: .default) { _ in
+                UIApplication.shared.open(url)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Copy `import \(modName)`", style: .default) { _ in
+            UIPasteboard.general.string = "import \(modName)"
+        })
+        alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+        // iPad action sheets must be anchored.
+        if let pop = alert.popoverPresentationController,
+           let cell = tv.cellForRow(at: ip) {
+            pop.sourceView = cell
+            pop.sourceRect = cell.bounds
+            pop.permittedArrowDirections = .any
+        }
+        present(alert, animated: true)
     }
 
     // MARK: - Search

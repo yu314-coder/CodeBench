@@ -582,11 +582,18 @@ final class CodeEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = EditorTheme.background
+        // Set up the terminal FIRST so its instant prompt is rendered
+        // before the heavier setupEditor (WKWebView + Monaco bundle
+        // load) blocks the main thread for a few hundred ms. The
+        // SwiftTerm view buffers bytes regardless of layout state, so
+        // the prompt is displayed the moment the view does its first
+        // layout pass — instead of waiting for everything else to be
+        // built first.
+        setupTerminal()
         setupToolbar()
         setupEditor()
         setupAIChat()
         setupOutputPanel()
-        setupTerminal()
         setupSettingsPanel()
         setupLayout()
         setupSuggestionsTable()

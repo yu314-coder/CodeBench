@@ -1748,20 +1748,28 @@ final class CodeEditorViewController: UIViewController {
         tap.delegate = self
         swiftTermView.addGestureRecognizer(tap)
 
-        // Cursor-drag-to-select: SwiftTerm only enables drag-to-select
-        // AFTER a long-press triggers selection mode. On Mac Catalyst
-        // (trackpad/mouse) we want drag-to-select from the first touch,
-        // just like any normal text view. Reach into SwiftTerm's own
-        // long-press recognizer and cut its minimumPressDuration to
-        // 0.05s — near-zero so a trackpad click-and-drag feels like
-        // a native text-selection drag. Stationary tap/release still
-        // gets counted as a tap because the recognizer needs *any*
-        // movement before transitioning out of .began.
+        // Cursor-drag-to-select: SwiftTerm's stock behavior requires a
+        // long-press to enter selection mode before drag does anything.
+        // The user wants drag-to-select from the FIRST touch — the way
+        // every other iOS text view works. We rewire SwiftTerm's
+        // existing long-press recognizer:
+        //   • minimumPressDuration → 0.0    so it transitions to .began
+        //                                    on the very first touch-down
+        //   • allowableMovement    → 10 000 so drag never cancels the
+        //                                    recognizer
+        // Combined: touch-down enters selection-mode immediately, drag
+        // extends the selection range, lift commits. Stationary touch
+        // (tap to focus) is handled by the separate single-tap
+        // recognizer added below — that fires when the long-press has
+        // recorded zero movement on lift.
         for gr in swiftTermView.gestureRecognizers ?? [] {
             if let lp = gr as? UILongPressGestureRecognizer,
-               lp.minimumPressDuration > 0.3 {
-                lp.minimumPressDuration = 0.05
-                lp.allowableMovement = 4  // tighten tap slop so drag wins sooner
+               lp.minimumPressDuration > 0.0 {
+                lp.minimumPressDuration = 0.0
+                lp.allowableMovement = 10_000
+                // Don't let the LP delay the tap recognizer fall-through.
+                lp.delaysTouchesBegan = false
+                lp.delaysTouchesEnded = false
                 break
             }
         }
@@ -2070,10 +2078,27 @@ except Exception:
         // looked broken. Sending the wipe sequences is what actually
         // empties SwiftTerm.
         swiftTermView.feed(text: "\u{1b}c\u{1b}[3J\u{1b}[H")
-        // A single reassuring line so typing visibly works before Python
-        // finishes Py_Initialize (~0.5–1 s on cold launch).
-        let boot = "\u{1b}[38;5;244mstarting python… you can start typing\u{1b}[0m\r\n"
-        swiftTermView.feed(text: boot)
+        // Render the same PS1 Python's offlinai_shell.Shell.prompt()
+        // would emit — instant, so the user doesn't stare at "starting
+        // python…" for the 1–2 s Py_Initialize + offlinai_shell import
+        // takes on cold launch. Format / colors match the real prompt
+        // exactly; offlinai_shell's repl() reads OFFLINAI_SHELL_NO_INTRO
+        // and skips its banner + first-prompt emit so we don't double
+        // up. Bytes typed into PTY before Python is reading get queued
+        // by the kernel and flow through naturally once repl() opens
+        // sys.stdin.
+        let user = ProcessInfo.processInfo.environment["USER"]
+            ?? ProcessInfo.processInfo.environment["LOGNAME"]
+            ?? "mobile"
+        let host = "localhost"   // Python side falls back to platform.machine
+                                  // → "iPad" / "iPhone"; "localhost" matches
+                                  // the most common iOS sandbox return.
+        let promptLine =
+            "\u{1b}[1m\(user)@\(host)\u{1b}[0m" +   // bold user@host
+            " ~/Documents/Workspace " +
+            "\u{1b}[1m%\u{1b}[0m "                  // bold trailing %
+        swiftTermView.feed(text: promptLine)
+        setenv("OFFLINAI_SHELL_NO_INTRO", "1", 1)
     }
 
     private func setTerminalStatus(_ s: TerminalStatus) {

@@ -42,6 +42,7 @@ final class CodeEditorViewController: UIViewController {
         case c = 1
         case cpp = 2
         case fortran = 3
+        case latex = 4
 
         var title: String {
             switch self {
@@ -49,6 +50,7 @@ final class CodeEditorViewController: UIViewController {
             case .c: return "C"
             case .cpp: return "C++"
             case .fortran: return "Fortran"
+            case .latex: return "LaTeX"
             }
         }
 
@@ -59,6 +61,7 @@ final class CodeEditorViewController: UIViewController {
             case .c: return "c"
             case .cpp: return "cpp"
             case .fortran: return "fortran" // Tokenizer is registered by editor.js
+            case .latex: return "latex"     // Monaco has builtin latex tokenizer
             }
         }
 
@@ -72,6 +75,8 @@ final class CodeEditorViewController: UIViewController {
                 return "#include <iostream>\n#include <vector>\n#include <string>\nusing namespace std;\n\nclass Greeter {\npublic:\n    string name;\n    Greeter(string n) { name = n; }\n    void greet() { cout << \"Hello, \" << name << \"!\" << endl; }\n};\n\nint main() {\n    Greeter g(\"World\");\n    g.greet();\n\n    vector<int> nums = {1, 2, 3, 4, 5};\n    for (auto& n : nums) {\n        cout << n * n << \" \";\n    }\n    cout << endl;\n    return 0;\n}\n"
             case .fortran:
                 return "program hello\n    implicit none\n    integer :: i\n    real :: pi\n    pi = 4.0 * atan(1.0)\n    print *, \"Hello, World!\"\n    print *, \"pi =\", pi\n    do i = 1, 5\n        print *, \"i =\", i, \"i^2 =\", i*i\n    end do\nend program hello\n"
+            case .latex:
+                return "\\documentclass{article}\n\\usepackage{amsmath, amssymb}\n\n\\title{Hello, \\LaTeX{}}\n\\author{CodeBench}\n\n\\begin{document}\n\\maketitle\n\nThis is a sample LaTeX document.\n\n\\section{Math}\n\\begin{equation}\n  e^{i\\pi} + 1 = 0\n\\end{equation}\n\n\\end{document}\n"
             }
         }
     }
@@ -836,6 +841,13 @@ final class CodeEditorViewController: UIViewController {
             return Array(Self.cppKeywords) + Self.cppBuiltins
         case .fortran:
             return Array(Self.fortranKeywords) + Self.fortranBuiltins
+        case .latex:
+            // No autocomplete dictionary for LaTeX yet — Monaco's
+            // built-in tokenizer handles syntax highlighting; symbol
+            // hints would need a TeX-specific dictionary which we
+            // haven't curated. Empty list = fall-through to base
+            // editor behavior (just typed-prefix matching).
+            return []
         }
     }
 
@@ -1188,9 +1200,16 @@ final class CodeEditorViewController: UIViewController {
         latexTestButton.addTarget(self, action: #selector(showLaTeXPreview), for: .touchUpInside)
         latexTestButton.translatesAutoresizingMaskIntoConstraints = false
 
+        // Renamed from a bare gear icon to "Manim Settings" so its
+        // purpose (manim quality / fps controls only) is clear at a
+        // glance — the gear icon was misread as global-app settings.
         var settingsConfig = UIButton.Configuration.plain()
-        settingsConfig.image = UIImage(systemName: "gearshape.fill")
-        settingsConfig.baseForegroundColor = EditorTheme.foreground
+        settingsConfig.title = "Manim Settings"
+        settingsConfig.image = UIImage(systemName: "gearshape.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11))
+        settingsConfig.imagePadding = 4
+        settingsConfig.baseForegroundColor = .systemPurple
+        settingsConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         settingsButton.configuration = settingsConfig
         settingsButton.addTarget(self, action: #selector(toggleSettingsPanel), for: .touchUpInside)
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -2503,6 +2522,22 @@ except Exception:
                     output = "Error: \(result.error ?? "unknown")\n\(result.output)"
                     hasError = true
                 }
+
+            case .latex:
+                // Drive the existing offlinai_latex.compile_doc() flow:
+                // write the editor's text to a .tex file, ask the
+                // LaTeX engine to compile it via Python, and show the
+                // resulting PDF in the output panel. This is the same
+                // path the terminal's `pdflatex foo.tex` builtin uses,
+                // so CJK auto-routing to xelatex etc. all work.
+                let result = self.compileLaTeXSync(source: code)
+                if let pdfPath = result.pdfPath {
+                    output = "PDF written: \(pdfPath)\n\(result.log)"
+                    resultImagePath = pdfPath  // showImageOutput accepts PDF
+                } else {
+                    output = "LaTeX failed (status=\(result.status))\n\(result.log)"
+                    hasError = true
+                }
             }
 
             let elapsed = CFAbsoluteTimeGetCurrent() - start
@@ -3649,6 +3684,48 @@ except Exception:
     /// handled natively by SwiftTerm's VT100 state machine — no more
     /// NSAttributedString reimplementation. We also keep a mirror in
     /// `terminalLogBuffer` so Copy and Export-log still work.
+    /// Synchronous wrapper around BusytexEngine.compile for use from
+    /// the Run-button path (which already runs on a background queue).
+    /// Writes the user's source to a temp .tex, drives busytex's WASM
+    /// pdftex through the same path the in-app `pdflatex` builtin
+    /// uses, and returns the resulting PDF path + log + status code.
+    /// Times out after 90 s — long enough for cold-start busytex to
+    /// preload its texmf, generous enough for a real-doc compile.
+    func compileLaTeXSync(source: String) -> (status: Int, log: String, pdfPath: String?) {
+        let tmpDir = NSTemporaryDirectory().appending("codebench_latex/")
+        try? FileManager.default.createDirectory(atPath: tmpDir,
+            withIntermediateDirectories: true)
+        let stem = "doc_\(Int(Date().timeIntervalSince1970))"
+        let pdfOut = tmpDir + stem + ".pdf"
+
+        let sem = DispatchSemaphore(value: 0)
+        var status = -1
+        var logText = ""
+        var pdfPath: String? = nil
+        BusytexEngine.shared.compile(
+            texSource: source,
+            mainFileName: stem + ".tex",
+            workingDir: URL(fileURLWithPath: tmpDir, isDirectory: true)
+        ) { rc, log, pdfData in
+            status = rc
+            logText = log
+            if rc == 0, let data = pdfData {
+                do {
+                    try data.write(to: URL(fileURLWithPath: pdfOut))
+                    pdfPath = pdfOut
+                } catch {
+                    logText += "\nPDF write failed: \(error)"
+                }
+            }
+            sem.signal()
+        }
+        // 90 s ceiling for cold-start busytex (WASM + texmf preload
+        // takes 30 s, then a complex doc 30-60 s). Anything longer
+        // is a hung WASM call we should bail on.
+        _ = sem.wait(timeout: .now() + 90)
+        return (status, logText, pdfPath)
+    }
+
     private func appendToTerminal(_ text: String, isError: Bool) {
         // If the caller tagged this as an error, bracket in red so stuff
         // without its own escape codes still stands out.
@@ -3907,6 +3984,13 @@ except Exception:
         case .fortran:
             keywords = Self.fortranKeywords
             commentPrefix = "!"
+            hasPreprocessor = false
+        case .latex:
+            // We don't run the legacy in-house highlighter for LaTeX —
+            // Monaco's tokenizer is much better — so just supply
+            // empty/safe values to keep the switch exhaustive.
+            keywords = []
+            commentPrefix = "%"
             hasPreprocessor = false
         }
 
@@ -4234,9 +4318,16 @@ except Exception:
         case "log", "txt", "out", "err":
             currentLanguage = .python      // closest enum fallback
             monacoLang = "plaintext"        // Monaco built-in, no highlighting
-        case "tex", "ltx", "sty", "cls", "def":
+        case "tex", "ltx":
+            // .tex / .ltx → Run button compiles via busytex pdftex.
+            currentLanguage = .latex
+            monacoLang = "latex"
+        case "sty", "cls", "def":
+            // Style/class/def files aren't standalone documents; treat
+            // them as plain text-with-LaTeX-syntax — Run won't help so
+            // fall back to Python so it's a no-op rather than failing.
             currentLanguage = .python
-            monacoLang = "latex"            // Monaco ships a LaTeX tokenizer
+            monacoLang = "latex"
         case "md", "markdown":
             currentLanguage = .python
             monacoLang = "markdown"

@@ -112,14 +112,17 @@ final class GameViewController: UIViewController {
     private var filesManagerController: ModelsManagerViewController?
     private let editorContainer = UIView()
     private let librariesContainer = UIView()
+    private let systemInfoContainer = UIView()
     private let contentTabBar = UIView()
     private let editorTabButton = UIButton(type: .system)
     private let librariesTabButton = UIButton(type: .system)
-    private var activeContentTab = 0  // 0 = Editor, 1 = Libraries (Docs + Install + Installed list)
+    private let systemTabButton = UIButton(type: .system)
+    private var activeContentTab = 0  // 0 = Editor, 1 = Libraries, 2 = System Info
     private var filesBrowserController: FilesBrowserViewController?
     private var docsController: LibraryDocsViewController?  // still used by sidebar compact docs
     private var editorController: CodeEditorViewController?
     private var librariesController: LibrariesViewController?
+    private var systemInfoController: SystemInfoViewController?
     private let effortLabel = UILabel()
     private let effortSegment = UISegmentedControl(items: [ThinkingEffort.low.title, ThinkingEffort.medium.title, ThinkingEffort.high.title])
     private let thinkingToggleLabel = UILabel()
@@ -4463,8 +4466,9 @@ final class GameViewController: UIViewController {
 
         configureTabButton(editorTabButton, title: "Editor", icon: "chevron.left.forwardslash.chevron.right", tag: 0, active: true)
         configureTabButton(librariesTabButton, title: "Libraries", icon: "shippingbox", tag: 1, active: false)
+        configureTabButton(systemTabButton, title: "System", icon: "info.circle", tag: 2, active: false)
 
-        let tabStack = UIStackView(arrangedSubviews: [editorTabButton, librariesTabButton, UIView()])
+        let tabStack = UIStackView(arrangedSubviews: [editorTabButton, librariesTabButton, systemTabButton, UIView()])
         tabStack.axis = .horizontal
         tabStack.spacing = 0
         tabStack.translatesAutoresizingMaskIntoConstraints = false
@@ -4481,8 +4485,10 @@ final class GameViewController: UIViewController {
         editorContainer.translatesAutoresizingMaskIntoConstraints = false
         librariesContainer.translatesAutoresizingMaskIntoConstraints = false
         librariesContainer.isHidden = true
+        systemInfoContainer.translatesAutoresizingMaskIntoConstraints = false
+        systemInfoContainer.isHidden = true
 
-        let contentStack = UIStackView(arrangedSubviews: [contentTabBar, editorContainer, librariesContainer])
+        let contentStack = UIStackView(arrangedSubviews: [contentTabBar, editorContainer, librariesContainer, systemInfoContainer])
         contentStack.axis = .vertical
         contentStack.spacing = 0
         contentStack.translatesAutoresizingMaskIntoConstraints = false
@@ -4531,7 +4537,7 @@ final class GameViewController: UIViewController {
         activeContentTab = index
 
         // Update tab appearances
-        let tabs = [editorTabButton, librariesTabButton]
+        let tabs = [editorTabButton, librariesTabButton, systemTabButton]
         for (i, tab) in tabs.enumerated() {
             let isActive = i == index
             var config = tab.configuration
@@ -4566,12 +4572,31 @@ final class GameViewController: UIViewController {
         UIView.transition(with: contentView, duration: 0.15, options: .transitionCrossDissolve) {
             self.editorContainer.isHidden = index != 0
             self.librariesContainer.isHidden = index != 1
+            self.systemInfoContainer.isHidden = index != 2
         }
 
         // Lazy setup Libraries (combined Docs + Install + Installed list)
         if index == 1 && librariesController == nil {
             setupLibrariesController()
         }
+        if index == 2 && systemInfoController == nil {
+            setupSystemInfoController()
+        }
+    }
+
+    private func setupSystemInfoController() {
+        let sc = SystemInfoViewController()
+        addChild(sc)
+        sc.view.translatesAutoresizingMaskIntoConstraints = false
+        systemInfoContainer.addSubview(sc.view)
+        NSLayoutConstraint.activate([
+            sc.view.topAnchor.constraint(equalTo: systemInfoContainer.topAnchor),
+            sc.view.leadingAnchor.constraint(equalTo: systemInfoContainer.leadingAnchor),
+            sc.view.trailingAnchor.constraint(equalTo: systemInfoContainer.trailingAnchor),
+            sc.view.bottomAnchor.constraint(equalTo: systemInfoContainer.bottomAnchor),
+        ])
+        sc.didMove(toParent: self)
+        systemInfoController = sc
     }
 
     private func setupLibrariesController() {

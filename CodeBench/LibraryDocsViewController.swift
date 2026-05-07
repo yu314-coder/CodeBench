@@ -56,8 +56,14 @@ final class LibraryDocsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        allSections = Self.buildAllSections()
-        filteredSections = allSections
+        // Modernized: drop the static doc catalog (~1500 lines of
+        // hand-curated module summaries that didn't reflect what's
+        // actually installed). The Libraries tab now shows ONLY the
+        // live importlib.metadata snapshot of every package the
+        // running interpreter can see — bundled and user-installed —
+        // with a "View on PyPI" link as the docs source.
+        allSections = []
+        filteredSections = []
         setupUI()
     }
 
@@ -80,30 +86,16 @@ final class LibraryDocsViewController: UIViewController {
             let pkgs = PythonRuntime.shared.enumerateInstalledLibraries()
             let byName = Dictionary(uniqueKeysWithValues:
                 pkgs.map { ($0.name.lowercased().replacingOccurrences(of: "_", with: "-"), $0) })
-            // Names already in the static catalog get folded back into
-            // their existing cards; the rest become a top-level
-            // "User installed" section so freshly-installed packages
-            // are immediately findable.
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.installedLibraries = byName
-                let staticNames = Set(self.allSections.flatMap(\.modules).map {
-                    $0.name.lowercased().replacingOccurrences(of: "_", with: "-")
-                } + self.allSections.map {
-                    $0.name.lowercased().replacingOccurrences(of: "_", with: "-")
-                })
-                self.userInstalledOnly = pkgs.filter {
-                    $0.isUserInstalled
-                        && !staticNames.contains(
-                            $0.name.lowercased().replacingOccurrences(of: "_", with: "-"))
-                }
-                // Expand the "Installed via pip" pseudo-section by
-                // default so newly-installed libs are immediately
-                // visible without an extra tap. -1 is the sentinel
-                // for the pseudo-section in expandedSections.
-                if !self.userInstalledOnly.isEmpty {
-                    self.expandedSections.insert(-1)
-                }
+                // The whole table is one flat list now: every package
+                // importlib.metadata can find, sorted user-installed
+                // first (so freshly pip-installed libs surface at the
+                // top) then alphabetical. enumerateInstalledLibraries()
+                // already does that sort.
+                self.userInstalledOnly = pkgs
+                self.expandedSections = [-1]   // always expanded
                 self.tableView.reloadData()
             }
         }
@@ -344,7 +336,7 @@ extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate 
             // Pseudo-section keyed by the special index -1 in
             // expandedSections so it doesn't collide with real indices.
             let expanded = expandedSections.contains(-1)
-            header.configure(title: "Installed via pip", icon: "shippingbox",
+            header.configure(title: "Installed Python libraries", icon: "shippingbox",
                              moduleCount: userInstalledOnly.count, expanded: expanded,
                              bgColor: bgColor, textColor: textColor,
                              accentColor: UIColor.systemGreen, dimColor: dimTextColor)
@@ -413,27 +405,56 @@ extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate 
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         if indexPath.section == userInstalledSectionIndex {
-            // Tap on a user-installed package shows a quick-info alert
-            // (no rich docs to navigate to since these aren't in the
-            // static catalog). The user can copy `import <pkg>` to
-            // the editor.
+            // Tap on a package row → action sheet with: open the
+            // package's docs (PyPI page or its declared Home-page URL)
+            // in Safari, insert `import <pkg>` into the active editor,
+            // or just close. We don't ship inline docs anymore — PyPI
+            // / the project's own homepage is the canonical source.
             let info = userInstalledOnly[indexPath.row]
             let modName = info.name.replacingOccurrences(of: "-", with: "_").lowercased()
+            let docURL: URL? = {
+                // Prefer the project's declared Home-page when it's
+                // a usable URL; fall back to the package's PyPI page
+                // (which always exists for any pip-installed pkg).
+                if let url = URL(string: info.homepage),
+                   let scheme = url.scheme,
+                   scheme == "http" || scheme == "https" {
+                    return url
+                }
+                let slug = info.name
+                    .replacingOccurrences(of: " ", with: "-")
+                    .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? info.name
+                return URL(string: "https://pypi.org/project/\(slug)/")
+            }()
             let body = """
                 version  \(info.version)
                 size     \(info.sizeBytes > 0 ? Self.formatBytes(info.sizeBytes) : "?")
-                location user-installed
-                \(info.consoleScripts.isEmpty ? "" : "\nCLI commands:\n  " + info.consoleScripts.joined(separator: ", "))
+                location \(info.isUserInstalled ? "user-installed" : "bundled with CodeBench")
+                \(info.summary.isEmpty ? "" : "\n\(info.summary)")
+                \(info.consoleScripts.isEmpty ? "" : "\nCLI commands:  " + info.consoleScripts.prefix(5).joined(separator: ", "))
                 \(info.requires.isEmpty ? "" : "\nRequires:\n  " + info.requires.prefix(8).joined(separator: "\n  "))
                 """
             let alert = UIAlertController(title: info.name, message: body,
-                                          preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "Insert `import \(modName)`",
+                                          preferredStyle: .actionSheet)
+            if let url = docURL {
+                alert.addAction(UIAlertAction(title: "View docs · \(url.host ?? "PyPI")",
+                                              style: .default) { _ in
+                    UIApplication.shared.open(url)
+                })
+            }
+            alert.addAction(UIAlertAction(title: "Insert `import \(modName)` in editor",
                                           style: .default) { [weak self] _ in
                 guard let self else { return }
                 self.delegate?.libraryDocs(self, didRequestOpenCode: "import \(modName)\n", language: "python")
             })
             alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+            // iPad: action sheet must be anchored.
+            if let pop = alert.popoverPresentationController,
+               let cell = tableView.cellForRow(at: indexPath) {
+                pop.sourceView = cell
+                pop.sourceRect = cell.bounds
+                pop.permittedArrowDirections = .any
+            }
             present(alert, animated: true)
             return
         }

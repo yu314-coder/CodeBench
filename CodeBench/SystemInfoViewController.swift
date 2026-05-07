@@ -243,7 +243,7 @@ final class SystemInfoViewController: UIViewController {
 
     private func pythonRows(_ info: PythonInfo?) -> [(String, String)] {
         guard let info = info else {
-            return [("Status", "loading…")]
+            return [("Status", "probing the interpreter…")]
         }
         var rows: [(String, String)] = [
             ("Version",       info.version),
@@ -251,7 +251,6 @@ final class SystemInfoViewController: UIViewController {
             ("Executable",    info.executable),
             ("Prefix",        info.prefix),
             ("Packages",      "\(info.packageCount) installed (\(info.userPackageCount) user-installed)"),
-            ("Total size",    formatBytes(info.totalPackageSize)),
         ]
         if !info.firstFewPackages.isEmpty {
             rows.append(("Recent",
@@ -294,49 +293,60 @@ final class SystemInfoViewController: UIViewController {
         let bundle = Bundle.main.bundlePath
         let appPkg = bundle + "/app_packages/site-packages"
 
-        // Probe each artifact at the location it ACTUALLY lands at
-        // runtime — different from where it lives in source:
-        //   • busytex.wasm: source is CodeBench/Resources/Busytex/, but
-        //     Xcode 16's PBXFileSystemSynchronizedRootGroup flattens
-        //     subfolders into the bundle root → use Bundle.main.url
-        //     to find it wherever Xcode placed it.
-        //   • llama.xcframework: gets resolved at build time to a
-        //     concrete .framework matching the build platform.
-        //   • executorch.xcframework: linked statically, NOT a file in
-        //     the bundle; detect via the executorch Python package.
-        //   • torch: a Python package in app_packages/site-packages,
-        //     not a framework.
+        // Detection approach:
+        //   • Python — the app we're running IS Python; if we got
+        //     this far it's loaded, so always "available". (Probing
+        //     filesystem paths is fragile; the version comes from
+        //     gatherPythonInfo().)
+        //   • C / C++ / Fortran — in-process runtimes statically
+        //     linked into the app binary. Same logic: if the wrapper
+        //     classes exist at compile time, runtime presence is a
+        //     given.
+        //   • LaTeX (busytex.wasm) — bundle resource. Xcode 16's
+        //     synchronized-root flattens subfolders, use
+        //     Bundle.main.url to find it wherever Xcode placed it.
+        //   • llama.cpp — embedded .framework (xcframework resolved
+        //     at build time). Walk Frameworks/ for any llama*.
+        //   • ExecuTorch — linked statically ("Do Not Embed"). No
+        //     separate file exists at runtime; check if the source
+        //     framework dir was even shipped, OR fall back to
+        //     "always available" since we link against it.
+        //   • PyTorch — Python package, look for torch/__init__.py.
 
         func bundleHas(_ name: String, ext: String) -> Bool {
             Bundle.main.url(forResource: name, withExtension: ext) != nil
         }
 
+        // llama: try .framework, .xcframework, and any directory
+        // starting with "llama" inside Frameworks/.
+        var llamaOK = fm.fileExists(atPath: bundle + "/Frameworks/llama.framework")
+            || fm.fileExists(atPath: bundle + "/Frameworks/llama.xcframework")
+        if !llamaOK,
+           let entries = try? fm.contentsOfDirectory(atPath: bundle + "/Frameworks") {
+            llamaOK = entries.contains { $0.lowercased().contains("llama") }
+        }
+
         let busytexOK = bundleHas("busytex", ext: "wasm")
-        let llamaFwOK = fm.fileExists(atPath: bundle + "/Frameworks/llama.framework/llama")
-        let llamaXcOK = fm.fileExists(atPath: bundle + "/Frameworks/llama.xcframework")
-        let llamaOK = llamaFwOK || llamaXcOK
-        let pythonFwOK = fm.fileExists(atPath: bundle + "/Frameworks/Python.framework/Python")
-        let pythonAltOK = fm.fileExists(atPath: bundle + "/python")
-
         let torchOK = fm.fileExists(atPath: appPkg + "/torch/__init__.py")
-        let executorchOK = fm.fileExists(atPath: appPkg + "/executorch/__init__.py")
-            || fm.fileExists(atPath: appPkg + "/executorch")
 
-        // C / C++ / Fortran are in-process runtimes (clang+lld + flang
-        // statically linked into the app binary). We can't introspect
-        // them via a path, but we can verify our wrapper classes exist
-        // at module load — which they do because the file references
-        // resolve at compile time. So just say "available" for those.
+        // ExecuTorch: the xcframework is linked statically (Do Not
+        // Embed) so detecting via filesystem at runtime is unreliable.
+        // We DO ship Frameworks/ExecuTorch/ at source-tree level, but
+        // whether that survives into the runtime .app depends on
+        // build settings. Best-effort: report ExecuTorch as available
+        // because the app wouldn't link if it were missing — append
+        // a "statically linked" note so the user understands why
+        // there's no path.
 
         func mark(_ ok: Bool) -> String { ok ? "✓ available" : "— not found" }
 
         return [
-            ("Python",     mark(pythonFwOK || pythonAltOK)),
+            ("Python",     "✓ \(Bundle.main.bundlePath)/Frameworks/Python.framework"),
             ("C / C++",    "✓ via in-process clang+lld"),
             ("Fortran",    "✓ via in-process flang+lld"),
-            ("LaTeX",      mark(busytexOK) + (busytexOK ? " (busytex pdftex/xelatex/lualatex)" : "")),
-            ("ExecuTorch", mark(executorchOK) + (executorchOK ? " (statically linked)" : "")),
-            ("llama.cpp",  mark(llamaOK) + (llamaOK ? " (Frameworks/llama.framework)" : "")),
+            ("LaTeX",      mark(busytexOK) + (busytexOK ? " (busytex.wasm — pdftex/xelatex/lualatex)" : "")),
+            ("ExecuTorch", "✓ statically linked into app binary"),
+            ("llama.cpp",  mark(llamaOK) + (llamaOK ? " (Frameworks/llama)" : "")),
             ("PyTorch",    mark(torchOK) + (torchOK ? " (app_packages/site-packages/torch)" : "")),
         ]
     }
@@ -357,61 +367,45 @@ final class SystemInfoViewController: UIViewController {
     }
 
     static func gatherPythonInfo() -> PythonInfo? {
+        // Fast probe — no per-package du-walk (that took multiple
+        // seconds on cold iPad and made the tab show "loading…" for
+        // way too long). All we need is sys-level info plus a count
+        // of installed dists; size is reported as 0 to indicate
+        // "not measured" (the Storage card has the bundle size).
         let script = """
 import sys, ssl, os, json
 import importlib.metadata as _md
 
 USER_SITE = os.path.expanduser("~/Documents/site-packages")
 
-pkgs = []
-total = 0
+pkg_count = 0
+user_count = 0
+recent = []
 for d in _md.distributions():
     try:
-        name = d.metadata["Name"]; version = d.version
+        name = d.metadata["Name"]
     except Exception:
         continue
+    pkg_count += 1
     try:
         loc = str(d.locate_file("") or "")
     except Exception:
         loc = ""
-    is_user = bool(loc) and (USER_SITE in loc or "/Documents/site-packages" in loc)
-    pkgs.append({"name": name, "version": version, "user": is_user})
-
-# du-walk every dist's install dir for total size — best-effort
-def _du(path):
-    if not path or not os.path.isdir(path):
-        return 0
-    s = 0
-    for r, _d, fs in os.walk(path):
-        if "__pycache__" in r:
-            continue
-        for f in fs:
-            try:
-                s += os.path.getsize(os.path.join(r, f))
-            except OSError:
-                pass
-    return s
-
-for d in _md.distributions():
-    try:
-        files = list(d.files or [])
-        if files:
-            pkg_dir = str(d.locate_file(files[0])).rsplit("/", 1)[0]
-            total += _du(pkg_dir)
-    except Exception:
-        pass
+    if loc and (USER_SITE in loc or "/Documents/site-packages" in loc):
+        user_count += 1
+        recent.append(name)
 
 info = {
-    "version":  sys.version.split()[0],
-    "platform": sys.platform,
+    "version":    sys.version.split()[0],
+    "platform":   sys.platform,
     "executable": sys.executable,
-    "prefix":   sys.prefix,
-    "openssl":  ssl.OPENSSL_VERSION,
-    "cafile":   ssl.get_default_verify_paths().cafile or "",
-    "pkg_count": len(pkgs),
-    "user_count": sum(1 for p in pkgs if p["user"]),
-    "size":     total,
-    "recent":   [p["name"] for p in pkgs if p["user"]][:8],
+    "prefix":     sys.prefix,
+    "openssl":    ssl.OPENSSL_VERSION,
+    "cafile":     ssl.get_default_verify_paths().cafile or "",
+    "pkg_count":  pkg_count,
+    "user_count": user_count,
+    "size":       0,
+    "recent":     recent[-8:],
 }
 print("__CODEBENCH_SYSINFO__=" + json.dumps(info))
 """

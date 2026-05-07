@@ -582,18 +582,11 @@ final class CodeEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = EditorTheme.background
-        // Set up the terminal FIRST so its instant prompt is rendered
-        // before the heavier setupEditor (WKWebView + Monaco bundle
-        // load) blocks the main thread for a few hundred ms. The
-        // SwiftTerm view buffers bytes regardless of layout state, so
-        // the prompt is displayed the moment the view does its first
-        // layout pass — instead of waiting for everything else to be
-        // built first.
-        setupTerminal()
         setupToolbar()
         setupEditor()
         setupAIChat()
         setupOutputPanel()
+        setupTerminal()
         setupSettingsPanel()
         setupLayout()
         setupSuggestionsTable()
@@ -1754,7 +1747,13 @@ final class CodeEditorViewController: UIViewController {
         // the pipe ready to dispatch. Without this, Enter submits the
         // line and nothing happens because no REPL thread exists yet.
         PythonRuntime.shared.ensureRuntimeReady()
-        setTerminalInitialBanner()
+        // Note: setTerminalInitialBanner is deferred to
+        // viewDidLayoutSubviews (first pass only). Calling it here,
+        // before the SwiftTerm view has a frame, makes SwiftTerm
+        // render the prompt at its default 2-col fallback because
+        // cols = max(2, width/charWidth) and width is 0. The deferred
+        // call ensures the terminal has been sized first so the prompt
+        // wraps at the real column count.
 
         // Tap-to-focus: on iPhone especially, the initial becomeFirstResponder
         // can silently lose to another view. Install a lightweight tap gesture
@@ -3296,9 +3295,21 @@ except Exception:
         terminalTitleLabel.text = "CodeBench — python3.14 — \(cols)×\(rows)"
     }
 
+    /// Whether we've fed the initial prompt yet. We need to wait for
+    /// SwiftTerm to have a non-zero size or it'll render the prompt at
+    /// its 2-column fallback (each char wraps onto its own line).
+    private var didEmitInitialBanner = false
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         syncTerminalSizeToPTY()
+        // Render the instant prompt now that SwiftTerm has its real
+        // size — exactly once, on the first layout pass where the
+        // terminal view actually has a non-trivial width.
+        if !didEmitInitialBanner, swiftTermView.bounds.width > 80 {
+            didEmitInitialBanner = true
+            setTerminalInitialBanner()
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {

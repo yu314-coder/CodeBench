@@ -197,19 +197,27 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
         magicKeyboardObserverInstalled = true
         let nc = NotificationCenter.default
         nc.addObserver(forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] _ in
-            self?.logMagicKeyboard(state: "connected")
+            self?.logMagicKeyboard(state: "connected", isInitial: false)
         }
         nc.addObserver(forName: .GCKeyboardDidDisconnect, object: nil, queue: .main) { [weak self] _ in
-            self?.logMagicKeyboard(state: "disconnected")
+            self?.logMagicKeyboard(state: "disconnected", isInitial: false)
         }
-        // Already-connected check on setup
+        // Already-connected on setup: NSLog only, no terminal banner.
+        // Otherwise every cold launch with a Magic Keyboard attached
+        // (the common case) prints "[magic keyboard connected …]"
+        // before SwiftTerm has a real size — which makes the line
+        // wrap at the 2-col fallback width (each char on its own
+        // line). Only EVENT-driven transitions get a terminal banner;
+        // the user knows their keyboard is connected, no need to
+        // tell them at launch.
         if GCKeyboard.coalesced != nil {
-            logMagicKeyboard(state: "connected (already present)")
+            NSLog("[PTY] magic keyboard already connected at PTY setup")
         }
     }
 
-    private func logMagicKeyboard(state: String) {
+    private func logMagicKeyboard(state: String, isInitial: Bool) {
         NSLog("[PTY] magic keyboard \(state)")
+        if isInitial { return }
         let banner = "\u{1b}[38;5;244m[magic keyboard \(state)]\u{1b}[0m\r\n"
         DispatchQueue.main.async { [weak self] in
             self?.terminalView?.feed(text: banner)

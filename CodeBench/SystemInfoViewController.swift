@@ -58,18 +58,21 @@ final class SystemInfoViewController: UIViewController {
         ])
     }
 
+    /// Cached snapshot from the last refresh. Reused across tab
+    /// visits so flipping back to System Info is instant — only
+    /// pip-install events would invalidate it (not yet wired up).
+    private static var cachedInfo: PythonInfo?
+
     private func refresh() {
-        // Build the static (Swift-only) cards immediately so the user
-        // sees something before the Python probe finishes. Python
-        // probe runs in the background and re-renders when it
-        // completes — same pattern the Libraries tab uses.
-        rebuildContent(pythonInfo: nil)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let pyInfo = SystemInfoViewController.gatherPythonInfo()
-            DispatchQueue.main.async {
-                self?.rebuildContent(pythonInfo: pyInfo)
-            }
-        }
+        // Pure-Swift probe — walks ~250 dist-info dirs on the
+        // main thread but each one is a metadata read (~few KB),
+        // total ~50 ms even on slow iPad. No PythonRuntime.shared
+        // .execute() call, so we never block on the Python queue
+        // even when the REPL is busy. Synchronous keeps the rebuild
+        // single-pass — no flicker between "probing…" and real data.
+        let pyInfo = SystemInfoViewController.swiftPythonProbe()
+        SystemInfoViewController.cachedInfo = pyInfo
+        rebuildContent(pythonInfo: pyInfo)
     }
 
     private func rebuildContent(pythonInfo: PythonInfo?) {
@@ -327,20 +330,47 @@ final class SystemInfoViewController: UIViewController {
         return rows
     }
 
+    /// Cached directory sizes (computed once on a background queue,
+    /// reused across rebuilds). The walk over the multi-hundred-MB
+    /// app bundle would freeze the main thread for ~1 s if recomputed
+    /// on every refresh — measure once, reuse forever (the bundle is
+    /// read-only at runtime so its size won't change).
+    private static var cachedBundleSize: Int64 = 0
+    private static var cachedDocsSize: Int64 = 0
+    private static var sizeProbeStarted = false
+
     private func storageRows() -> [(String, String)] {
         let docs = NSHomeDirectory() + "/Documents"
         let attrs = (try? FileManager.default.attributesOfFileSystem(forPath: docs)) ?? [:]
         let total = (attrs[.systemSize] as? NSNumber)?.int64Value ?? 0
         let free  = (attrs[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
         let used  = max(0, total - free)
-        let docsSize = directorySize(at: docs)
-        let bundleSize = directorySize(at: Bundle.main.bundlePath)
+
+        // Kick off the async size walk once (per app launch). Until
+        // it returns, "(measuring…)" stands in. Subsequent visits
+        // see the cached values immediately.
+        let bundleSize = SystemInfoViewController.cachedBundleSize
+        let docsSize = SystemInfoViewController.cachedDocsSize
+        if !SystemInfoViewController.sizeProbeStarted {
+            SystemInfoViewController.sizeProbeStarted = true
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let bundlePath = Bundle.main.bundlePath
+                let docsPath = NSHomeDirectory() + "/Documents"
+                let bs = SystemInfoViewController.directorySize(at: bundlePath)
+                let ds = SystemInfoViewController.directorySize(at: docsPath)
+                SystemInfoViewController.cachedBundleSize = bs
+                SystemInfoViewController.cachedDocsSize = ds
+                DispatchQueue.main.async {
+                    self?.rebuildContent(pythonInfo: SystemInfoViewController.cachedInfo)
+                }
+            }
+        }
         return [
             ("Disk free",    formatBytes(free)),
             ("Disk used",    formatBytes(used)),
             ("Disk total",   formatBytes(total)),
-            ("App bundle",   formatBytes(bundleSize)),
-            ("Documents",    formatBytes(docsSize)),
+            ("App bundle",   bundleSize > 0 ? formatBytes(bundleSize) : "(measuring…)"),
+            ("Documents",    docsSize > 0 ? formatBytes(docsSize) : "(measuring…)"),
         ]
     }
 
@@ -421,7 +451,7 @@ final class SystemInfoViewController: UIViewController {
 
     // MARK: - Python introspection
 
-    struct PythonInfo {
+    struct PythonInfo: Equatable {
         let version: String
         let platform: String
         let executable: String
@@ -434,69 +464,74 @@ final class SystemInfoViewController: UIViewController {
         let firstFewPackages: [String]   // most recently added (user_site first)
     }
 
-    static func gatherPythonInfo() -> PythonInfo? {
-        // Fast probe — no per-package du-walk (that took multiple
-        // seconds on cold iPad and made the tab show "loading…" for
-        // way too long). All we need is sys-level info plus a count
-        // of installed dists; size is reported as 0 to indicate
-        // "not measured" (the Storage card has the bundle size).
-        let script = """
-import sys, ssl, os, json
-import importlib.metadata as _md
+    /// Pure-Swift Python probe — walks the bundled and user
+    /// site-packages directly, never calls into the running
+    /// interpreter. This avoids the previous freeze where
+    /// `PythonRuntime.shared.execute()` would block on the runtime
+    /// queue for arbitrary time when the REPL was mid-task. The
+    /// trade-off: we don't get sys.version etc. dynamically, but
+    /// for our shipped Python 3.14 build the value is fixed and
+    /// can be inferred from the bundle layout.
+    static func swiftPythonProbe() -> PythonInfo? {
+        let bundle = Bundle.main.bundlePath
+        let bundleSite = bundle + "/app_packages/site-packages"
+        let userSite = NSHomeDirectory() + "/Documents/site-packages"
 
-USER_SITE = os.path.expanduser("~/Documents/site-packages")
-
-pkg_count = 0
-user_count = 0
-recent = []
-for d in _md.distributions():
-    try:
-        name = d.metadata["Name"]
-    except Exception:
-        continue
-    pkg_count += 1
-    try:
-        loc = str(d.locate_file("") or "")
-    except Exception:
-        loc = ""
-    if loc and (USER_SITE in loc or "/Documents/site-packages" in loc):
-        user_count += 1
-        recent.append(name)
-
-info = {
-    "version":    sys.version.split()[0],
-    "platform":   sys.platform,
-    "executable": sys.executable,
-    "prefix":     sys.prefix,
-    "openssl":    ssl.OPENSSL_VERSION,
-    "cafile":     ssl.get_default_verify_paths().cafile or "",
-    "pkg_count":  pkg_count,
-    "user_count": user_count,
-    "size":       0,
-    "recent":     recent[-8:],
-}
-print("__CODEBENCH_SYSINFO__=" + json.dumps(info))
-"""
-        let result = PythonRuntime.shared.execute(code: script)
-        let output = result.output
-        guard let r = output.range(of: "__CODEBENCH_SYSINFO__=") else { return nil }
-        let json = String(output[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = json.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+        // sys.version: the bundle's python/lib/python3.X dir tells us
+        // the Python version we shipped. Fall back to "3.14" since
+        // that's what the project pins.
+        var pyVersion = "3.14"
+        if let entries = try? FileManager.default.contentsOfDirectory(
+            atPath: bundle + "/python/lib") {
+            if let dir = entries.first(where: { $0.hasPrefix("python3.") }) {
+                pyVersion = String(dir.dropFirst("python".count))
+            }
         }
+
+        // Walk both site-packages dirs for *.dist-info/METADATA. Each
+        // dist-info gives us Name + Version. We don't need the version
+        // for the System tab — just the count + names.
+        func collectDistInfo(_ root: String, isUser: Bool) -> [(name: String, isUser: Bool)] {
+            guard FileManager.default.fileExists(atPath: root),
+                  let entries = try? FileManager.default.contentsOfDirectory(atPath: root)
+            else { return [] }
+            return entries.compactMap { entry -> (String, Bool)? in
+                guard entry.hasSuffix(".dist-info") else { return nil }
+                let metadata = root + "/" + entry + "/METADATA"
+                guard let raw = try? String(contentsOfFile: metadata, encoding: .utf8)
+                else { return nil }
+                for line in raw.split(separator: "\n", maxSplits: 30,
+                                      omittingEmptySubsequences: true) {
+                    if line.hasPrefix("Name: ") {
+                        let name = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                        if !name.isEmpty { return (name, isUser) }
+                    }
+                }
+                return nil
+            }
+        }
+        let bundled = collectDistInfo(bundleSite, isUser: false)
+        let user = collectDistInfo(userSite, isUser: true)
+        let totalCount = bundled.count + user.count
+        let userCount = user.count
+        let recent = user.map(\.0)
+
+        // SSL trust roots — read from environment variables that the
+        // shell bootstrap sets to certifi. No interpreter call needed.
+        let caFile = ProcessInfo.processInfo.environment["SSL_CERT_FILE"]
+            ?? bundle + "/app_packages/site-packages/certifi/cacert.pem"
+
         return PythonInfo(
-            version:        (dict["version"]    as? String) ?? "?",
-            platform:       (dict["platform"]   as? String) ?? "?",
-            executable:     (dict["executable"] as? String) ?? "?",
-            prefix:         (dict["prefix"]     as? String) ?? "?",
-            opensslVersion: (dict["openssl"]    as? String) ?? "?",
-            defaultCAFile:  (dict["cafile"]     as? String) ?? "<none>",
-            packageCount:   (dict["pkg_count"]  as? Int)    ?? 0,
-            userPackageCount: (dict["user_count"] as? Int)  ?? 0,
-            totalPackageSize: (dict["size"] as? Int64)
-                ?? Int64(((dict["size"] as? Int) ?? 0)),
-            firstFewPackages: (dict["recent"]   as? [String]) ?? []
+            version:    pyVersion,
+            platform:   "ios",
+            executable: bundle + "/python/bin/python3",
+            prefix:     bundle + "/python",
+            opensslVersion: "OpenSSL (bundled)",
+            defaultCAFile:  caFile,
+            packageCount:   totalCount,
+            userPackageCount: userCount,
+            totalPackageSize: 0,
+            firstFewPackages: Array(recent.suffix(8))
         )
     }
 
@@ -513,7 +548,7 @@ print("__CODEBENCH_SYSINFO__=" + json.dumps(info))
         return raw.isEmpty ? "?" : raw
     }
 
-    private func directorySize(at path: String) -> Int64 {
+    private static func directorySize(at path: String) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: path) else { return 0 }
         var total: Int64 = 0

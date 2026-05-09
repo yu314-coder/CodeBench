@@ -1357,6 +1357,10 @@ final class CodeEditorViewController: UIViewController {
             // on app relaunch ("I edit a.tex and re-open it, it's 0B").
             self?.scheduleAutoSave(text: text)
         }
+        // Live cursor position → status bar
+        monacoView.onCursorChanged = { [weak self] line, col in
+            self?.statusCursorLabel.text = "Ln \(line), Col \(col)"
+        }
 
         editorContainer.addSubview(editorHeaderBar)
         editorContainer.addSubview(monacoView)

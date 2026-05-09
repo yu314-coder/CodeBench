@@ -28,6 +28,11 @@ final class MonacoEditorView: UIView {
     var onTextChanged: ((String) -> Void)?
     /// Fired when the editor finishes loading and is ready to accept code.
     var onEditorReady: (() -> Void)?
+    /// Fired when the cursor moves — line/column are 1-based, matching
+    /// Monaco's IPosition convention (and what every editor's status
+    /// bar shows). Used by CodeEditorViewController to keep the
+    /// editor status bar's "Ln 1, Col 1" segment live.
+    var onCursorChanged: ((_ line: Int, _ column: Int) -> Void)?
     /// The most recent text the editor reported (mirror, to avoid async gets on the hot path).
     private(set) var currentText: String = ""
 
@@ -328,6 +333,15 @@ extension MonacoEditorView: WKScriptMessageHandler {
                 currentText = text
                 onTextChanged?(text)
             }
+
+        case "cursor":
+            // editor.js posts {kind:"cursor", line, column} from
+            // monaco.editor.IModel.onDidChangeCursorPosition with
+            // 1-based indices. Forward verbatim — Swift consumers
+            // (status bar) want the same convention.
+            let line = body["line"] as? Int ?? 1
+            let column = body["column"] as? Int ?? 1
+            onCursorChanged?(line, column)
 
         case "resolveRequest":
             handleResolveRequest(body)

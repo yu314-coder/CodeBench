@@ -371,6 +371,23 @@
                 }, 120);
             });
 
+            // Cursor position → status bar (Ln N, Col N). Coalesced
+            // via rAF so dragging through 1000 chars doesn't flood
+            // the Swift bridge — at most one event per frame.
+            let cursorPending = false;
+            editor.onDidChangeCursorPosition((e) => {
+                if (cursorPending) return;
+                cursorPending = true;
+                requestAnimationFrame(() => {
+                    cursorPending = false;
+                    postToSwift({
+                        kind: 'cursor',
+                        line: e.position.lineNumber,
+                        column: e.position.column
+                    });
+                });
+            });
+
             // Swift-callable API
             window.__editor = {
                 setCode(code, language) {

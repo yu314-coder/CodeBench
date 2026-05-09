@@ -4265,29 +4265,87 @@ final class GameViewController: UIViewController {
         sidebarView.backgroundColor = WorkspaceStyle.sideBarBg
         sidebarView.clipsToBounds = true
 
-        // ── VS Code Explorer: header + file tree ──
+        // ── Workspace title row — full app branding above the
+        // explorer header. Replaces the old "EXPLORER" hairline.
+        let workspaceTitle = UILabel()
+        workspaceTitle.text = "BenchCode"
+        workspaceTitle.font = UIFont.systemFont(ofSize: 15, weight: .bold).rounded
+        workspaceTitle.textColor = UIColor(white: 0.96, alpha: 1)
+        workspaceTitle.translatesAutoresizingMaskIntoConstraints = false
 
-        // Header row: "EXPLORER" label + settings gear
+        let workspaceSubtitle = UILabel()
+        workspaceSubtitle.text = "~/Documents/Workspace"
+        workspaceSubtitle.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        workspaceSubtitle.textColor = WorkspaceStyle.activityBarInactive
+        workspaceSubtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleStack = UIStackView(arrangedSubviews: [workspaceTitle, workspaceSubtitle])
+        titleStack.axis = .vertical; titleStack.spacing = 1
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+
+        // Collapse button (existing toggleSidebarVisibility action) —
+        // moved up to the workspace row so it's at the top of the
+        // sidebar where users expect to find a "close panel" control.
+        let collapseBtn = UIButton(type: .system)
+        collapseBtn.setImage(UIImage(systemName: "sidebar.left",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)),
+            for: .normal)
+        collapseBtn.tintColor = WorkspaceStyle.activityBarInactive
+        collapseBtn.addTarget(self, action: #selector(toggleSidebarVisibility),
+                              for: .touchUpInside)
+        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
+        collapseBtn.isPointerInteractionEnabled = true
+
+        sidebarView.addSubview(titleStack)
+        sidebarView.addSubview(collapseBtn)
+
+        // ── Action toolbar — VS Code idiom: small icon row beneath
+        // the workspace title for the most common file operations.
+        // New file, new folder, refresh, command palette — all wired
+        // to selectors below so they work without sending the user
+        // off to a context menu.
+        let newFileBtn = makeSidebarActionBtn(
+            icon: "doc.badge.plus",
+            tip: "New file",
+            action: #selector(sidebarNewFileTapped))
+        let newFolderBtn = makeSidebarActionBtn(
+            icon: "folder.badge.plus",
+            tip: "New folder",
+            action: #selector(sidebarNewFolderTapped))
+        let refreshBtn = makeSidebarActionBtn(
+            icon: "arrow.clockwise",
+            tip: "Refresh",
+            action: #selector(sidebarRefreshTapped))
+        let paletteBtn = makeSidebarActionBtn(
+            icon: "command.square",
+            tip: "Command palette (⌘P)",
+            action: #selector(showCommandPalette))
+
+        let actions = UIStackView(arrangedSubviews: [
+            newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
+        ])
+        actions.axis = .horizontal; actions.spacing = 2; actions.alignment = .center
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        sidebarView.addSubview(actions)
+
+        // ── Explorer subheader — small caps label, replaces the
+        // old single header label. Visually subordinate to the
+        // workspace title above.
         sidebarTitleLabel.text = "EXPLORER"
-        sidebarTitleLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        sidebarTitleLabel.font = .systemFont(ofSize: 10, weight: .bold)
         sidebarTitleLabel.textColor = WorkspaceStyle.sideBarHeaderText
         sidebarTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let settingsBtn = UIButton(type: .system)
-        settingsBtn.setImage(UIImage(systemName: "gearshape", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13)), for: .normal)
+        settingsBtn.setImage(UIImage(systemName: "gearshape",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
         settingsBtn.tintColor = WorkspaceStyle.activityBarInactive
         settingsBtn.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
         settingsBtn.translatesAutoresizingMaskIntoConstraints = false
-
-        let collapseBtn = UIButton(type: .system)
-        collapseBtn.setImage(UIImage(systemName: "sidebar.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13)), for: .normal)
-        collapseBtn.tintColor = WorkspaceStyle.activityBarInactive
-        collapseBtn.addTarget(self, action: #selector(toggleSidebarVisibility), for: .touchUpInside)
-        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
+        settingsBtn.isPointerInteractionEnabled = true
 
         sidebarView.addSubview(sidebarTitleLabel)
         sidebarView.addSubview(settingsBtn)
-        sidebarView.addSubview(collapseBtn)
 
         // File browser fills the rest
         let fb = FilesBrowserViewController()
@@ -4299,26 +4357,177 @@ final class GameViewController: UIViewController {
         filesBrowserController = fb
 
         NSLayoutConstraint.activate([
-            sidebarTitleLabel.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 10),
-            sidebarTitleLabel.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
+            // Workspace title row
+            titleStack.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 10),
+            titleStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
+            titleStack.trailingAnchor.constraint(lessThanOrEqualTo: collapseBtn.leadingAnchor, constant: -8),
 
-            collapseBtn.centerYAnchor.constraint(equalTo: sidebarTitleLabel.centerYAnchor),
-            collapseBtn.trailingAnchor.constraint(equalTo: settingsBtn.leadingAnchor, constant: -4),
-            collapseBtn.widthAnchor.constraint(equalToConstant: 28),
-            collapseBtn.heightAnchor.constraint(equalToConstant: 28),
+            collapseBtn.centerYAnchor.constraint(equalTo: titleStack.centerYAnchor),
+            collapseBtn.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -6),
+            collapseBtn.widthAnchor.constraint(equalToConstant: 30),
+            collapseBtn.heightAnchor.constraint(equalToConstant: 30),
+
+            // Action toolbar
+            actions.topAnchor.constraint(equalTo: titleStack.bottomAnchor, constant: 8),
+            actions.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 8),
+            actions.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -8),
+            actions.heightAnchor.constraint(equalToConstant: 28),
+
+            // Explorer header (small caps)
+            sidebarTitleLabel.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12),
+            sidebarTitleLabel.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 14),
 
             settingsBtn.centerYAnchor.constraint(equalTo: sidebarTitleLabel.centerYAnchor),
             settingsBtn.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -8),
-            settingsBtn.widthAnchor.constraint(equalToConstant: 28),
-            settingsBtn.heightAnchor.constraint(equalToConstant: 28),
+            settingsBtn.widthAnchor.constraint(equalToConstant: 26),
+            settingsBtn.heightAnchor.constraint(equalToConstant: 26),
 
-            fb.view.topAnchor.constraint(equalTo: sidebarTitleLabel.bottomAnchor, constant: 8),
+            fb.view.topAnchor.constraint(equalTo: sidebarTitleLabel.bottomAnchor, constant: 6),
             fb.view.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
             fb.view.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
             fb.view.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
         ])
 
         return sidebarView
+    }
+
+    private func makeSidebarActionBtn(icon: String, tip: String, action: Selector) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setImage(UIImage(systemName: icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)),
+            for: .normal)
+        b.tintColor = UIColor(white: 0.78, alpha: 1)
+        b.addTarget(self, action: action, for: .touchUpInside)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        b.layer.cornerRadius = 4
+        b.isPointerInteractionEnabled = true
+        // Tooltip via accessibility hint — surfaces under VoiceOver
+        // and on Magic Keyboard pointer hover (iOS 16+ shows it
+        // automatically when isPointerInteractionEnabled is true
+        // and the hint is set).
+        b.accessibilityHint = tip
+        return b
+    }
+
+    @objc private func sidebarNewFileTapped() {
+        promptForName(title: "New File",
+                      message: "Filename including extension (e.g. script.py)",
+                      placeholder: "untitled.py") { [weak self] name in
+            guard let self = self else { return }
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            let workspace = docs?.appendingPathComponent("Workspace")
+            try? FileManager.default.createDirectory(
+                at: workspace ?? URL(fileURLWithPath: "/tmp"),
+                withIntermediateDirectories: true)
+            let url = workspace!.appendingPathComponent(name)
+            try? "".write(to: url, atomically: true, encoding: .utf8)
+            self.filesBrowserController?.refresh()
+            // Open in editor
+            NotificationCenter.default.post(name: .openExternalFile, object: url)
+        }
+    }
+
+    @objc private func sidebarNewFolderTapped() {
+        promptForName(title: "New Folder",
+                      message: "Folder name",
+                      placeholder: "new-folder") { [weak self] name in
+            guard let self = self else { return }
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            let workspace = docs?.appendingPathComponent("Workspace")
+            try? FileManager.default.createDirectory(
+                at: workspace?.appendingPathComponent(name)
+                    ?? URL(fileURLWithPath: "/tmp"),
+                withIntermediateDirectories: true)
+            self.filesBrowserController?.refresh()
+        }
+    }
+
+    @objc private func sidebarRefreshTapped() {
+        filesBrowserController?.refresh()
+    }
+
+    @objc func showCommandPalette() {
+        // Build the item list: every file in ~/Documents/Workspace
+        // plus a curated set of built-in commands.
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let workspace = docs?.appendingPathComponent("Workspace")
+        var items: [CommandPaletteViewController.Item] = []
+
+        if let workspace = workspace,
+           let enumerator = FileManager.default.enumerator(
+               at: workspace,
+               includingPropertiesForKeys: [.isRegularFileKey],
+               options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                let isReg = (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+                if isReg { items.append(.file(url)) }
+                if items.count > 200 { break }   // cap so the palette stays snappy
+            }
+        }
+
+        // Built-in commands — anything the user might want to reach
+        // from a single Cmd+P. Each closure captures the controller
+        // so the action runs after the palette dismisses.
+        items.append(contentsOf: [
+            .command(name: "Settings: Open settings panel",
+                     subtitle: "Theme, fonts, manim quality",
+                     icon: "gearshape",
+                     action: { [weak self] in self?.settingsTapped() }),
+            .command(name: "View: Toggle sidebar",
+                     subtitle: "Hide / show the file browser",
+                     icon: "sidebar.left",
+                     action: { [weak self] in self?.toggleSidebarVisibility() }),
+            .command(name: "File: New file",
+                     subtitle: "Create a new file in Workspace",
+                     icon: "doc.badge.plus",
+                     action: { [weak self] in self?.sidebarNewFileTapped() }),
+            .command(name: "File: New folder",
+                     subtitle: "Create a new folder in Workspace",
+                     icon: "folder.badge.plus",
+                     action: { [weak self] in self?.sidebarNewFolderTapped() }),
+            .command(name: "Files: Refresh tree",
+                     subtitle: "Re-scan the workspace folder",
+                     icon: "arrow.clockwise",
+                     action: { [weak self] in self?.filesBrowserController?.refresh() }),
+        ])
+
+        let palette = CommandPaletteViewController(items: items)
+        present(palette, animated: true)
+    }
+
+    /// Cmd+P keyboard shortcut → command palette. Wired via the
+    /// existing UIKeyCommand infrastructure in keyCommands below.
+    override var keyCommands: [UIKeyCommand]? {
+        var cmds = super.keyCommands ?? []
+        cmds.append(UIKeyCommand(
+            title: "Command Palette",
+            action: #selector(showCommandPalette),
+            input: "p",
+            modifierFlags: .command,
+            discoverabilityTitle: "Open Command Palette"))
+        return cmds
+    }
+
+    private func promptForName(title: String, message: String,
+                                placeholder: String,
+                                completion: @escaping (String) -> Void) {
+        let alert = UIAlertController(title: title, message: message,
+                                      preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = placeholder
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Create", style: .default) { _ in
+            let name = (alert.textFields?.first?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !name.contains("/") else { return }
+            completion(name)
+        })
+        present(alert, animated: true)
     }
 
     private func setupModelsSidebarView(_ container: UIView) {

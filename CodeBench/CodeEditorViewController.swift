@@ -3424,25 +3424,48 @@ except Exception:
 
     // MARK: - Interrupt, font-size, menu
 
-    /// Stop.fill button — sets Py_RaiseSignal(SIGINT) on the Python
-    /// interpreter so a long-running script can be broken out of.
+    /// Stop.fill / "Stop" button — interrupts the running Python
+    /// task and the REPL.
+    ///
+    /// Previous version dispatched a small Python script
+    /// (`signal.raise_signal(SIGINT)`) through PythonRuntime.shared
+    /// .execute — but execute() goes through the runtime serial
+    /// queue, and that queue was BUSY running the user's task. The
+    /// interrupt script just sat behind it, defeating the whole
+    /// purpose. Net effect: tapping Stop did nothing until the task
+    /// finished on its own.
+    ///
+    /// Now we hit four parallel paths so the interrupt actually
+    /// lands within ~1 bytecode boundary:
+    ///   1. PyErr_SetInterrupt() via the C-API. Sets a flag the
+    ///      interpreter checks on every bytecode tick — works
+    ///      regardless of which thread holds the GIL.
+    ///   2. _thread.interrupt_main() via the SAME direct-call
+    ///      mechanism (PythonRuntime exposes it as raiseKeyboardInterrupt).
+    ///   3. PTY 0x03 byte injected through PTYBridge → reaches the
+    ///      REPL's input loop, ensuring the next prompt iteration
+    ///      sees ^C even if the C-API path is stuck.
+    ///   4. terminalInputField cleared so any half-typed line drops.
+    /// Visible feedback: a yellow "^C — interrupted" banner echoed
+    /// to the terminal so the user knows the tap registered even if
+    /// the task takes a moment to actually exit.
     @objc private func terminalInterrupt() {
-        let code = """
-        import _thread, ctypes, signal, sys
-        # Raise KeyboardInterrupt in the main thread (works even if we're
-        # mid-exec in a streaming script). If a C extension has the GIL
-        # this won't fire until control returns to Python — usually fast.
-        try:
-            signal.raise_signal(signal.SIGINT)
-        except Exception:
-            _thread.interrupt_main()
-        print('\\n\\x1b[33m^C — interrupted\\x1b[0m')
-        """
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = PythonRuntime.shared.execute(code: code) { chunk in
-                DispatchQueue.main.async { self?.appendToTerminal(chunk, isError: false) }
-            }
-        }
+        // 1 + 2: direct C-API calls — never blocked by the runtime queue
+        PythonRuntime.shared.interruptPythonMainThread()
+
+        // 3: PTY-level Ctrl+C, same path the keyboard handler uses
+        let tv = swiftTermView
+        LineBuffer.shared.handle(bytes: ArraySlice([0x03]),
+                                 terminalView: tv,
+                                 pipeWrite: { bytes in
+            PTYBridge.shared.send(source: tv, data: ArraySlice(bytes))
+        })
+
+        // 4: visible feedback so the user knows the tap registered.
+        // Direct feed (not through the PTY round-trip) so it shows
+        // immediately even if the read loop is backlogged.
+        swiftTermView.feed(text: "\u{1b}[33m^C\u{1b}[0m\r\n")
+
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 

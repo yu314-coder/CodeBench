@@ -123,6 +123,9 @@ final class GameViewController: UIViewController {
     private let editorTabButton = UIButton(type: .system)
     private let librariesTabButton = UIButton(type: .system)
     private let systemTabButton = UIButton(type: .system)
+    /// Tiny live-updating RAM sparkline, pinned to the top-right of
+    /// the tab bar. Polls Mach host_statistics64 every 1.5 s.
+    private let memoryGraph = MemoryGraphView()
     private var activeContentTab = 0  // 0 = Editor, 1 = Libraries, 2 = System Info
     private var filesBrowserController: FilesBrowserViewController?
     private var docsController: LibraryDocsViewController?  // still used by sidebar compact docs
@@ -4735,12 +4738,27 @@ final class GameViewController: UIViewController {
         tabStack.translatesAutoresizingMaskIntoConstraints = false
         contentTabBar.addSubview(tabStack)
 
+        // Top-right RAM sparkline. Polls Mach host_statistics64 at
+        // 1.5 s, last 60 samples → 90 s window. Tap to switch to
+        // the System tab where the full memory breakdown lives.
+        memoryGraph.translatesAutoresizingMaskIntoConstraints = false
+        memoryGraph.onTap = { [weak self] in
+            self?.contentTabTapped(self?.systemTabButton ?? UIButton())
+        }
+        contentTabBar.addSubview(memoryGraph)
+
         NSLayoutConstraint.activate([
             tabStack.topAnchor.constraint(equalTo: contentTabBar.topAnchor),
             tabStack.leadingAnchor.constraint(equalTo: contentTabBar.leadingAnchor),
-            tabStack.trailingAnchor.constraint(equalTo: contentTabBar.trailingAnchor),
+            // Leave room for the memory graph on the right.
+            tabStack.trailingAnchor.constraint(equalTo: memoryGraph.leadingAnchor, constant: -8),
             tabStack.bottomAnchor.constraint(equalTo: contentTabBar.bottomAnchor),
             contentTabBar.heightAnchor.constraint(equalToConstant: 44),
+
+            memoryGraph.trailingAnchor.constraint(equalTo: contentTabBar.trailingAnchor, constant: -8),
+            memoryGraph.centerYAnchor.constraint(equalTo: contentTabBar.centerYAnchor),
+            memoryGraph.widthAnchor.constraint(equalToConstant: 140),
+            memoryGraph.heightAnchor.constraint(equalToConstant: 36),
         ])
 
         editorContainer.translatesAutoresizingMaskIntoConstraints = false

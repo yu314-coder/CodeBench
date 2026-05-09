@@ -1143,6 +1143,15 @@ final class CodeEditorViewController: UIViewController {
         terminalTitleBar.backgroundColor = UIColor(white: 0.06, alpha: 0.5)
     }
 
+    /// True when running in a horizontally-compact size class — iPhone
+    /// in any orientation, narrow Slide Over on iPad. Used to drop
+    /// button labels (icon-only secondary buttons) so the toolbar
+    /// fits without overflowing.
+    private var isCompactWidth: Bool {
+        traitCollection.horizontalSizeClass == .compact
+            || UIDevice.current.userInterfaceIdiom == .phone
+    }
+
     // MARK: - Setup Toolbar
 
     private func setupToolbar() {
@@ -1205,7 +1214,11 @@ final class CodeEditorViewController: UIViewController {
             button.isPointerInteractionEnabled = true
         }
 
-        styleSecondary(openFileButton, title: "Open", icon: "folder.badge.plus",
+        // Drop labels on compact width — iPhone toolbar would otherwise
+        // overflow with five labeled buttons. Icons stay; the SF Symbol
+        // is enough to read what each button does.
+        let compact = isCompactWidth
+        styleSecondary(openFileButton, title: compact ? nil : "Open", icon: "folder.badge.plus",
                        color: EditorTheme.accent)
         openFileButton.addTarget(self, action: #selector(openFileTapped), for: .touchUpInside)
 
@@ -1218,14 +1231,15 @@ final class CodeEditorViewController: UIViewController {
         // AI Assist button is configured in setupEditor() — nothing to do here.
         // The button lives in the editor header bar (violet-indigo pill).
 
-        styleSecondary(latexTestButton, title: "LaTeX", icon: "function",
+        styleSecondary(latexTestButton, title: compact ? nil : "LaTeX", icon: "function",
                        color: .systemPink)
         latexTestButton.addTarget(self, action: #selector(showLaTeXPreview), for: .touchUpInside)
 
         // Renamed from a bare gear icon to "Manim" so its purpose
         // (manim quality / fps controls only) is clear at a glance —
         // the gear icon alone was misread as global-app settings.
-        styleSecondary(settingsButton, title: "Manim", icon: "gearshape.fill",
+        // On compact width we drop the label too; the gear is recognized.
+        styleSecondary(settingsButton, title: compact ? nil : "Manim", icon: "gearshape.fill",
                        color: .systemPurple)
         settingsButton.addTarget(self, action: #selector(toggleSettingsPanel), for: .touchUpInside)
 

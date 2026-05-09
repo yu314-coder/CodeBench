@@ -3657,6 +3657,16 @@ final class GameViewController: UIViewController {
         }
     }
 
+    /// True when running in a compact horizontal size class — iPhone
+    /// portrait, iPhone landscape (small phones), or iPad in slim
+    /// Slide Over multitasking. Used to swap into a phone-friendly
+    /// layout: sidebar hidden by default, content takes full width,
+    /// tab bar styled for thumb reach.
+    private var isCompactLayout: Bool {
+        traitCollection.horizontalSizeClass == .compact
+            || UIDevice.current.userInterfaceIdiom == .phone
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor.systemBackground
@@ -3700,6 +3710,7 @@ final class GameViewController: UIViewController {
         loadConversations()
         updateModelUI()
         updateContentMode()
+        applyCompactLayoutIfNeeded()
 
         // Feature 6: Theme change observer
         NotificationCenter.default.addObserver(self, selector: #selector(handleThemeChange), name: ThemeManager.themeDidChangeNotification, object: nil)
@@ -3707,6 +3718,44 @@ final class GameViewController: UIViewController {
         // Handle app background/foreground — iOS kills GPU access in background
         NotificationCenter.default.addObserver(self, selector: #selector(handleDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    /// Adapt the layout to the current size class. Called once at
+    /// viewDidLoad and again whenever the trait collection changes
+    /// (rotation, multitasking resize, iPad → iPhone Mirror, etc.).
+    /// In compact-width (iPhone, narrow iPad split):
+    ///   • sidebar collapses to zero width (the floating expand
+    ///     button is the only way to summon it)
+    ///   • the editor + tab bar take the full screen width
+    ///   • settings panel becomes a sheet instead of a side popover
+    /// In regular-width the original iPad layout is restored.
+    private func applyCompactLayoutIfNeeded() {
+        let compact = isCompactLayout
+        // Only mutate if the desired state actually differs from the
+        // current one — avoids redundant animations when the trait
+        // change is just a darkmode flip or font-scale tweak.
+        let shouldHide = compact
+        if isSidebarHidden != shouldHide {
+            isSidebarHidden = shouldHide
+            sidebarView.isHidden = shouldHide
+            sidebarWidthConstraint?.constant = shouldHide ? 0 : 220
+            view.layoutIfNeeded()
+            if shouldHide {
+                showSidebarExpandButton()
+            } else {
+                hideSidebarExpandButton()
+            }
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        // React to size-class transitions so the same window adapts
+        // when the user resizes Slide Over, rotates, or hands the app
+        // off to an iPhone via Continuity.
+        if traitCollection.horizontalSizeClass != previousTraitCollection?.horizontalSizeClass {
+            applyCompactLayoutIfNeeded()
+        }
     }
 
     @objc private func handleDidEnterBackground() {

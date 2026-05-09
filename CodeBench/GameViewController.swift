@@ -4,7 +4,13 @@ import WebKit
 import llama
 
 // MARK: - Rounded font convenience
-private extension UIFont {
+//
+// Module-internal (no `private`) so other files in the target —
+// SystemInfoViewController, CodeEditorViewController, etc. — can
+// reach `font.rounded` without redeclaring the helper. Multiple
+// fileprivate copies caused "ambiguous use" errors when more than
+// one consumer was added to the target.
+extension UIFont {
     var rounded: UIFont {
         guard let descriptor = fontDescriptor.withDesign(.rounded) else { return self }
         return UIFont(descriptor: descriptor, size: 0)
@@ -3748,16 +3754,6 @@ final class GameViewController: UIViewController {
         }
     }
 
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        // React to size-class transitions so the same window adapts
-        // when the user resizes Slide Over, rotates, or hands the app
-        // off to an iPhone via Continuity.
-        if traitCollection.horizontalSizeClass != previousTraitCollection?.horizontalSizeClass {
-            applyCompactLayoutIfNeeded()
-        }
-    }
-
     @objc private func handleDidEnterBackground() {
         // iOS suspends Metal GPU access in background — cancel any active generation
         // to prevent the "Insufficient Permission to submit GPU work" error
@@ -3792,6 +3788,13 @@ final class GameViewController: UIViewController {
         if ThemeManager.shared.mode == .system,
            traitCollection.userInterfaceStyle != previousTraitCollection?.userInterfaceStyle {
             refreshTheme()
+        }
+        // Also react to size-class transitions so the layout adapts
+        // when the user resizes Slide Over, rotates, or hands off
+        // between iPhone / iPad. Cheap to call — applyCompactLayout-
+        // IfNeeded() short-circuits when nothing actually changed.
+        if traitCollection.horizontalSizeClass != previousTraitCollection?.horizontalSizeClass {
+            applyCompactLayoutIfNeeded()
         }
     }
 

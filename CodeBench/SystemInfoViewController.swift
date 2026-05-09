@@ -135,7 +135,16 @@ final class SystemInfoViewController: UIViewController {
         let icon = UIImageView(image: UIImage(systemName: "info.circle.fill",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)))
         icon.tintColor = accentColor
+        // Without an explicit size + scaleAspectFit, the UIImageView
+        // would stretch to fill the hero card's full height (the
+        // horizontal-stack alignment was happy to make it ~80pt tall),
+        // producing a giant blue ellipse instead of a small icon.
+        icon.contentMode = .scaleAspectFit
         icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 32),
+            icon.heightAnchor.constraint(equalToConstant: 32),
+        ])
 
         let title = UILabel()
         title.text = "System Info"

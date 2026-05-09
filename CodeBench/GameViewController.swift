@@ -4350,13 +4350,19 @@ final class GameViewController: UIViewController {
         sidebarTitleLabel.textColor = WorkspaceStyle.sideBarHeaderText
         sidebarTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Renamed from "Settings" to a more meaningful "About"
+        // entry point — it now jumps to the System tab where the
+        // device / app / Python info lives. The previous gear opened
+        // the AI-chat settings panel which had nothing to do with
+        // the EXPLORER section it was placed under.
         let settingsBtn = UIButton(type: .system)
-        settingsBtn.setImage(UIImage(systemName: "gearshape",
+        settingsBtn.setImage(UIImage(systemName: "info.circle",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
         settingsBtn.tintColor = WorkspaceStyle.activityBarInactive
-        settingsBtn.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
+        settingsBtn.addTarget(self, action: #selector(jumpToSystemTab), for: .touchUpInside)
         settingsBtn.translatesAutoresizingMaskIntoConstraints = false
         settingsBtn.isPointerInteractionEnabled = true
+        settingsBtn.accessibilityHint = "App & device info"
 
         sidebarView.addSubview(sidebarTitleLabel)
         sidebarView.addSubview(settingsBtn)
@@ -4460,6 +4466,13 @@ final class GameViewController: UIViewController {
 
     @objc private func sidebarRefreshTapped() {
         filesBrowserController?.refresh()
+    }
+
+    @objc private func jumpToSystemTab() {
+        // Reuse the existing tab-switch path so the slide animation
+        // and indicator update fire the same way they would from a
+        // direct tab tap.
+        contentTabTapped(systemTabButton)
     }
 
     @objc func showCommandPalette() {

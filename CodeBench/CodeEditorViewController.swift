@@ -1154,65 +1154,80 @@ final class CodeEditorViewController: UIViewController {
         languageControl.isHidden = true
 
         var runConfig = UIButton.Configuration.filled()
-        runConfig.image = UIImage(systemName: "play.fill")
-        runConfig.title = "Run"
-        runConfig.imagePadding = 6
-        runConfig.baseBackgroundColor = .systemGreen
+        runConfig.image = UIImage(systemName: "play.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold))
+        var runTitleAttr = AttributeContainer()
+        runTitleAttr.font = UIFont.systemFont(ofSize: 14, weight: .semibold).rounded
+        runConfig.attributedTitle = AttributedString("Run", attributes: runTitleAttr)
+        runConfig.imagePadding = 7
+        runConfig.baseBackgroundColor = UIColor(red: 0.14, green: 0.78, blue: 0.45, alpha: 1.0)
         runConfig.baseForegroundColor = .white
         runConfig.cornerStyle = .capsule
-        runConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+        runConfig.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 18)
         runButton.configuration = runConfig
         runButton.addTarget(self, action: #selector(runTapped), for: .touchUpInside)
         runButton.translatesAutoresizingMaskIntoConstraints = false
+        // Subtle drop-shadow under Run so it floats above the toolbar
+        // bg without being heavy. Same idiom Apple uses for the
+        // "Done" button in iOS 17 navigation bars.
+        runButton.layer.shadowColor = UIColor(red: 0.14, green: 0.78, blue: 0.45, alpha: 1.0).cgColor
+        runButton.layer.shadowOpacity = 0.35
+        runButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        runButton.layer.shadowRadius = 6
+        // Pointer + haptic for trackpad / Magic Keyboard users.
+        runButton.isPointerInteractionEnabled = true
 
-        var clearConfig = UIButton.Configuration.plain()
-        clearConfig.image = UIImage(systemName: "trash")
-        clearConfig.baseForegroundColor = EditorTheme.foreground
-        clearButton.configuration = clearConfig
-        clearButton.addTarget(self, action: #selector(clearTerminal), for: .touchUpInside)
-        clearButton.translatesAutoresizingMaskIntoConstraints = false
+        // Secondary toolbar buttons share a consistent style:
+        //   • Tinted (subtle filled background) instead of plain
+        //   • Rounded font matching Run
+        //   • Same vertical inset → same height as Run
+        // Plus pointer interaction for trackpad users.
+        func styleSecondary(_ button: UIButton, title: String?, icon: String, color: UIColor) {
+            var cfg = UIButton.Configuration.tinted()
+            cfg.image = UIImage(systemName: icon,
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+            if let t = title {
+                var attr = AttributeContainer()
+                attr.font = UIFont.systemFont(ofSize: 13, weight: .medium).rounded
+                cfg.attributedTitle = AttributedString(t, attributes: attr)
+                cfg.imagePadding = 5
+            }
+            cfg.baseForegroundColor = color
+            cfg.baseBackgroundColor = color
+            cfg.cornerStyle = .capsule
+            cfg.contentInsets = NSDirectionalEdgeInsets(
+                top: 10,
+                leading: title == nil ? 12 : 14,
+                bottom: 10,
+                trailing: title == nil ? 12 : 14)
+            button.configuration = cfg
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.isPointerInteractionEnabled = true
+        }
 
-        // "Open file" button — surfaces UIDocumentPicker for any source
-        // file the user wants to load into the editor. Uses the indigo
-        // accent so it reads as a primary action without competing
-        // with the green Run button.
-        var openConfig = UIButton.Configuration.plain()
-        openConfig.image = UIImage(systemName: "folder.badge.plus")
-        openConfig.title = "Open"
-        openConfig.imagePadding = 4
-        openConfig.baseForegroundColor = EditorTheme.accent
-        openConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
-        openFileButton.configuration = openConfig
+        styleSecondary(openFileButton, title: "Open", icon: "folder.badge.plus",
+                       color: EditorTheme.accent)
         openFileButton.addTarget(self, action: #selector(openFileTapped), for: .touchUpInside)
-        openFileButton.translatesAutoresizingMaskIntoConstraints = false
+
+        styleSecondary(clearButton, title: nil, icon: "trash",
+                       color: UIColor(white: 0.6, alpha: 1.0))
+        clearButton.addTarget(self, action: #selector(clearTerminal), for: .touchUpInside)
 
         // Templates button removed from toolbar (templates accessible via file explorer)
 
         // AI Assist button is configured in setupEditor() — nothing to do here.
         // The button lives in the editor header bar (violet-indigo pill).
 
-        var latexConfig = UIButton.Configuration.plain()
-        latexConfig.image = UIImage(systemName: "function")
-        latexConfig.title = "LaTeX"
-        latexConfig.imagePadding = 4
-        latexConfig.baseForegroundColor = .systemPink
-        latexTestButton.configuration = latexConfig
+        styleSecondary(latexTestButton, title: "LaTeX", icon: "function",
+                       color: .systemPink)
         latexTestButton.addTarget(self, action: #selector(showLaTeXPreview), for: .touchUpInside)
-        latexTestButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // Renamed from a bare gear icon to "Manim Settings" so its
-        // purpose (manim quality / fps controls only) is clear at a
-        // glance — the gear icon was misread as global-app settings.
-        var settingsConfig = UIButton.Configuration.plain()
-        settingsConfig.title = "Manim Settings"
-        settingsConfig.image = UIImage(systemName: "gearshape.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11))
-        settingsConfig.imagePadding = 4
-        settingsConfig.baseForegroundColor = .systemPurple
-        settingsConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
-        settingsButton.configuration = settingsConfig
+        // Renamed from a bare gear icon to "Manim" so its purpose
+        // (manim quality / fps controls only) is clear at a glance —
+        // the gear icon alone was misread as global-app settings.
+        styleSecondary(settingsButton, title: "Manim", icon: "gearshape.fill",
+                       color: .systemPurple)
         settingsButton.addTarget(self, action: #selector(toggleSettingsPanel), for: .touchUpInside)
-        settingsButton.translatesAutoresizingMaskIntoConstraints = false
 
         let spacer = UIView()
         spacer.translatesAutoresizingMaskIntoConstraints = false

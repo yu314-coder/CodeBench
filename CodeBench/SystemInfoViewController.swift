@@ -100,31 +100,62 @@ final class SystemInfoViewController: UIViewController {
 
     private func makeHeroHeader() -> UIView {
         let v = UIView()
-        v.backgroundColor = surfaceColor
-        v.layer.cornerRadius = 12
+        v.layer.cornerRadius = 16
         v.layer.cornerCurve = .continuous
         v.translatesAutoresizingMaskIntoConstraints = false
-        v.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        v.heightAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        v.clipsToBounds = true
+
+        // Subtle gradient — accent fading into surface — for a more
+        // polished look than the flat surfaceColor previously used.
+        let gradient = CAGradientLayer()
+        gradient.colors = [
+            accentColor.withAlphaComponent(0.35).cgColor,
+            surfaceColor.cgColor,
+        ]
+        gradient.startPoint = CGPoint(x: 0, y: 0)
+        gradient.endPoint = CGPoint(x: 1, y: 1)
+        gradient.frame = CGRect(x: 0, y: 0, width: 1000, height: 200)
+        v.layer.insertSublayer(gradient, at: 0)
+        // Resize the gradient with the view (cheap layoutSubviews-style
+        // trick using a wrapper that exposes layoutSubviews).
+        let proxy = GradientResizeView(layer: gradient)
+        proxy.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(proxy)
+        NSLayoutConstraint.activate([
+            proxy.topAnchor.constraint(equalTo: v.topAnchor),
+            proxy.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            proxy.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            proxy.bottomAnchor.constraint(equalTo: v.bottomAnchor),
+        ])
+
+        let icon = UIImageView(image: UIImage(systemName: "info.circle.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)))
+        icon.tintColor = accentColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
 
         let title = UILabel()
         title.text = "System Info"
-        title.font = .systemFont(ofSize: 24, weight: .bold)
+        title.font = UIFont.systemFont(ofSize: 26, weight: .bold).rounded
         title.textColor = textColor
 
         let subtitle = UILabel()
-        subtitle.text = "Pull-to-refresh by switching tabs. All data is local."
-        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.text = "Tap a value to copy. Switch tabs to refresh."
+        subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = dimColor
 
-        let stack = UIStackView(arrangedSubviews: [title, subtitle])
-        stack.axis = .vertical; stack.spacing = 4
+        let textStack = UIStackView(arrangedSubviews: [title, subtitle])
+        textStack.axis = .vertical; textStack.spacing = 2
+
+        let stack = UIStackView(arrangedSubviews: [icon, textStack])
+        stack.axis = .horizontal; stack.spacing = 14; stack.alignment = .center
         stack.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: v.topAnchor, constant: 16),
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -18),
-            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: v.topAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -18),
         ])
         return v
     }
@@ -134,33 +165,55 @@ final class SystemInfoViewController: UIViewController {
     private func makeCard(title: String, icon: String, rows: [(String, String)]) -> UIView {
         let card = UIView()
         card.backgroundColor = surfaceColor
-        card.layer.cornerRadius = 12
+        card.layer.cornerRadius = 14
         card.layer.cornerCurve = .continuous
+        // Faint border + shadow for slight depth so cards read as
+        // separate cards instead of one flat surface.
+        card.layer.borderWidth = 0.5
+        card.layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
+        card.layer.shadowColor = UIColor.black.cgColor
+        card.layer.shadowOpacity = 0.20
+        card.layer.shadowOffset = CGSize(width: 0, height: 1)
+        card.layer.shadowRadius = 4
         card.translatesAutoresizingMaskIntoConstraints = false
 
-        // Header with icon + title
+        // Header with icon + title (rounded SF Pro for the title).
+        let iconBg = UIView()
+        iconBg.backgroundColor = accentColor.withAlphaComponent(0.15)
+        iconBg.layer.cornerRadius = 8
+        iconBg.translatesAutoresizingMaskIntoConstraints = false
+        iconBg.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        iconBg.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
         let iconView = UIImageView(image: UIImage(systemName: icon,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)))
         iconView.tintColor = accentColor
+        iconView.contentMode = .center
         iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        iconBg.addSubview(iconView)
+        NSLayoutConstraint.activate([
+            iconView.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+        ])
 
         let titleLabel = UILabel()
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.font = UIFont.systemFont(ofSize: 15, weight: .semibold).rounded
         titleLabel.textColor = textColor
 
-        let header = UIStackView(arrangedSubviews: [iconView, titleLabel])
-        header.axis = .horizontal; header.spacing = 8; header.alignment = .center
+        let header = UIStackView(arrangedSubviews: [iconBg, titleLabel])
+        header.axis = .horizontal; header.spacing = 10; header.alignment = .center
 
-        // Rows: each is a key/value horizontal pair, monospace value
+        // Rows: each is a key/value horizontal pair, monospace value.
+        // Values that read like a status ("✓ available", "— not found",
+        // "<unset>") get colored — green for ✓, red for —, dim for unset.
         let rowsStack = UIStackView()
         rowsStack.axis = .vertical; rowsStack.spacing = 6
 
         for (k, v) in rows {
             let kLabel = UILabel()
             kLabel.text = k
-            kLabel.font = .systemFont(ofSize: 12, weight: .medium)
+            kLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium).rounded
             kLabel.textColor = dimColor
             kLabel.setContentHuggingPriority(.required, for: .horizontal)
             kLabel.widthAnchor.constraint(equalToConstant: 110).isActive = true
@@ -168,12 +221,13 @@ final class SystemInfoViewController: UIViewController {
             let vLabel = UILabel()
             vLabel.text = v
             vLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            vLabel.textColor = textColor
+            vLabel.textColor = Self.colorForValue(v, default: textColor,
+                                                  ok: UIColor(red: 0.36, green: 0.85, blue: 0.55, alpha: 1.0),
+                                                  bad: UIColor(red: 0.95, green: 0.45, blue: 0.45, alpha: 1.0),
+                                                  dim: dimColor)
             vLabel.numberOfLines = 0
             vLabel.lineBreakMode = .byCharWrapping
 
-            // Tap on the value: copy to clipboard. Useful for paths /
-            // long versions the user might want to paste.
             vLabel.isUserInteractionEnabled = true
             let tap = UITapGestureRecognizer(target: self, action: #selector(copyValue(_:)))
             vLabel.addGestureRecognizer(tap)
@@ -184,17 +238,31 @@ final class SystemInfoViewController: UIViewController {
         }
 
         let cardStack = UIStackView(arrangedSubviews: [header, rowsStack])
-        cardStack.axis = .vertical; cardStack.spacing = 12
+        cardStack.axis = .vertical; cardStack.spacing = 14
         cardStack.translatesAutoresizingMaskIntoConstraints = false
 
         card.addSubview(cardStack)
         NSLayoutConstraint.activate([
-            cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
         ])
         return card
+    }
+
+    /// Pick a sensible color for a value cell based on its content.
+    /// "✓ <anything>" is green, "— <anything>" is red, "<unset>" is
+    /// dimmed, "loading…" is dimmed, everything else uses the default.
+    private static func colorForValue(_ v: String, default def: UIColor,
+                                      ok: UIColor, bad: UIColor, dim: UIColor) -> UIColor {
+        let trimmed = v.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("✓") { return ok }
+        if trimmed.hasPrefix("—") { return bad }
+        if trimmed == "<unset>" || trimmed.hasSuffix("…") || trimmed.hasSuffix("loading") {
+            return dim
+        }
+        return def
     }
 
     @objc private func copyValue(_ sender: UITapGestureRecognizer) {
@@ -472,5 +540,23 @@ print("__CODEBENCH_SYSINFO__=" + json.dumps(info))
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f.string(from: d)
+    }
+}
+
+/// Tiny helper view that resizes an external CAGradientLayer to its
+/// own bounds. Lets the hero header use a gradient via insertSublayer
+/// without needing a full UIView subclass for the gradient itself.
+private final class GradientResizeView: UIView {
+    private let target: CAGradientLayer
+    init(layer: CAGradientLayer) {
+        self.target = layer
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        target.frame = bounds
     }
 }

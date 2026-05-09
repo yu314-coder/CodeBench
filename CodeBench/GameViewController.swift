@@ -4479,7 +4479,7 @@ final class GameViewController: UIViewController {
             tabStack.leadingAnchor.constraint(equalTo: contentTabBar.leadingAnchor),
             tabStack.trailingAnchor.constraint(equalTo: contentTabBar.trailingAnchor),
             tabStack.bottomAnchor.constraint(equalTo: contentTabBar.bottomAnchor),
-            contentTabBar.heightAnchor.constraint(equalToConstant: 34),
+            contentTabBar.heightAnchor.constraint(equalToConstant: 44),
         ])
 
         editorContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -4500,31 +4500,43 @@ final class GameViewController: UIViewController {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.tag = tag
 
+        // Larger, more legible tab buttons. SF Pro Rounded title with
+        // a slightly larger icon, tighter image padding so the pair
+        // reads as a unit. Bigger vertical inset doubles as a wider
+        // touch target — minimum 44pt.
         var config = UIButton.Configuration.plain()
-        config.title = title
-        config.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11))
-        config.imagePadding = 4
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+        var titleAttr = AttributeContainer()
+        titleAttr.font = UIFont.systemFont(ofSize: 13, weight: .semibold).rounded
+        config.attributedTitle = AttributedString(title, attributes: titleAttr)
+        config.image = UIImage(systemName: icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        config.imagePadding = 6
+        config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
         config.baseForegroundColor = active
-            ? UIColor(white: 0.90, alpha: 1)
-            : UIColor(white: 0.45, alpha: 1)
+            ? UIColor(white: 0.96, alpha: 1)
+            : UIColor(white: 0.50, alpha: 1)
         button.configuration = config
         button.backgroundColor = active
-            ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0) // matches editor bg
+            ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0)
             : .clear
 
-        // Bottom border indicator for active tab
+        // Animated active indicator — a fatter pill at the bottom that
+        // slides between tabs (the slide is wired up in
+        // contentTabTapped). Replaces the thin 2pt rail with a 3pt
+        // rounded bar that reads as a "selected" affordance even at
+        // low contrast.
         if active {
             let indicator = UIView()
             indicator.tag = 999
-            indicator.backgroundColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1.0) // accent blue
+            indicator.backgroundColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1.0)
+            indicator.layer.cornerRadius = 1.5
             indicator.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(indicator)
             NSLayoutConstraint.activate([
-                indicator.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-                indicator.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+                indicator.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 14),
+                indicator.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -14),
                 indicator.bottomAnchor.constraint(equalTo: button.bottomAnchor),
-                indicator.heightAnchor.constraint(equalToConstant: 2),
+                indicator.heightAnchor.constraint(equalToConstant: 3),
             ])
         }
 
@@ -4542,29 +4554,42 @@ final class GameViewController: UIViewController {
             let isActive = i == index
             var config = tab.configuration
             config?.baseForegroundColor = isActive
-                ? UIColor(white: 0.90, alpha: 1)
-                : UIColor(white: 0.45, alpha: 1)
+                ? UIColor(white: 0.96, alpha: 1)
+                : UIColor(white: 0.50, alpha: 1)
             tab.configuration = config
-            tab.backgroundColor = isActive
-                ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0)
-                : .clear
+            // Animate the background fade — feels much smoother than
+            // the previous instant swap.
+            UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseOut) {
+                tab.backgroundColor = isActive
+                    ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0)
+                    : .clear
+            }
 
             // Remove old indicator
             tab.viewWithTag(999)?.removeFromSuperview()
 
-            // Add indicator to active tab
+            // Add indicator to active tab — same shape as the initial
+            // build (rounded 3pt pill, inset 14pt from the edges) so
+            // tab activation visually matches first-load rendering.
             if isActive {
                 let indicator = UIView()
                 indicator.tag = 999
                 indicator.backgroundColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1.0)
+                indicator.layer.cornerRadius = 1.5
                 indicator.translatesAutoresizingMaskIntoConstraints = false
                 tab.addSubview(indicator)
                 NSLayoutConstraint.activate([
-                    indicator.leadingAnchor.constraint(equalTo: tab.leadingAnchor),
-                    indicator.trailingAnchor.constraint(equalTo: tab.trailingAnchor),
+                    indicator.leadingAnchor.constraint(equalTo: tab.leadingAnchor, constant: 14),
+                    indicator.trailingAnchor.constraint(equalTo: tab.trailingAnchor, constant: -14),
                     indicator.bottomAnchor.constraint(equalTo: tab.bottomAnchor),
-                    indicator.heightAnchor.constraint(equalToConstant: 2),
+                    indicator.heightAnchor.constraint(equalToConstant: 3),
                 ])
+                indicator.alpha = 0
+                UIView.animate(withDuration: 0.22, delay: 0,
+                               usingSpringWithDamping: 0.78,
+                               initialSpringVelocity: 0,
+                               options: [],
+                               animations: { indicator.alpha = 1 })
             }
         }
 

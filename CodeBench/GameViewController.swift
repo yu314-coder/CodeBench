@@ -242,7 +242,18 @@ final class GameViewController: UIViewController {
     }
 
     override var keyCommands: [UIKeyCommand]? {
-        activeGameInput?.makeKeyCommands(target: self, action: #selector(handleGameKeyCommand(_:)))
+        var cmds: [UIKeyCommand] = activeGameInput?.makeKeyCommands(
+            target: self, action: #selector(handleGameKeyCommand(_:))) ?? []
+        // Cmd+P → command palette. Always available (independent of
+        // whether a game input is active) so the user can summon it
+        // anywhere the GameViewController is the first responder.
+        cmds.append(UIKeyCommand(
+            title: "Command Palette",
+            action: #selector(showCommandPalette),
+            input: "p",
+            modifierFlags: .command,
+            discoverabilityTitle: "Open Command Palette"))
+        return cmds
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -4500,18 +4511,10 @@ final class GameViewController: UIViewController {
         present(palette, animated: true)
     }
 
-    /// Cmd+P keyboard shortcut → command palette. Wired via the
-    /// existing UIKeyCommand infrastructure in keyCommands below.
-    override var keyCommands: [UIKeyCommand]? {
-        var cmds = super.keyCommands ?? []
-        cmds.append(UIKeyCommand(
-            title: "Command Palette",
-            action: #selector(showCommandPalette),
-            input: "p",
-            modifierFlags: .command,
-            discoverabilityTitle: "Open Command Palette"))
-        return cmds
-    }
+    // Cmd+P keyboard shortcut for the command palette is wired into
+    // the main `keyCommands` override at the top of this class
+    // (alongside the game-input commands) — Swift only allows one
+    // override per method per class.
 
     private func promptForName(title: String, message: String,
                                 placeholder: String,

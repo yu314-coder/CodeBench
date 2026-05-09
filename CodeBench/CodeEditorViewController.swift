@@ -1967,33 +1967,27 @@ final class CodeEditorViewController: UIViewController {
         tap.delegate = self
         swiftTermView.addGestureRecognizer(tap)
 
-        // Cursor-drag-to-select: SwiftTerm's panSelectionHandler
-        // only EXTENDS an active selection — when no selection
-        // exists, panning sends arrow keys instead. To make
-        // tap-and-drag create a NEW selection, install a
-        // long-press recognizer at 0.15 s (just enough to
-        // disambiguate from a stationary tap). Its action invokes
-        // SwiftTerm's @objc doubleTap: selector through a forwarder
-        // that lies about state — `doubleTap:` returns early unless
-        // state == .ended, but we want the side effect (which calls
-        // selection.selectWordOrExpression() AND enables SwiftTerm's
-        // internal pan-selection gesture) to fire when our LP
-        // transitions to .began. The forwarder swaps the gesture
-        // for a fake .ended-state UITapGestureRecognizer just for
-        // the doubleTap: call.
-        let dragStart = UILongPressGestureRecognizer(
-            target: self, action: #selector(swiftTermDragSelectStart(_:)))
-        dragStart.minimumPressDuration = 0.15
-        dragStart.allowableMovement = 4
-        dragStart.delegate = self
-        swiftTermView.addGestureRecognizer(dragStart)
+        // Cursor-drag-to-select: a UIPanGestureRecognizer that fires
+        // SwiftTerm's selection logic the moment the user starts
+        // dragging (instead of requiring a long-press first). On
+        // .began, we synthesize a fake doubleTap to seed an initial
+        // word selection at the touch point AND call SwiftTerm's
+        // internal pan handler so subsequent movement extends it.
+        //
+        // Why pan, not LP: long-press makes the user wait — pan
+        // fires immediately on first movement, which is what the
+        // user expects (matches every other iOS text view).
+        let dragSelect = UIPanGestureRecognizer(
+            target: self, action: #selector(swiftTermDragSelectPan(_:)))
+        dragSelect.minimumNumberOfTouches = 1
+        dragSelect.maximumNumberOfTouches = 1
+        dragSelect.delegate = self
+        swiftTermView.addGestureRecognizer(dragSelect)
 
-        // Trim SwiftTerm's stock long-press to fire the context menu
-        // sooner (0.7 s default → 0.5 s — keep above our 0.15 s
-        // selection trigger so the two don't fight).
+        // Trim SwiftTerm's stock long-press (context menu) so it
+        // doesn't compete: 0.7 s default → 0.5 s.
         for gr in swiftTermView.gestureRecognizers ?? [] {
             if let lp = gr as? UILongPressGestureRecognizer,
-               lp !== dragStart,
                lp.minimumPressDuration >= 0.6 {
                 lp.minimumPressDuration = 0.5
                 break
@@ -3402,24 +3396,34 @@ except Exception:
 
     // MARK: - Drag-to-select bridge
 
-    /// Fired by our 0.15 s long-press recognizer when the user holds
-    /// briefly on the terminal. Synthesizes a fake tap gesture in
-    /// the .ended state and forwards to SwiftTerm's @objc doubleTap:
-    /// — that selects the word at the touch point AND enables
-    /// SwiftTerm's internal pan-selection recognizer, so subsequent
-    /// finger drag extends the selection naturally.
-    @objc fileprivate func swiftTermDragSelectStart(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began else { return }
-        let sel = NSSelectorFromString("doubleTap:")
-        guard swiftTermView.responds(to: sel) else { return }
-        // Build a fake tap recognizer whose `state` reads as .ended
-        // and whose `location(in:)` returns the actual touch point.
-        let fake = ForcedEndedTapRecognizer()
-        fake.attached = swiftTermView
-        fake.fakeLocation = g.location(in: swiftTermView)
-        // Invoke via the Objective-C runtime since doubleTap: is
-        // declared internal-with-@objc.
-        _ = swiftTermView.perform(sel, with: fake)
+    /// Pan handler for our drag-to-select gesture. On .began, seed
+    /// a selection at the touch point by forwarding to SwiftTerm's
+    /// @objc doubleTap: (selects word + enables panSelectionHandler).
+    /// On .changed, forward each movement to SwiftTerm's @objc
+    /// panSelectionHandler: which extends the selection range.
+    @objc fileprivate func swiftTermDragSelectPan(_ g: UIPanGestureRecognizer) {
+        let location = g.location(in: swiftTermView)
+        switch g.state {
+        case .began:
+            let doubleTap = NSSelectorFromString("doubleTap:")
+            if swiftTermView.responds(to: doubleTap) {
+                let fake = ForcedEndedTapRecognizer()
+                fake.attached = swiftTermView
+                fake.fakeLocation = location
+                _ = swiftTermView.perform(doubleTap, with: fake)
+            }
+        case .changed:
+            let panSel = NSSelectorFromString("panSelectionHandler:")
+            if swiftTermView.responds(to: panSel) {
+                let fake = ForcedChangedPanRecognizer()
+                fake.attached = swiftTermView
+                fake.fakeLocation = location
+                fake.fakeTranslation = g.translation(in: swiftTermView)
+                _ = swiftTermView.perform(panSel, with: fake)
+            }
+        default:
+            break
+        }
     }
 
     // MARK: - Interrupt, font-size, menu
@@ -5595,3 +5599,22 @@ private final class ForcedEndedTapRecognizer: UITapGestureRecognizer {
     override func location(in view: UIView?) -> CGPoint { fakeLocation }
 }
 
+
+/// UIPanGestureRecognizer subclass whose `state` reads as .changed
+/// and whose `location(in:)` / `translation(in:)` return forced
+/// values. Used as the parameter when forwarding finger-drag
+/// movement to SwiftTerm's @objc panSelectionHandler — that
+/// handler only does selection-extension work in the .changed
+/// state, so we pin our fake there.
+private final class ForcedChangedPanRecognizer: UIPanGestureRecognizer {
+    weak var attached: UIView?
+    var fakeLocation: CGPoint = .zero
+    var fakeTranslation: CGPoint = .zero
+    override var state: UIGestureRecognizer.State {
+        get { .changed }
+        set { /* ignored */ }
+    }
+    override var view: UIView? { attached }
+    override func location(in view: UIView?) -> CGPoint { fakeLocation }
+    override func translation(in view: UIView?) -> CGPoint { fakeTranslation }
+}

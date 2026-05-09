@@ -1622,14 +1622,21 @@ final class CodeEditorViewController: UIViewController {
                             for: .normal)
             button.imageView?.contentMode = .scaleAspectFit
         }
-        makeTrafficLight(terminalTrafficClose, color: UIColor(red: 1.00, green: 0.38, blue: 0.38, alpha: 1), glyph: "xmark")
+        // Mac-style traffic lights — but only the useful two:
+        // minimize (yellow) collapses the terminal pane, maximize
+        // (green) expands it. The close (red) light has been
+        // removed — closing the terminal entirely had no path back
+        // and was reported as useless.
         makeTrafficLight(terminalTrafficMin,   color: UIColor(red: 1.00, green: 0.75, blue: 0.20, alpha: 1), glyph: "minus")
         makeTrafficLight(terminalTrafficMax,   color: UIColor(red: 0.35, green: 0.85, blue: 0.45, alpha: 1), glyph: "arrow.up.left.and.arrow.down.right")
-        terminalTrafficClose.addTarget(self, action: #selector(terminalClose),   for: .touchUpInside)
         terminalTrafficMin.addTarget(self,   action: #selector(terminalMinimize), for: .touchUpInside)
         terminalTrafficMax.addTarget(self,   action: #selector(terminalMaximize), for: .touchUpInside)
+        // Hide the close traffic light's instance so any old constraint
+        // referencing it doesn't dangle. Could be removed entirely once
+        // we're sure nothing else references the field.
+        terminalTrafficClose.isHidden = true
 
-        let trafficLights = UIStackView(arrangedSubviews: [terminalTrafficClose, terminalTrafficMin, terminalTrafficMax])
+        let trafficLights = UIStackView(arrangedSubviews: [terminalTrafficMin, terminalTrafficMax])
         trafficLights.translatesAutoresizingMaskIntoConstraints = false
         trafficLights.axis = .horizontal
         trafficLights.spacing = 8
@@ -1659,7 +1666,14 @@ final class CodeEditorViewController: UIViewController {
         terminalSpinner.color = UIColor(white: 0.7, alpha: 1)
         terminalSpinner.hidesWhenStopped = true
 
-        // Small SF-Symbols buttons on the right (Ctrl+C, font- / font+, menu, copy, clear)
+        // Right-side controls — pruned to the three useful actions:
+        // Stop (sends Ctrl+C / SIGINT to the running process), Copy
+        // (copies the visible terminal buffer), and Clear. The
+        // previous "..." menu, font +/− steppers, and the Mac-style
+        // close/min/max traffic lights were removed — they took
+        // visual space without adding capability the user reaches
+        // for. Font size is still adjustable via Settings popover.
+
         func makeTerminalIconButton(_ button: UIButton, systemName: String, tint: UIColor = UIColor(white: 0.7, alpha: 1), action: Selector) {
             button.translatesAutoresizingMaskIntoConstraints = false
             var cfg = UIButton.Configuration.plain()
@@ -1670,33 +1684,41 @@ final class CodeEditorViewController: UIViewController {
             button.configuration = cfg
             button.addTarget(self, action: action, for: .touchUpInside)
         }
-        makeTerminalIconButton(terminalInterruptButton, systemName: "stop.fill",
-                               tint: UIColor(red: 1, green: 0.5, blue: 0.5, alpha: 1),
-                               action: #selector(terminalInterrupt))
-        makeTerminalIconButton(terminalFontMinusButton, systemName: "textformat.size.smaller",
-                               action: #selector(terminalFontSmaller))
-        makeTerminalIconButton(terminalFontPlusButton,  systemName: "textformat.size.larger",
-                               action: #selector(terminalFontLarger))
-        makeTerminalIconButton(terminalMenuButton, systemName: "ellipsis.circle",
-                               action: #selector(showTerminalMenu(_:)))
+
+        // Emergency stop — a clearly-labeled Ctrl+C button. Tinted
+        // .filled with red bg + "Stop" label so the user can spot it
+        // instantly when something runs away. Sends SIGINT to the
+        // Python REPL via PTYBridge.
+        var stopCfg = UIButton.Configuration.tinted()
+        stopCfg.image = UIImage(systemName: "xmark.octagon.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))
+        var stopAttr = AttributeContainer()
+        stopAttr.font = UIFont.systemFont(ofSize: 11, weight: .semibold).rounded
+        stopCfg.attributedTitle = AttributedString("Stop", attributes: stopAttr)
+        stopCfg.imagePadding = 4
+        stopCfg.baseForegroundColor = UIColor(red: 1.0, green: 0.40, blue: 0.40, alpha: 1.0)
+        stopCfg.baseBackgroundColor = UIColor(red: 1.0, green: 0.40, blue: 0.40, alpha: 1.0)
+        stopCfg.cornerStyle = .capsule
+        stopCfg.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
+        terminalInterruptButton.configuration = stopCfg
+        terminalInterruptButton.translatesAutoresizingMaskIntoConstraints = false
+        terminalInterruptButton.addTarget(self, action: #selector(terminalInterrupt), for: .touchUpInside)
+        terminalInterruptButton.isPointerInteractionEnabled = true
+
         makeTerminalIconButton(terminalCopyButton, systemName: "doc.on.doc",
                                action: #selector(copyTerminalContents))
         makeTerminalIconButton(terminalClearButton, systemName: "trash",
                                action: #selector(clearTerminal))
 
-        // Right-side control stack
         let rightControls = UIStackView(arrangedSubviews: [
             terminalInterruptButton,
-            terminalFontMinusButton,
-            terminalFontPlusButton,
-            terminalMenuButton,
             terminalCopyButton,
             terminalClearButton,
         ])
         rightControls.translatesAutoresizingMaskIntoConstraints = false
         rightControls.axis = .horizontal
-        rightControls.spacing = 0
-        rightControls.distribution = .equalSpacing
+        rightControls.spacing = 8
+        rightControls.alignment = .center
 
         // Status cluster in the center/left
         let statusCluster = UIStackView(arrangedSubviews: [terminalStatusDot, terminalStatusLabel, terminalSpinner])

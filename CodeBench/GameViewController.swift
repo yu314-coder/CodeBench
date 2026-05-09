@@ -4645,12 +4645,30 @@ final class GameViewController: UIViewController {
             }
         }
 
-        // Switch content
-        UIView.transition(with: contentView, duration: 0.15, options: .transitionCrossDissolve) {
-            self.editorContainer.isHidden = index != 0
-            self.librariesContainer.isHidden = index != 1
-            self.systemInfoContainer.isHidden = index != 2
+        // Switch content with a directional slide. The new tab
+        // enters from the side closest to the previous tab — feels
+        // like UISlider's segmented control where content tracks
+        // the active indicator. ManageReusable: cross-dissolve looked
+        // identical regardless of direction; the slide gives a sense
+        // of place ("System is to the right of Libraries").
+        let containers = [editorContainer, librariesContainer, systemInfoContainer]
+        let nextContainer = containers[index]
+        let prevIndex = containers.firstIndex(where: { !$0.isHidden }) ?? 0
+        let goingRight = index > prevIndex
+        let offX: CGFloat = goingRight ? 18 : -18
+        nextContainer.alpha = 0
+        nextContainer.transform = CGAffineTransform(translationX: offX, y: 0)
+        for (i, c) in containers.enumerated() {
+            c.isHidden = i != index
         }
+        UIView.animate(withDuration: 0.20, delay: 0,
+                       usingSpringWithDamping: 0.92,
+                       initialSpringVelocity: 0,
+                       options: [.curveEaseOut],
+                       animations: {
+            nextContainer.alpha = 1
+            nextContainer.transform = .identity
+        }, completion: nil)
 
         // Lazy setup Libraries (combined Docs + Install + Installed list)
         if index == 1 && librariesController == nil {

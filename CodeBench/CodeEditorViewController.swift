@@ -325,6 +325,20 @@ final class CodeEditorViewController: UIViewController {
     private let editorHeaderBar = UIView()
     private let editorFileNameLabel = UILabel()
 
+    /// VS Code–style thin status bar pinned to the bottom of the
+    /// editor pane. Shows file name, detected language, cursor
+    /// position (line/column), encoding, and a colored status dot
+    /// that mirrors the "ready / running / error" terminal state.
+    /// Tap any segment for context-relevant actions (cursor → jump
+    /// to line, language → open Manim settings, etc.).
+    private let editorStatusBar = UIView()
+    private let statusFileLabel = UILabel()
+    private let statusLanguageLabel = UILabel()
+    private let statusCursorLabel = UILabel()
+    private let statusEncodingLabel = UILabel()
+    private let statusStateDot = UIView()
+    private let statusStateLabel = UILabel()
+
     // Monaco editor (WebView-hosted, replaces UITextView + custom autocomplete UI)
     private let monacoView = MonacoEditorView()
 
@@ -1346,12 +1360,21 @@ final class CodeEditorViewController: UIViewController {
 
         editorContainer.addSubview(editorHeaderBar)
         editorContainer.addSubview(monacoView)
+        buildEditorStatusBar()
+        editorContainer.addSubview(editorStatusBar)
 
         NSLayoutConstraint.activate([
             editorHeaderBar.topAnchor.constraint(equalTo: editorContainer.topAnchor),
             editorHeaderBar.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             editorHeaderBar.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
             editorHeaderBar.heightAnchor.constraint(equalToConstant: 34),
+
+            // Bottom status bar — pinned to the editorContainer bottom,
+            // monacoView's bottom is rerouted to its top below.
+            editorStatusBar.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
+            editorStatusBar.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
+            editorStatusBar.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
+            editorStatusBar.heightAnchor.constraint(equalToConstant: 22),
 
             headerBorder.bottomAnchor.constraint(equalTo: editorHeaderBar.bottomAnchor),
             headerBorder.leadingAnchor.constraint(equalTo: editorHeaderBar.leadingAnchor),
@@ -1376,8 +1399,124 @@ final class CodeEditorViewController: UIViewController {
             monacoView.topAnchor.constraint(equalTo: editorHeaderBar.bottomAnchor),
             monacoView.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             monacoView.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            monacoView.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
+            monacoView.bottomAnchor.constraint(equalTo: editorStatusBar.topAnchor),
         ])
+    }
+
+    // MARK: - Editor Status Bar
+
+    private func buildEditorStatusBar() {
+        editorStatusBar.translatesAutoresizingMaskIntoConstraints = false
+        editorStatusBar.backgroundColor = EditorTheme.gutterBg
+        // Subtle top border so it visually separates from monaco
+        let topBorder = UIView()
+        topBorder.translatesAutoresizingMaskIntoConstraints = false
+        topBorder.backgroundColor = EditorTheme.borderSub
+        editorStatusBar.addSubview(topBorder)
+        NSLayoutConstraint.activate([
+            topBorder.topAnchor.constraint(equalTo: editorStatusBar.topAnchor),
+            topBorder.leadingAnchor.constraint(equalTo: editorStatusBar.leadingAnchor),
+            topBorder.trailingAnchor.constraint(equalTo: editorStatusBar.trailingAnchor),
+            topBorder.heightAnchor.constraint(equalToConstant: 0.5),
+        ])
+
+        let monoFont = UIFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+
+        // ── State dot — colored circle reflecting "ready" / "running"
+        // / "error" so the user can tell at a glance whether the
+        // last run succeeded.
+        statusStateDot.translatesAutoresizingMaskIntoConstraints = false
+        statusStateDot.backgroundColor = UIColor(red: 0.36, green: 0.85, blue: 0.55, alpha: 1.0)
+        statusStateDot.layer.cornerRadius = 3
+        NSLayoutConstraint.activate([
+            statusStateDot.widthAnchor.constraint(equalToConstant: 6),
+            statusStateDot.heightAnchor.constraint(equalToConstant: 6),
+        ])
+
+        statusStateLabel.font = monoFont
+        statusStateLabel.textColor = UIColor(white: 0.65, alpha: 1)
+        statusStateLabel.text = "Ready"
+        statusStateLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let stateGroup = UIStackView(arrangedSubviews: [statusStateDot, statusStateLabel])
+        stateGroup.axis = .horizontal; stateGroup.spacing = 6; stateGroup.alignment = .center
+        stateGroup.translatesAutoresizingMaskIntoConstraints = false
+
+        // ── File name — left side, with a small file icon prefix
+        let fileIcon = UIImageView(image: UIImage(systemName: "doc.text",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .medium)))
+        fileIcon.tintColor = EditorTheme.accentViolet
+        fileIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        statusFileLabel.font = monoFont
+        statusFileLabel.textColor = UIColor(white: 0.85, alpha: 1)
+        statusFileLabel.text = "main.py"
+        statusFileLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let fileGroup = UIStackView(arrangedSubviews: [fileIcon, statusFileLabel])
+        fileGroup.axis = .horizontal; fileGroup.spacing = 5; fileGroup.alignment = .center
+        fileGroup.translatesAutoresizingMaskIntoConstraints = false
+
+        // ── Language pill
+        statusLanguageLabel.font = monoFont
+        statusLanguageLabel.textColor = EditorTheme.accent
+        statusLanguageLabel.text = "Python"
+
+        // ── Cursor position
+        statusCursorLabel.font = monoFont
+        statusCursorLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        statusCursorLabel.text = "Ln 1, Col 1"
+
+        // ── Encoding (always UTF-8 for everything we open)
+        statusEncodingLabel.font = monoFont
+        statusEncodingLabel.textColor = UIColor(white: 0.45, alpha: 1)
+        statusEncodingLabel.text = "UTF-8"
+
+        // Layout: left = state · file, right = lang · cursor · encoding
+        let leftStack = UIStackView(arrangedSubviews: [stateGroup, separatorView(), fileGroup])
+        leftStack.axis = .horizontal; leftStack.spacing = 12; leftStack.alignment = .center
+        leftStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let rightStack = UIStackView(arrangedSubviews: [
+            statusLanguageLabel, separatorView(),
+            statusCursorLabel, separatorView(),
+            statusEncodingLabel
+        ])
+        rightStack.axis = .horizontal; rightStack.spacing = 12; rightStack.alignment = .center
+        rightStack.translatesAutoresizingMaskIntoConstraints = false
+
+        editorStatusBar.addSubview(leftStack)
+        editorStatusBar.addSubview(rightStack)
+        NSLayoutConstraint.activate([
+            leftStack.leadingAnchor.constraint(equalTo: editorStatusBar.leadingAnchor, constant: 12),
+            leftStack.centerYAnchor.constraint(equalTo: editorStatusBar.centerYAnchor),
+
+            rightStack.trailingAnchor.constraint(equalTo: editorStatusBar.trailingAnchor, constant: -12),
+            rightStack.centerYAnchor.constraint(equalTo: editorStatusBar.centerYAnchor),
+        ])
+    }
+
+    /// Tiny vertical hairline used as separator between status-bar
+    /// segments. Same idiom as Xcode's status bar.
+    private func separatorView() -> UIView {
+        let v = UIView()
+        v.backgroundColor = UIColor(white: 0.30, alpha: 1)
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.widthAnchor.constraint(equalToConstant: 0.5).isActive = true
+        v.heightAnchor.constraint(equalToConstant: 12).isActive = true
+        return v
+    }
+
+    /// Update the status bar to reflect the currently-loaded file.
+    /// Called from loadFile / language switches / cursor movements.
+    private func updateEditorStatusBar() {
+        statusFileLabel.text = currentFileURL?.lastPathComponent ?? "(no file)"
+        statusLanguageLabel.text = currentLanguage.title
+    }
+
+    private func updateEditorStatusState(_ state: TerminalStatus) {
+        statusStateDot.backgroundColor = state.color
+        statusStateLabel.text = state.title
     }
 
     // MARK: - Setup AI Chat
@@ -2182,6 +2321,10 @@ except Exception:
         terminalStatusLabel.text = s.title
         terminalStatusLabel.textColor = s.color
         if s == .running { terminalSpinner.startAnimating() } else { terminalSpinner.stopAnimating() }
+        // Mirror onto the editor status bar so the user can see run
+        // state without looking at the terminal pane (especially
+        // useful when the terminal is minimized).
+        updateEditorStatusState(s)
     }
 
     // MARK: - Setup Settings Panel
@@ -4430,6 +4573,7 @@ except Exception:
         currentFileURL = url
         lastSavedText = contents
         editorFileNameLabel.text = "</> \(url.lastPathComponent)"
+        updateEditorStatusBar()
         // Persist this as the "last opened file" so the next launch
         // restores it (loadInitialFile in viewDidLoad reads this key).
         UserDefaults.standard.set(url.path, forKey: "editor.lastFilePath")

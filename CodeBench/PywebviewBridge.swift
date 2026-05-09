@@ -301,20 +301,38 @@ import WebKit
                           error: "no webView bound — pywebview window not visible yet")
             return
         }
-        // evaluateJavaScript completion is on the main thread; that's
-        // where our timer fires anyway, so no thread juggling needed.
-        // Wrap in JSON.stringify so we get a stable serialization for
-        // arbitrary return types (objects, arrays, dates, etc).
-        let wrapped = "JSON.stringify((function(){ return (\(src)); })())"
+        // Wrap so we always get a JSON-stringifiable return value AND
+        // multi-statement scripts (`a(); b()`) work the same as a
+        // single expression. Previous version wrapped as
+        //     return (\(src))
+        // which made `return (a(); b());` a syntax error → silent
+        // "JavaScript exception occurred" for any pywebview script
+        // with more than one statement (and even some single-
+        // statement assignments where the value contained chars that
+        // changed parsing). Now we encode src as a JS string literal
+        // (via JSON serialization for guaranteed-correct escaping)
+        // and feed it to eval(): eval handles both expression and
+        // statement input, returning the value of the last expression.
+        let scriptLiteral: String
+        if let data = try? JSONSerialization.data(withJSONObject: src,
+            options: [.fragmentsAllowed]),
+           let s = String(data: data, encoding: .utf8) {
+            scriptLiteral = s
+        } else {
+            // Extremely unlikely (src is a String, JSON-encodes fine)
+            // but fall back to manual escaping just in case.
+            let escaped = src
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            scriptLiteral = "\"\(escaped)\""
+        }
+        let wrapped = "JSON.stringify((function(){ return eval(\(scriptLiteral)); })())"
         webView.evaluateJavaScript(wrapped) { [weak self] result, error in
             if let err = error {
                 self?.writeEvalResp(id: id, ok: false, result: nil,
                                     error: err.localizedDescription)
                 return
             }
-            // result is either a String (JSON) or NSNull when the
-            // callback returned undefined (which JSON.stringify maps
-            // to undefined → JS treats as null in our wrapper).
             let resultStr = result as? String ?? "null"
             self?.writeEvalResp(id: id, ok: true, result: resultStr, error: nil)
         }

@@ -1967,28 +1967,41 @@ final class CodeEditorViewController: UIViewController {
         tap.delegate = self
         swiftTermView.addGestureRecognizer(tap)
 
-        // Cursor-drag-to-select: SwiftTerm's stock behavior requires a
-        // long-press to enter selection mode before drag does anything.
-        // The user wants drag-to-select from the FIRST touch — the way
-        // every other iOS text view works. We rewire SwiftTerm's
-        // existing long-press recognizer:
-        //   • minimumPressDuration → 0.0    so it transitions to .began
-        //                                    on the very first touch-down
-        //   • allowableMovement    → 10 000 so drag never cancels the
-        //                                    recognizer
-        // Combined: touch-down enters selection-mode immediately, drag
-        // extends the selection range, lift commits. Stationary touch
-        // (tap to focus) is handled by the separate single-tap
-        // recognizer added below — that fires when the long-press has
-        // recorded zero movement on lift.
+        // Cursor-drag-to-select: SwiftTerm doesn't enable its
+        // selection pan gesture by default — `setupGestures()` only
+        // installs longPress / singleTap / doubleTap / tripleTap.
+        // SwiftTerm's panSelectionHandler exists as @objc but its
+        // installer (enableSelectionPanGesture) is internal-scoped,
+        // so we can't call it directly from this target.
+        //
+        // Workaround: install our own UIPanGestureRecognizer that
+        // targets the swiftTermView's @objc panSelectionHandler:
+        // method through the Objective-C runtime. The method runs
+        // SwiftTerm's selection-extend code as if it had been wired
+        // up internally.
+        let panSelector = NSSelectorFromString("panSelectionHandler:")
+        if swiftTermView.responds(to: panSelector) {
+            let pan = UIPanGestureRecognizer(target: swiftTermView, action: panSelector)
+            pan.minimumNumberOfTouches = 1
+            pan.maximumNumberOfTouches = 1
+            // Need to coexist with: SwiftTerm's own longPress
+            // (0.7 s — context menu), single/double/triple taps, and
+            // our tap-to-focus. Don't delay other touches; let the
+            // others fire when the gesture isn't a real drag.
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            pan.delegate = self
+            swiftTermView.addGestureRecognizer(pan)
+        } else {
+            NSLog("[term] SwiftTerm panSelectionHandler: missing — drag-to-select unavailable")
+        }
+        // Trim SwiftTerm's stock long-press to fire the context menu
+        // sooner (0.7 s default → 0.4 s) but DON'T set it to 0 — that
+        // would compete with the pan recognizer above.
         for gr in swiftTermView.gestureRecognizers ?? [] {
             if let lp = gr as? UILongPressGestureRecognizer,
-               lp.minimumPressDuration > 0.0 {
-                lp.minimumPressDuration = 0.0
-                lp.allowableMovement = 10_000
-                // Don't let the LP delay the tap recognizer fall-through.
-                lp.delaysTouchesBegan = false
-                lp.delaysTouchesEnded = false
+               lp.minimumPressDuration >= 0.5 {
+                lp.minimumPressDuration = 0.4
                 break
             }
         }

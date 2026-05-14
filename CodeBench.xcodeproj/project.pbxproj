@@ -430,6 +430,8 @@
 					kpathsea,
 					"-framework",
 					ios_system,
+					"-Wl,-exported_symbol,_cb_metal_available",
+					"-Wl,-exported_symbol,_cb_metal_matmul_ex",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -440,6 +442,9 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/CodeBench-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				STRIP_INSTALLED_PRODUCT = NO;
+				STRIP_STYLE = "non-global";
+				DEPLOYMENT_POSTPROCESSING = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -484,6 +489,8 @@
 					kpathsea,
 					"-framework",
 					ios_system,
+					"-Wl,-exported_symbol,_cb_metal_available",
+					"-Wl,-exported_symbol,_cb_metal_matmul_ex",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -494,6 +501,9 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/CodeBench-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				STRIP_INSTALLED_PRODUCT = NO;
+				STRIP_STYLE = "non-global";
+				DEPLOYMENT_POSTPROCESSING = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;

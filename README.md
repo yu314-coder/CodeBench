@@ -130,6 +130,8 @@ Full pdflatex doc: **[media.md#offlinai_latex--local-latex-engine](https://githu
 
 - **GGUF models** via `llama.cpp` integrated as an XCFramework. Load any Llama / Mistral / Qwen / Phi model, chat with streaming tokens.
 - **ExecuTorch** backends for Apple-Core-ML / XNNPACK / kernel-optimized inference of PyTorch models.
+- **PyTorch → Metal GPU bridge** (`CodeBench/MetalMatmulBridge.swift`) — exposes one `@_cdecl` C entry point backed by `MPSMatrixMultiplication`. Python's `_torch_metal_bridge.py` (in [python-ios-lib](https://github.com/yu314-coder/python-ios-lib)) reaches it via `dlopen(NULL)` + `dlsym` and monkey-patches `torch.matmul` / `mm` / `bmm` / `addmm` / `F.linear` / `F.scaled_dot_product_attention` on every Python startup. Real on-device transformer training in fp32/fp16/bf16 with 2–10× speedup over CPU. Linker flags in `OTHER_LDFLAGS` (`-Wl,-exported_symbol,_cb_metal_*`) keep the symbol export-visible through Apple's archive / TestFlight strip pass.
+- **LoRA fine-tuning** via llama.cpp's Metal backward kernels (separate path from the PyTorch bridge) — see `CodeBench/LlamaFinetuner.swift`. Trains a LoRA adapter on a GGUF base model in-place.
 - **RAG**: in-process sentence-embedding + vector store over user-imported text / PDF / markdown.
 - **Image generation** via ExecuTorch-runnable diffusion-family models.
 

@@ -9,7 +9,15 @@ import UIKit
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
+    /// Stash the keep-alive result somewhere global so the compiler
+    /// can't dead-code-eliminate the call. Swift global lets always
+    /// emit a real load, which transitively forces the linker to
+    /// keep the @_cdecl Metal bridge symbols Python reaches via
+    /// dlopen(NULL).
+    private static let _metalBridgeAnchor: Int = _cbMetalBridgeKeepAlive()
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        _ = AppDelegate._metalBridgeAnchor   // touch the anchor at launch
         return true
     }
 

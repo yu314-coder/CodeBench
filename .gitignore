@@ -34,3 +34,13 @@ build/
 
 # Build artifacts
 *.log
+
+# Workspace bootstrap (scripts/setup.sh clones python-ios-lib into
+# _vendor/ and creates these symlinks at the workspace root for Xcode).
+# Tracking them would commit a snapshot of a separate repo.
+_vendor/
+/Frameworks
+/app_packages
+/Monaco
+/Sources
+/Package.swift

@@ -9,15 +9,19 @@ import UIKit
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
-    /// Stash the keep-alive result somewhere global so the compiler
-    /// can't dead-code-eliminate the call. Swift global lets always
+    /// Stash the keep-alive results somewhere global so the compiler
+    /// can't dead-code-eliminate the calls. Swift global lets always
     /// emit a real load, which transitively forces the linker to
-    /// keep the @_cdecl Metal bridge symbols Python reaches via
-    /// dlopen(NULL).
+    /// keep the @_cdecl symbols Python reaches via dlopen(NULL):
+    ///   - cb_metal_available / cb_metal_matmul_ex  (PyTorch GPU bridge)
+    ///   - cb_bg_acquire / cb_bg_release / cb_bg_time_remaining
+    ///       (background-time extension)
     private static let _metalBridgeAnchor: Int = _cbMetalBridgeKeepAlive()
+    private static let _backgroundBridgeAnchor: Double = _cbBackgroundKeepAlive()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        _ = AppDelegate._metalBridgeAnchor   // touch the anchor at launch
+        _ = AppDelegate._metalBridgeAnchor       // touch anchors at launch
+        _ = AppDelegate._backgroundBridgeAnchor
         return true
     }
 

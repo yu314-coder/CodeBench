@@ -432,6 +432,9 @@
 					ios_system,
 					"-Wl,-exported_symbol,_cb_metal_available",
 					"-Wl,-exported_symbol,_cb_metal_matmul_ex",
+					"-Wl,-exported_symbol,_cb_bg_acquire",
+					"-Wl,-exported_symbol,_cb_bg_release",
+					"-Wl,-exported_symbol,_cb_bg_time_remaining",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -491,6 +494,9 @@
 					ios_system,
 					"-Wl,-exported_symbol,_cb_metal_available",
 					"-Wl,-exported_symbol,_cb_metal_matmul_ex",
+					"-Wl,-exported_symbol,_cb_bg_acquire",
+					"-Wl,-exported_symbol,_cb_bg_release",
+					"-Wl,-exported_symbol,_cb_bg_time_remaining",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";

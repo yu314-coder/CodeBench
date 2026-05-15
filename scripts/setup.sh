@@ -40,6 +40,24 @@ else
     echo "[setup] python-ios-lib already present (re-run with --update to pull)."
 fi
 
+# ─── 1b. Materialize libtorch_python.dylib from its LZMA blob ─────
+# python-ios-lib ships libtorch_python.dylib as a ~14 MB
+# Compression.framework-LZMA blob (Sources/PyTorch/torch_dylib/
+# libtorch_python.dylib.applzma) to stay under GitHub's 100 MB
+# limit. The build script copies the uncompressed .dylib into the
+# app bundle at build time, so we need to decompress it now (one-
+# time, idempotent). Without this, `import torch` crashes at
+# runtime with: "Library not loaded: @rpath/libtorch_python.dylib".
+DYLIB_PATH="$RUNTIME_DIR/app_packages/site-packages/torch/lib/libtorch_python.dylib"
+APPLZMA_PATH="$RUNTIME_DIR/Sources/PyTorch/torch_dylib/libtorch_python.dylib.applzma"
+UNPACK_SCRIPT="$RUNTIME_DIR/scripts/unpack-torch-dylib.swift"
+if [ ! -f "$DYLIB_PATH" ] && [ -f "$APPLZMA_PATH" ] && [ -f "$UNPACK_SCRIPT" ]; then
+    echo "[setup] Unpacking libtorch_python.dylib (~14 MB → ~99 MB) ..."
+    swift "$UNPACK_SCRIPT"
+elif [ -f "$DYLIB_PATH" ]; then
+    echo "[setup] libtorch_python.dylib already unpacked."
+fi
+
 # ─── 2. Verify the runtime has what Xcode expects ─────────────────
 missing=()
 for p in Frameworks/Python.xcframework \

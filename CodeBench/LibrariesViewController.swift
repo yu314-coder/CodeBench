@@ -253,7 +253,9 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         "sitecustomize":     "CodeBench helpers",
     ]
 
-    private static func categorize(_ name: String) -> String {
+    /// Accessible to PackageDetailViewController in this file so the
+    /// detail view's hero header can pick the same category icon.
+    fileprivate static func categorize(_ name: String) -> String {
         let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
         return CATEGORY_MAP[key] ?? "Other"
     }

@@ -9740,41 +9740,146 @@ final class GradientStripeView: UIView {
 // MARK: - WorkspaceDashboardDelegate
 
 extension GameViewController: WorkspaceDashboardDelegate {
+
+    /// Path to the user's workspace, where scratch / template files
+    /// created by dashboard cards live.
+    private var workspaceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Workspace", isDirectory: true)
+    }
+
+    /// Create `name` in the workspace with `body` if it doesn't
+    /// already exist, then open it in the editor. The "if-absent"
+    /// behavior is important: re-tapping the same dashboard card
+    /// after the user has edited the file shouldn't reset their work.
+    private func openOrCreateScratch(name: String, body: String) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: workspaceURL,
+                                withIntermediateDirectories: true)
+        let url = workspaceURL.appendingPathComponent(name)
+        if !fm.fileExists(atPath: url.path) {
+            try? body.write(to: url, atomically: true, encoding: .utf8)
+        }
+        contentTabTapped(editorTabButton)
+        if editorController == nil { setupEditorController() }
+        editorController?.loadFile(url: url)
+    }
+
     func dashboardDidSelect(_ action: WorkspaceDashboardView.Action) {
-        // Map each dashboard card to whatever existing entry point
-        // already handles that section. We hide the dashboard with a
-        // fade-out animation and let the underlying tab show through.
         hideWorkspaceDashboard()
 
         switch action {
+
         case .editor:
+            // Just reveal the editor as it currently is — no scratch
+            // file, no side-effects. The user is saying "let me get
+            // back to whatever I was editing."
             contentTabTapped(editorTabButton)
+
         case .files:
-            // Sidebar already shows the file browser — bring it forward
-            // by making sure the sidebar is visible.
+            // Make the sidebar visible (file browser lives there) and
+            // switch the main pane to the editor so the user can
+            // see selected files load into it. If the sidebar's
+            // already open, this is a no-op.
             if sidebarView.isHidden { toggleSidebarVisibility() }
             contentTabTapped(editorTabButton)
+
         case .terminal:
-            contentTabTapped(editorTabButton)
-            // The editor view already hosts the Python REPL drawer.
+            // Python REPL card → drop the user into a python_repl.py
+            // scratch file pre-filled with a starter print so the
+            // Run button gives instant feedback. The actual REPL
+            // panel is part of the editor view.
+            openOrCreateScratch(
+                name: "python_repl.py",
+                body: """
+                # Python REPL scratch — type code below and tap ▶ Run
+                # (the green button in the editor toolbar). Output
+                # appears in the terminal panel underneath.
+
+                import sys
+                print(f\"Python {sys.version.split()[0]}\")
+                print(\"hello from your iPad\")
+                """)
+
         case .aiChat:
+            // Switch to the editor and toggle the AI Assist panel on.
             contentTabTapped(editorTabButton)
-            // AI chat is the right-side panel inside the editor view.
+            if editorController == nil { setupEditorController() }
+            editorController?.showAIChatPanel()
+
         case .libraries:
             contentTabTapped(librariesTabButton)
+
         case .latex:
-            contentTabTapped(editorTabButton)
-            // LaTeX previews open via the editor's run/preview path.
+            // LaTeX card → drop a minimal .tex template and switch to
+            // the editor. The editor's run path compiles via the
+            // bundled busytex WASM engine.
+            openOrCreateScratch(
+                name: "document.tex",
+                body: """
+                \\documentclass{article}
+                \\usepackage{amsmath}
+                \\title{My iPad LaTeX Document}
+                \\author{You}
+                \\begin{document}
+                \\maketitle
+
+                The integral of $\\sin(x)$ is $-\\cos(x) + C$.
+
+                \\[
+                    \\int_0^{\\pi} \\sin(x)\\,dx = 2
+                \\]
+
+                Tap \\textbf{Run} (the green button) to compile this
+                to PDF on-device — no network required.
+                \\end{document}
+                """)
+
         case .runScript:
+            // Switch to the editor and trigger the run action on the
+            // currently-loaded file. If nothing is loaded yet, the
+            // editor's run path shows its own "open a file first"
+            // message — no work for us to do here.
             contentTabTapped(editorTabButton)
-            // The Run button lives in the editor toolbar.
+            if editorController == nil { setupEditorController() }
+            editorController?.runCurrentFile()
+
         case .gpuLab:
-            // No dedicated tab — surface the GPU bench script in the editor.
-            contentTabTapped(editorTabButton)
+            // GPU Lab card → drop a starter script that exercises
+            // the Metal matmul bridge so the user can immediately
+            // see whether GPU dispatch is firing.
+            openOrCreateScratch(
+                name: "gpu_lab.py",
+                body: """
+                # GPU Lab — exercise the PyTorch Metal bridge.
+                # Tap ▶ Run to dispatch matmul on-device.
+
+                import torch, time
+                try:
+                    import _torch_metal_bridge as bridge
+                except ImportError:
+                    bridge = None
+
+                if bridge is not None:
+                    print(\"Metal bridge available:\", bridge.is_available())
+                    bridge.reset_stats()
+
+                # Big fp32 matmul — exercises the Metal kernel.
+                A = torch.randn(2048, 2048)
+                B = torch.randn(2048, 2048)
+                t0 = time.perf_counter()
+                C = A @ B
+                dt = time.perf_counter() - t0
+                print(f\"2048\\u00d72048 fp32 matmul: {dt * 1000:.1f} ms\")
+
+                if bridge is not None:
+                    print(\"bridge stats:\", bridge.stats())
+                """)
+
         case .settings:
             contentTabTapped(settingsTabButton)
+
         case .recentFile(let url):
-            // Open the file in the editor and switch to it.
             contentTabTapped(editorTabButton)
             if editorController == nil { setupEditorController() }
             editorController?.loadFile(url: url)

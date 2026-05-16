@@ -596,6 +596,10 @@ final class CodeEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = EditorTheme.background
+        // Pick up the user's last terminal-size choice from the Settings
+        // tab so first paint matches the persisted preference. Falls
+        // back to the default 13pt if Settings is unset.
+        terminalFontSize = CGFloat(Settings.terminalFontSize)
         setupToolbar()
         setupEditor()
         setupAIChat()
@@ -607,6 +611,16 @@ final class CodeEditorViewController: UIViewController {
         loadInitialFile()
         applyLiquidGlass()
         setupKeyboardAvoidance()
+        installSecretGestures()
+        installMountRequestPoller()
+        installFinetuneRequestPoller()
+
+        // React to live changes from the Settings tab — font size,
+        // theme, word-wrap. The notification fires synchronously after
+        // each setter, so a slider drag updates the editor in real time.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSettingsDidChange),
+            name: Settings.didChange, object: nil)
 
         // After `pdflatex foo.tex` produces a PDF, surface it in the
         // editor's output preview panel so the user can see the result
@@ -1264,7 +1278,20 @@ final class CodeEditorViewController: UIViewController {
         // Docs button removed — Docs available via top-level Docs tab
         // AI Assist button moved to editor header (see setupEditor)
 
-        let toolbarStack = UIStackView(arrangedSubviews: [runButton, openFileButton, clearButton, spacer, latexTestButton, settingsButton])
+        // Auto-preload toggle — small icon in the top-right toolbar.
+        // Shows whether the most-recently-used GGUF will be loaded
+        // automatically on the next launch. Tap to toggle.
+        let preloadButton = UIButton(type: .system)
+        preloadButton.translatesAutoresizingMaskIntoConstraints = false
+        preloadButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        preloadButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        preloadButton.addTarget(self, action: #selector(togglePreload(_:)),
+                                for: .touchUpInside)
+        preloadButton.tag = 9001          // for togglePreload to find it
+        refreshPreloadButton(preloadButton)
+        self.preloadToggleButton = preloadButton
+
+        let toolbarStack = UIStackView(arrangedSubviews: [runButton, openFileButton, clearButton, spacer, preloadButton, latexTestButton, settingsButton])
         toolbarStack.axis = .horizontal
         toolbarStack.spacing = 12
         toolbarStack.alignment = .center
@@ -1717,8 +1744,14 @@ final class CodeEditorViewController: UIViewController {
     }
 
     @objc private func presentFullscreenPreview() {
-        guard let path = currentOutputPath,
-              FileManager.default.fileExists(atPath: path) else { return }
+        guard let path = currentOutputPath else { return }
+        // Live URLs (pywebview pages) need to skip the file-existence
+        // check — that test always failed for "https://..." paths so
+        // tapping the expand button on a webview preview did nothing.
+        let isURL = path.hasPrefix("http://") || path.hasPrefix("https://")
+        if !isURL && !FileManager.default.fileExists(atPath: path) {
+            return
+        }
         let vc = PreviewFullscreenViewController(path: path)
         present(vc, animated: true)
     }
@@ -1977,6 +2010,16 @@ final class CodeEditorViewController: UIViewController {
         // Why pan, not LP: long-press makes the user wait — pan
         // fires immediately on first movement, which is what the
         // user expects (matches every other iOS text view).
+        //
+        // Critical: TerminalView IS a UIScrollView. Its built-in
+        // panGestureRecognizer would normally claim every single-
+        // finger touch for scrolling, and our pan would never fire.
+        // We push scrolling to two-finger so single-finger drag is
+        // available for selection. Scrollback is still reachable
+        // with a two-finger drag.
+        swiftTermView.panGestureRecognizer.minimumNumberOfTouches = 2
+        swiftTermView.panGestureRecognizer.maximumNumberOfTouches = 2
+
         let dragSelect = UIPanGestureRecognizer(
             target: self, action: #selector(swiftTermDragSelectPan(_:)))
         dragSelect.minimumNumberOfTouches = 1
@@ -2341,10 +2384,20 @@ except Exception:
 
     @objc private func manimQualityChanged(_ sender: UISegmentedControl) {
         UserDefaults.standard.set(sender.selectedSegmentIndex, forKey: "manim_quality")
+        NotificationCenter.default.post(name: Settings.didChange, object: nil)
     }
 
     @objc private func manimFPSChanged(_ sender: UISegmentedControl) {
-        UserDefaults.standard.set(sender.selectedSegmentIndex, forKey: "manim_fps")
+        // Segment items are ["15", "24", "30"]; store the actual fps
+        // value so PythonRuntime (which reads this as a raw integer)
+        // gets a sensible value. Previously stored the raw index
+        // (0/1/2) which Python then treated as fps=0/1/2 — every
+        // render came out at one frame per second.
+        let mapping = [15, 24, 30]
+        let idx = sender.selectedSegmentIndex
+        let fps = idx >= 0 && idx < mapping.count ? mapping[idx] : 24
+        UserDefaults.standard.set(fps, forKey: "manim_fps")
+        NotificationCenter.default.post(name: Settings.didChange, object: nil)
     }
 
     // MARK: - Layout
@@ -2828,6 +2881,20 @@ except Exception:
         present(picker, animated: true)
     }
 
+    /// Public hook for the Workspace Dashboard: ensure the AI Assist
+    /// panel is visible. No-op if it's already up. Used by the
+    /// `AI Chat` dashboard card so tapping it directly opens the
+    /// chat instead of just switching tabs.
+    func showAIChatPanel() {
+        if !isAIChatVisible { toggleAIChat() }
+    }
+
+    /// Public hook for the Workspace Dashboard: trigger the same
+    /// action as tapping the green Run button in the editor toolbar.
+    func runCurrentFile() {
+        runTapped()
+    }
+
     @objc private func toggleAIChat() {
         isAIChatVisible.toggle()
         // Slide the inline chat panel in from / out to the right edge.
@@ -2918,7 +2985,11 @@ except Exception:
         fpsLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let fpsSeg = UISegmentedControl(items: ["15", "24", "30"])
-        fpsSeg.selectedSegmentIndex = UserDefaults.standard.integer(forKey: "manim_fps")
+        // manim_fps now stores the ACTUAL fps value (15/24/30), not
+        // the segment index. Map back so the right segment is
+        // pre-selected.
+        let storedFPS = UserDefaults.standard.integer(forKey: "manim_fps")
+        fpsSeg.selectedSegmentIndex = [15, 24, 30].firstIndex(of: storedFPS) ?? 0
         fpsSeg.translatesAutoresizingMaskIntoConstraints = false
         fpsSeg.backgroundColor = EditorTheme.gutterBg
         fpsSeg.selectedSegmentTintColor = UIColor.systemPurple.withAlphaComponent(0.5)
@@ -3396,29 +3467,65 @@ except Exception:
 
     // MARK: - Drag-to-select bridge
 
-    /// Pan handler for our drag-to-select gesture. On .began, seed
-    /// a selection at the touch point by forwarding to SwiftTerm's
-    /// @objc doubleTap: (selects word + enables panSelectionHandler).
-    /// On .changed, forward each movement to SwiftTerm's @objc
-    /// panSelectionHandler: which extends the selection range.
+    /// Pan handler for our drag-to-select gesture.
+    ///
+    /// Three-step bridge into SwiftTerm's selection internals:
+    ///   1. .began — forward `doubleTap:` to seed a word selection
+    ///      at the touch point (sets selection.active=true and
+    ///      populates selection.start/end). Then forward
+    ///      `panSelectionHandler:` with state=.began at the same
+    ///      location — this triggers the `near()` check, which
+    ///      sets `selection.pivot` to the opposite end so future
+    ///      .changed extends from the right anchor.
+    ///   2. .changed — forward `panSelectionHandler:` with .changed
+    ///      so SwiftTerm calls `selection.pivotExtend(...)`. This
+    ///      no-ops if the pivot was never set, hence step 1.
+    ///   3. .ended/.cancelled — forward `panSelectionHandler:` with
+    ///      .ended so SwiftTerm shows its copy/lookup context menu
+    ///      anchored to the selection range.
     @objc fileprivate func swiftTermDragSelectPan(_ g: UIPanGestureRecognizer) {
         let location = g.location(in: swiftTermView)
+        let panSel = NSSelectorFromString("panSelectionHandler:")
+        let doubleTapSel = NSSelectorFromString("doubleTap:")
+
         switch g.state {
         case .began:
-            let doubleTap = NSSelectorFromString("doubleTap:")
-            if swiftTermView.responds(to: doubleTap) {
+            // Seed: selectWord at touch point + enableSelectionPanGesture
+            if swiftTermView.responds(to: doubleTapSel) {
                 let fake = ForcedEndedTapRecognizer()
                 fake.attached = swiftTermView
                 fake.fakeLocation = location
-                _ = swiftTermView.perform(doubleTap, with: fake)
+                _ = swiftTermView.perform(doubleTapSel, with: fake)
+            }
+            // Set the pivot so subsequent .changed events extend.
+            // The .began branch in panSelectionHandler checks if hit
+            // is `near()` selection.start/end — since we just seeded
+            // the selection AT this location, the near-check passes
+            // and pivot gets assigned to the opposite end.
+            if swiftTermView.responds(to: panSel) {
+                let fake = ForcedStatePanRecognizer()
+                fake.attached = swiftTermView
+                fake.fakeLocation = location
+                fake.fakeTranslation = .zero
+                fake.fakeState = .began
+                _ = swiftTermView.perform(panSel, with: fake)
             }
         case .changed:
-            let panSel = NSSelectorFromString("panSelectionHandler:")
             if swiftTermView.responds(to: panSel) {
-                let fake = ForcedChangedPanRecognizer()
+                let fake = ForcedStatePanRecognizer()
                 fake.attached = swiftTermView
                 fake.fakeLocation = location
                 fake.fakeTranslation = g.translation(in: swiftTermView)
+                fake.fakeState = .changed
+                _ = swiftTermView.perform(panSel, with: fake)
+            }
+        case .ended, .cancelled, .failed:
+            if swiftTermView.responds(to: panSel) {
+                let fake = ForcedStatePanRecognizer()
+                fake.attached = swiftTermView
+                fake.fakeLocation = location
+                fake.fakeTranslation = g.translation(in: swiftTermView)
+                fake.fakeState = .ended
                 _ = swiftTermView.perform(panSel, with: fake)
             }
         default:
@@ -3454,18 +3561,19 @@ except Exception:
     /// to the terminal so the user knows the tap registered even if
     /// the task takes a moment to actually exit.
     @objc private func terminalInterrupt() {
-        // 1 + 2: direct C-API calls — never blocked by the runtime queue
-        PythonRuntime.shared.interruptPythonMainThread()
-
-        // 3: PTY-level Ctrl+C, same path the keyboard handler uses
+        // 1. Inject 0x03 into the stdin pipe FIRST so any blocked
+        //    input() / os.read() in the REPL or a sub-REPL (js/node,
+        //    pywebview drainer, AI mode) sees it. Patched
+        //    builtins.input recognizes the byte and raises
+        //    KeyboardInterrupt; the REPL's own read loop already does.
         let tv = swiftTermView
-        LineBuffer.shared.handle(bytes: ArraySlice([0x03]),
-                                 terminalView: tv,
-                                 pipeWrite: { bytes in
-            PTYBridge.shared.send(source: tv, data: ArraySlice(bytes))
-        })
+        PTYBridge.shared.send(source: tv, data: ArraySlice([0x03]))
 
-        // 4: visible feedback so the user knows the tap registered.
+        // 2. PyErr_SetInterrupt + file-signal backup for tight Python
+        //    loops where there's no syscall to wake.
+        PythonRuntime.shared.hardStopRunningTask()
+
+        // Visible feedback so the user knows the tap registered.
         // Direct feed (not through the PTY round-trip) so it shows
         // immediately even if the read loop is backlogged.
         swiftTermView.feed(text: "\u{1b}[33m^C\u{1b}[0m\r\n")
@@ -3475,12 +3583,49 @@ except Exception:
 
     @objc private func terminalFontSmaller() {
         terminalFontSize = max(9, terminalFontSize - 1)
+        Settings.terminalFontSize = Int(terminalFontSize)   // persist
         applyTerminalFontSize()
     }
 
     @objc private func terminalFontLarger() {
         terminalFontSize = min(22, terminalFontSize + 1)
+        Settings.terminalFontSize = Int(terminalFontSize)   // persist
         applyTerminalFontSize()
+    }
+
+    /// Settings tab pushed a change. We're conservative about *what*
+    /// we re-apply: only the cheap, idempotent things that can change
+    /// at runtime (font sizes, word wrap, monaco theme). Everything
+    /// else (Manim quality, autosave cadence, etc.) is read on demand
+    /// from `Settings` by whichever code path uses it.
+    @objc private func handleSettingsDidChange() {
+        let newTerm = CGFloat(Settings.terminalFontSize)
+        if newTerm != terminalFontSize {
+            terminalFontSize = newTerm
+            applyTerminalFontSize()
+        }
+        // Push editor font + theme + word wrap into Monaco. The bridge
+        // is silent if the value matches what's already set, so this
+        // is safe to call on every notification.
+        let editorPx = Settings.editorFontSize
+        monacoView.setFontSize(editorPx)
+        monacoView.setWordWrap(Settings.editorWordWrap)
+        let theme: String
+        switch Settings.editorThemeIndex {
+        case 1:  theme = "vs"            // Light
+        case 2:                                    // Auto
+            theme = traitCollection.userInterfaceStyle == .light ? "vs" : "vs-dark"
+        default: theme = "vs-dark"      // Dark (default)
+        }
+        monacoView.setTheme(theme)
+    }
+
+    private func flushTermCoalesce() {
+        termCoalesceScheduled = false
+        guard !termCoalesceBuffer.isEmpty else { return }
+        let batched = termCoalesceBuffer
+        termCoalesceBuffer = ""
+        swiftTermView.feed(text: batched)
     }
 
     private func applyTerminalFontSize() {
@@ -3575,6 +3720,24 @@ except Exception:
                 self?.focusTerminal()
             }
         }
+        // Recover from broken editor focus after a modal dismissal.
+        // Symptom user reported: "I cannot get the cursor to be in
+        // the editor box then I just have to re-open the app." The
+        // cause is iOS's responder chain being left in an inconsistent
+        // state when a presented sheet collapses while the editor's
+        // WebView held first-responder. Forcing both Monaco's DOM
+        // focus AND the WebView's first-responder ownership on every
+        // viewDidAppear restores keyboard routing.
+        if presentedViewController == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                // Only refocus the editor if the user wasn't actively
+                // working in the terminal at the time of dismissal.
+                if !self.swiftTermView.isFirstResponder {
+                    self.monacoView.focusEditor()
+                }
+            }
+        }
         // If another tab / file browser left the auto-save timer alive
         // and swapped back here, nothing to do — the timer will fire on
         // its own schedule. But we also listen for app backgrounding so
@@ -3605,10 +3768,29 @@ except Exception:
     // interrupts it via PTYBridge's 0x03 handler.
     override var keyCommands: [UIKeyCommand]? {
         let base = super.keyCommands ?? []
+        // Set up the Konami code reward exactly once. ↑↑↓↓←→←→ B A
+        // unlocks the Developer Panel sheet — useful while building
+        // out features and a fun easter egg for users who notice.
+        KonamiTracker.shared.onSuccess = { [weak self] in
+            guard let self else { return }
+            let vc = DeveloperPanelViewController()
+            let nav = UINavigationController(rootViewController: vc)
+            nav.modalPresentationStyle = .pageSheet
+            self.present(nav, animated: true)
+        }
+
+        // ⌘/ — show the keyboard-shortcuts sheet from anywhere.
+        // Always available (not gated on terminal first-responder).
+        let help = UIKeyCommand(input: "/", modifierFlags: .command,
+                                action: #selector(showShortcutsHelp),
+                                discoverabilityTitle: "Keyboard shortcuts")
+        help.wantsPriorityOverSystemBehavior = true
+        let alwaysOn = [help]
+
         // Only register these when the terminal view is first responder —
         // otherwise they'd fire while the user is typing in the code
         // editor's WebView, which has its own Ctrl+C (= copy) semantics.
-        guard swiftTermView.isFirstResponder else { return base }
+        guard swiftTermView.isFirstResponder else { return base + alwaysOn }
         let c = UIKeyCommand(input: "c", modifierFlags: .control,
                              action: #selector(terminalCtrlC))
         let d = UIKeyCommand(input: "d", modifierFlags: .control,
@@ -3630,7 +3812,607 @@ except Exception:
         for cmd in [c, d, z, cmdA, cmdC] {
             cmd.wantsPriorityOverSystemBehavior = true
         }
-        return base + [c, d, z, cmdA, cmdC]
+        return base + alwaysOn + [c, d, z, cmdA, cmdC]
+    }
+
+    @objc private func showShortcutsHelp() {
+        let vc = KeyboardShortcutsViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .formSheet
+        present(nav, animated: true)
+    }
+
+    // ─── Secret features wiring ──────────────────────────────────
+    // All four editor-side secrets are installed here:
+    //   • 7-tap on Run button     → toggle PerformanceHUD
+    //   • 10× rapid Stop tap      → "I give up" defeated toast
+    //   • 3-finger swipe-down     → cycle SecretTheme on terminal
+    //   • Long-press terminal bar → retro amber CRT mode
+
+    private var stopRapidCount = 0
+    private var stopRapidResetWork: DispatchWorkItem?
+    private var runHudCount = 0
+    private var runHudResetWork: DispatchWorkItem?
+    private var snowfallView: SnowfallView?
+    private var scanlinesView: CRTScanlinesView?
+
+    private func installSecretGestures() {
+        // 7-tap on Run button — must be a SEPARATE recognizer
+        // because the existing target is `runTapped` (single tap).
+        // We watch all taps and count rapid sequences ourselves.
+        runButton.addTarget(self, action: #selector(secretRunCount),
+                            for: .touchUpInside)
+
+        // 10× rapid on the terminal Stop button (terminalInterruptButton).
+        terminalInterruptButton.addTarget(self, action: #selector(secretStopCount),
+                                          for: .touchUpInside)
+
+        // Long-press the Stop button (1 s) → ESCALATE to force-kill.
+        // A normal tap is just a soft interrupt (sends ^C); long-press
+        // is the "I really mean it" gesture for when a render is
+        // stuck in a hardware-encoder C call and the soft interrupt
+        // can't deliver. Toast feedback so the user knows the
+        // escalation actually fired.
+        let lpStop = UILongPressGestureRecognizer(target: self,
+                                                  action: #selector(forceKillStop(_:)))
+        lpStop.minimumPressDuration = 1.0
+        terminalInterruptButton.addGestureRecognizer(lpStop)
+
+        // 3-finger swipe-down anywhere on the root view → cycle theme.
+        let swipe = UISwipeGestureRecognizer(target: self,
+                                             action: #selector(secretCycleTheme))
+        swipe.direction = .down
+        swipe.numberOfTouchesRequired = 3
+        view.addGestureRecognizer(swipe)
+
+        // 3-finger swipe-UP → open the hidden games launcher.
+        // Symmetric counterpart to the swipe-down theme cycler,
+        // so the gesture pair is easy to remember once discovered.
+        let swipeUp = UISwipeGestureRecognizer(target: self,
+                                               action: #selector(secretOpenGames))
+        swipeUp.direction = .up
+        swipeUp.numberOfTouchesRequired = 3
+        view.addGestureRecognizer(swipeUp)
+
+        // Long-press 3 s on terminal title bar → retro amber.
+        terminalTitleBar.isUserInteractionEnabled = true
+        let lp = UILongPressGestureRecognizer(target: self,
+                                              action: #selector(secretRetroToggle))
+        lp.minimumPressDuration = 3.0
+        terminalTitleBar.addGestureRecognizer(lp)
+
+        // Listen for theme changes from anywhere and re-apply.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applySecretTheme),
+            name: SecretThemeManager.didChange, object: nil)
+
+        // Snowfall — only in December.
+        if SnowfallView.isDecember {
+            let sf = SnowfallView(frame: view.bounds)
+            sf.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(sf)
+            NSLayoutConstraint.activate([
+                sf.topAnchor.constraint(equalTo: view.topAnchor),
+                sf.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                sf.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                sf.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            view.layoutIfNeeded()
+            sf.start()
+            snowfallView = sf
+        }
+    }
+
+    /// Forward every physical-keyboard press to the Konami tracker.
+    /// The tracker silently absorbs taps that don't match; users
+    /// without an external keyboard never trigger it accidentally.
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for p in presses {
+            if let code = p.key?.keyCode {
+                KonamiTracker.shared.consume(code)
+            }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    @objc private func secretRunCount() {
+        runHudCount += 1
+        runHudResetWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.runHudCount = 0 }
+        runHudResetWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: w)
+        if runHudCount >= 7 {
+            runHudCount = 0
+            PerformanceHUD.shared.toggle(in: view)
+        }
+    }
+
+    @objc private func secretStopCount() {
+        stopRapidCount += 1
+        stopRapidResetWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.stopRapidCount = 0 }
+        stopRapidResetWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+        if stopRapidCount >= 10 {
+            stopRapidCount = 0
+            SecretToast.defeated(on: view)
+        }
+    }
+
+    @objc private func secretCycleTheme() {
+        SecretThemeManager.shared.cycle()
+    }
+
+    // ─── Auto-preload toggle (top toolbar) ──────────────────────
+    // Visual state:
+    //   • ON  (filled brain.head.profile + green tint) — last model
+    //     will auto-load 1.5 s after the next app launch IF available
+    //     RAM is sufficient (1.7× model size).
+    //   • OFF (outline icon + dim tint) — user disabled it, next
+    //     launch waits for a manual model load.
+    private weak var preloadToggleButton: UIButton?
+
+    /// Single tap shows a picker listing every GGUF currently in
+    /// ~/Documents/Models/ with the most-recently-used one marked.
+    /// The user picks which one to load. Long-press opens the
+    /// settings menu (auto-load toggle, etc.).
+    @objc private func togglePreload(_ sender: UIButton) {
+        let modelsDir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Models", isDirectory: true)
+        let mruPath = UserDefaults.standard.string(forKey: "model.mru.path")
+        let mruSlot = UserDefaults.standard.integer(forKey: "model.mru.slot")
+
+        var availableModels: [URL] = []
+        if let dir = modelsDir,
+           let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]) {
+            availableModels = contents
+                .filter { $0.pathExtension.lowercased() == "gguf" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+
+        let sheet = UIAlertController(
+            title: "Load model",
+            message: availableModels.isEmpty
+                ? "No GGUF models found in ~/Documents/Models/. "
+                  + "Use the Models tab to download or import one."
+                : "Pick a model to load right now.",
+            preferredStyle: .actionSheet)
+
+        for url in availableModels {
+            let isCurrent = (url.path == mruPath)
+            let sizeStr = (try? url.resourceValues(forKeys: [.fileSizeKey]))
+                .flatMap { $0.fileSize }
+                .map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+                ?? ""
+            let prefix = isCurrent ? "✓ " : "  "
+            let title = "\(prefix)\(url.lastPathComponent) — \(sizeStr)"
+            sheet.addAction(UIAlertAction(title: title, style: .default) { _ in
+                let slot = isCurrent ? mruSlot : 0  // fallback: slot 0 if unknown
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                NotificationCenter.default.post(
+                    name: .codeBenchRequestLoadModel,
+                    object: nil,
+                    userInfo: ["path": url.path, "slot": slot])
+                self.showToast("Loading \(url.lastPathComponent)…", near: sender)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Open Models tab…", style: .default) { _ in
+            NotificationCenter.default.post(
+                name: .codeBenchOpenModelsManager, object: nil)
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = sender; pop.sourceRect = sender.bounds
+        }
+        present(sheet, animated: true)
+    }
+
+    private func showToast(_ text: String, near anchor: UIView) {
+        let label = UILabel()
+        label.text = "  \(text)  "
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.85)
+        label.textAlignment = .center
+        label.layer.cornerRadius = 8
+        label.clipsToBounds = true
+        label.alpha = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: anchor.bottomAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: anchor.trailingAnchor),
+            label.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        UIView.animate(withDuration: 0.2, animations: { label.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.25, delay: 1.5, options: [], animations: { label.alpha = 0 }) { _ in
+                label.removeFromSuperview()
+            }
+        }
+    }
+
+    private func refreshPreloadButton(_ btn: UIButton) {
+        let enabled = !ModelPrewarmer.isDisabled
+        // Different icons make the toggle state obvious at a glance.
+        // Filled = ON, regular = OFF. (Earlier this used the same
+        // icon for both states, making the button look broken — the
+        // tap WAS working but the visual didn't change.)
+        let iconName = enabled ? "brain.head.profile.fill" : "brain.head.profile"
+        let cfg = UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)
+        let icon = UIImage(systemName: iconName, withConfiguration: cfg)
+            ?? UIImage(systemName: enabled ? "bolt.fill" : "bolt.slash",
+                       withConfiguration: cfg)
+        btn.setImage(icon, for: .normal)
+        btn.tintColor = enabled ?
+            UIColor(red: 0.30, green: 0.78, blue: 0.45, alpha: 1) :
+            UIColor(white: 0.45, alpha: 1)
+        let mru = UserDefaults.standard.string(forKey: "model.mru.path")
+            .flatMap { ($0 as NSString).lastPathComponent } ?? "no model yet"
+        btn.accessibilityLabel = enabled
+            ? "Auto-load on next launch: \(mru)"
+            : "Auto-load disabled"
+        // Long-press shows path detail. Critical: `cancelsTouchesInView
+        // = false` — otherwise the long-press recognizer eats every
+        // touch DOWN before the button's `touchUpInside` event can
+        // fire, making the button look unresponsive on tap.
+        btn.gestureRecognizers?.forEach {
+            if $0 is UILongPressGestureRecognizer { btn.removeGestureRecognizer($0) }
+        }
+        let lp = UILongPressGestureRecognizer(target: self, action: #selector(showPreloadInfo))
+        lp.minimumPressDuration = 0.6
+        lp.cancelsTouchesInView = false
+        lp.delaysTouchesBegan = false
+        lp.delaysTouchesEnded = false
+        btn.addGestureRecognizer(lp)
+    }
+
+    @objc private func showPreloadInfo(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began, let btn = g.view as? UIButton else { return }
+        let mru = UserDefaults.standard.string(forKey: "model.mru.path")
+        let mruName = mru.flatMap { ($0 as NSString).lastPathComponent } ?? "(none)"
+        let enabled = !ModelPrewarmer.isDisabled
+        let sheet = UIAlertController(
+            title: "Model preload",
+            message: "Last used: \(mruName)",
+            preferredStyle: .actionSheet)
+        if mru != nil {
+            sheet.addAction(UIAlertAction(title: "Load now", style: .default) { [weak self] _ in
+                self?.togglePreload(btn)
+            })
+        }
+        let toggleTitle = enabled ? "Auto-load on next launch: ON" : "Auto-load on next launch: OFF"
+        sheet.addAction(UIAlertAction(title: toggleTitle, style: .default) { [weak self] _ in
+            if enabled { ModelPrewarmer.disable() } else { ModelPrewarmer.enable() }
+            self?.refreshPreloadButton(btn)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = btn; pop.sourceRect = btn.bounds
+        }
+        present(alert: sheet)
+    }
+    private func present(alert: UIAlertController) { present(alert, animated: true) }
+
+    @objc private func forceKillStop(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        PythonRuntime.shared.forceKillRunningTask()
+        swiftTermView.feed(text: "\r\n\u{1b}[31m^C (force-kill)\u{1b}[0m\r\n")
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+
+    // ─── Folder mount request poller ─────────────────────────
+    // Python builtins `mount` / `umount` / `mounts` write a request
+    // JSON to $TMPDIR/codebench_mounts_request.txt; we poll for it,
+    // dispatch to FolderMountManager (which may present a system
+    // picker on the main thread), and write the response back.
+
+    // ─── Fine-tune request poller ────────────────────────────
+    private var finetunePollTimer: Timer?
+    private var finetuneReqURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_finetune_request.json")
+    }
+    private var finetuneProgURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_finetune_progress.json")
+    }
+    private var finetuneResURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_finetune_result.json")
+    }
+    private func installFinetuneRequestPoller() {
+        let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
+            self?.handleFinetuneRequestIfAny()
+            self?.handleLoraRequestIfAny()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        finetunePollTimer = t
+    }
+    // ─── LoRA adapter attach/detach poller ────────────────────
+    // Python's `/lora` slash command writes a JSON request file;
+    // we apply the adapter to the live LlamaRunner and respond.
+
+    private var attachedLoraAdapter: OpaquePointer?
+    private var loraReqURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_lora_request.json")
+    }
+    private var loraRespURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_lora_response.json")
+    }
+
+    private func handleLoraRequestIfAny() {
+        let req = loraReqURL
+        guard FileManager.default.fileExists(atPath: req.path),
+              let data = try? Data(contentsOf: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        try? FileManager.default.removeItem(at: req)
+        guard let runner = llamaRunner else {
+            writeJSON(["ok": false, "error": "no model loaded"], to: loraRespURL)
+            return
+        }
+        switch obj["action"] as? String ?? "" {
+        case "attach":
+            let path = obj["path"] as? String ?? ""
+            let scale = Float(obj["scale"] as? Double ?? 1.0)
+            // Detach any existing adapter first.
+            if let prev = attachedLoraAdapter {
+                runner.detachLoraAdapter(prev)
+                attachedLoraAdapter = nil
+            }
+            if let new = runner.applyLoraAdapter(path: path, scale: scale) {
+                attachedLoraAdapter = new
+                // Include the active model's path so the Python
+                // side can sync its `_LOADED_MODEL` flag — without
+                // that sync, the chat path refuses with "no model
+                // loaded" even though Swift can serve responses.
+                let mru = UserDefaults.standard.string(forKey: "model.mru.path") ?? ""
+                writeJSON(["ok": true, "model_path": mru], to: loraRespURL)
+            } else {
+                writeJSON(["ok": false], to: loraRespURL)
+            }
+        case "detach":
+            if let cur = attachedLoraAdapter {
+                runner.detachLoraAdapter(cur)
+                attachedLoraAdapter = nil
+                writeJSON(["ok": true], to: loraRespURL)
+            } else {
+                writeJSON(["ok": false], to: loraRespURL)
+            }
+        default:
+            writeJSON(["ok": false, "error": "unknown action"], to: loraRespURL)
+        }
+    }
+
+    private func handleFinetuneRequestIfAny() {
+        let req = finetuneReqURL
+        guard FileManager.default.fileExists(atPath: req.path),
+              let data = try? Data(contentsOf: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        try? FileManager.default.removeItem(at: req)
+
+        guard let runner = llamaRunner,
+              runner.loadedModelPointer != nil else {
+            writeJSON(["ok": false,
+                       "error": "no model loaded — use Models tab to load a GGUF first"],
+                      to: finetuneResURL)
+            return
+        }
+        // Resolve the model URL + its original load config so we can
+        // (1) reload it in training-mode (non-mmap, F32 KV cache),
+        // (2) train, (3) restore inference-mode after.
+        let mruPath = UserDefaults.standard.string(forKey: "model.mru.path") ?? ""
+        guard !mruPath.isEmpty,
+              FileManager.default.fileExists(atPath: mruPath) else {
+            writeJSON(["ok": false,
+                       "error": "could not resolve current model's file path on disk"],
+                      to: finetuneResURL)
+            return
+        }
+        let modelURL = URL(fileURLWithPath: mruPath)
+        // Pull the original Config from the LlamaRunner's last load.
+        // Using its defaults if exposure isn't there is fine — the
+        // restore path just reloads inference mode.
+        let baseConfig = LlamaRunner.Config()
+
+        let dataPath = obj["data"] as? String ?? ""
+        let outPath  = obj["out"] as? String ?? ""
+        let epochs   = obj["epochs"] as? Int ?? 3
+        let lr       = Float(obj["lr"] as? Double ?? 1e-4)
+
+        // LoRA training pipeline via QVAC's bridge:
+        //   1. Free the inference model+context (the bridge loads its
+        //      own — keeping both alive would OOM).
+        //   2. Run `llama_swift_run_lora_finetune` which builds its
+        //      own training context, trains on GPU with the bundled
+        //      Metal backward kernels, and saves a LoRA adapter.
+        //   3. Reload the inference model when done.
+        //
+        // The output is a SMALL adapter file (1-50 MB) — not a new
+        // full GGUF. Apply at inference time via llama's adapter API.
+        appendToTerminal("\u{1b}[36m[finetune]\u{1b}[0m freeing inference "
+                         + "context and starting LoRA training "
+                         + "(GPU via Metal backward kernels)…\r\n",
+                         isError: false)
+
+        // Step 1: tear down inference. The bridge runs its own model
+        // load inside llama_swift_run_lora_finetune; we just need to
+        // free our pointers first.
+        runner.unloadModel()
+
+        // Output an .lora.gguf next to where the user requested.
+        let adapterPath = outPath.hasSuffix(".gguf")
+            ? outPath.replacingOccurrences(of: ".gguf", with: ".lora.gguf")
+            : outPath + ".lora.gguf"
+
+        // Wipe any previous progress log so the Python tail starts
+        // from zero this run.
+        try? FileManager.default.removeItem(at: finetuneProgURL)
+        LlamaFinetuner.shared.finetune(
+            modelPath: modelURL.path,
+            dataPath: dataPath,
+            outAdapterPath: adapterPath,
+            epochs: epochs,
+            learningRate: lr,
+            onProgress: { [weak self] p in
+                // APPEND a JSONL record per log line so the Python
+                // side can tail and stream each event in real time.
+                guard let self else { return }
+                self.appendFinetuneProgress(p.logLine)
+            },
+            completion: { [weak self] result in
+                guard let self else { return }
+                // Step 3: reload inference regardless of training outcome.
+                runner.restoreInferenceMode { _ in
+                    switch result {
+                    case .success(let url):
+                        self.writeJSON(["ok": true, "path": url.path],
+                                       to: self.finetuneResURL)
+                    case .failure(let e):
+                        self.writeJSON(["ok": false,
+                                        "error": e.localizedDescription],
+                                       to: self.finetuneResURL)
+                    }
+                }
+            })
+    }
+    private func writeJSON(_ obj: [String: Any], to url: URL) {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// Append one JSONL line `{"log": "..."}` to the progress file.
+    /// The Python `finetune` builtin tails this file and prints each
+    /// new record as it arrives so users see live training progress.
+    private func appendFinetuneProgress(_ line: String) {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: ["log": line])
+        else { return }
+        let line = data + Data([0x0a])    // append \n
+        let path = finetuneProgURL.path
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: line)
+            return
+        }
+        if let h = FileHandle(forWritingAtPath: path) {
+            defer { try? h.close() }
+            try? h.seekToEnd()
+            try? h.write(contentsOf: line)
+        }
+    }
+
+    private var mountPollTimer: Timer?
+    private func installMountRequestPoller() {
+        // Touch the shared instance — its init() re-resolves every
+        // saved bookmark and calls startAccessingSecurityScopedResource
+        // so previously-mounted folders are immediately reachable
+        // via ~/Documents/Mounts/<label> on this launch.
+        _ = FolderMountManager.shared
+
+        let t = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
+            self?.handleMountRequestIfAny()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        mountPollTimer = t
+    }
+
+    private var mountReqURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_mounts_request.txt")
+    }
+    private var mountRespURL: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codebench_mounts_response.txt")
+    }
+
+    private func handleMountRequestIfAny() {
+        let req = mountReqURL
+        guard FileManager.default.fileExists(atPath: req.path),
+              let data = try? Data(contentsOf: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        try? FileManager.default.removeItem(at: req)
+        let action = (obj["action"] as? String) ?? ""
+        switch action {
+        case "pick":
+            let label = obj["label"] as? String
+            FolderMountManager.shared.presentPicker(
+                from: self, label: label?.isEmpty == false ? label : nil
+            ) { result in
+                switch result {
+                case .success(let m):
+                    self.writeMountResp([
+                        "ok": true,
+                        "label": m.label,
+                        "path": m.resolvedURL?.path ?? "?",
+                    ])
+                case .failure(let e):
+                    self.writeMountResp([
+                        "ok": false,
+                        "error": e.localizedDescription,
+                    ])
+                }
+            }
+        case "umount":
+            let label = (obj["label"] as? String) ?? ""
+            let ok = FolderMountManager.shared.unmount(label: label)
+            writeMountResp(["ok": ok, "error": ok ? "" : "no such mount"])
+        case "list":
+            let lines = FolderMountManager.shared.describe()
+            writeMountResp(["lines": lines])
+        default:
+            writeMountResp(["ok": false, "error": "unknown action"])
+        }
+    }
+
+    private func writeMountResp(_ obj: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? data.write(to: mountRespURL, options: .atomic)
+    }
+
+    @objc private func secretOpenGames() {
+        let launcher = HiddenGamesLauncher()
+        let nav = UINavigationController(rootViewController: launcher)
+        nav.modalPresentationStyle = .fullScreen
+        nav.navigationBar.barStyle = .black
+        nav.navigationBar.tintColor = .systemBlue
+        present(nav, animated: true)
+    }
+
+    @objc private func secretRetroToggle() {
+        SecretThemeManager.shared.apply(.amber)
+        SecretToast.custom(on: view, lines: ["🟧", "amber CRT mode"])
+    }
+
+    @objc private func applySecretTheme() {
+        let t = SecretThemeManager.shared.current
+        swiftTermView.backgroundColor = t.bg
+        terminalContainer.backgroundColor = t.bg
+        // Toggle CRT scanlines for amber/matrix.
+        if t == .amber || t == .matrix {
+            if scanlinesView == nil {
+                let s = CRTScanlinesView(frame: swiftTermView.bounds)
+                s.translatesAutoresizingMaskIntoConstraints = false
+                swiftTermView.addSubview(s)
+                NSLayoutConstraint.activate([
+                    s.topAnchor.constraint(equalTo: swiftTermView.topAnchor),
+                    s.leadingAnchor.constraint(equalTo: swiftTermView.leadingAnchor),
+                    s.trailingAnchor.constraint(equalTo: swiftTermView.trailingAnchor),
+                    s.bottomAnchor.constraint(equalTo: swiftTermView.bottomAnchor),
+                ])
+                scanlinesView = s
+            }
+        } else {
+            scanlinesView?.removeFromSuperview()
+            scanlinesView = nil
+        }
     }
 
     /// Select all visible terminal text + scrollback. Mirrors SwiftTerm's
@@ -3998,6 +4780,14 @@ except Exception:
         return (status, logText, pdfPath)
     }
 
+    // Coalesce buffer — multiple appendToTerminal calls within a
+    // single main-loop tick get merged into one SwiftTerm feed, which
+    // collapses N layout passes into 1. Verbose scripts (numpy errors,
+    // tqdm with mininterval=0, "for line in lines: print(line)") were
+    // spending more time in SwiftTerm's reflow than in their own logic.
+    private var termCoalesceBuffer = ""
+    private var termCoalesceScheduled = false
+
     private func appendToTerminal(_ text: String, isError: Bool) {
         // If the caller tagged this as an error, bracket in red so stuff
         // without its own escape codes still stands out.
@@ -4007,7 +4797,38 @@ except Exception:
         } else {
             wrapped = text
         }
-        swiftTermView.feed(text: wrapped)
+        // VT100 line-ending normalization. Python's `print` emits a
+        // bare `\n`, but a real terminal expects `\r\n` (LF moves the
+        // cursor DOWN, CR returns it to column 0). Without the CR,
+        // each new line started at the column where the previous one
+        // ended — producing the stair-step output the user reported.
+        //
+        // Steps:
+        //   1. Collapse existing `\r\n` to `\n` so we don't
+        //      double-emit `\r\r\n`.
+        //   2. Expand every `\n` (that isn't preceded by `\r`) to
+        //      `\r\n`.
+        //   3. Bare `\r` (no following `\n`) is preserved as-is —
+        //      tqdm/rich use it for in-place progress bars and need
+        //      the cursor to stay on the current line.
+        let normalized = wrapped
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r\n")
+        // Append to the coalesce buffer, schedule a single feed on
+        // the next runloop tick. Small writes (<512 B) batch; larger
+        // ones flush immediately so progress bars don't lag.
+        termCoalesceBuffer += normalized
+        if termCoalesceBuffer.count > 4096 {
+            flushTermCoalesce()
+        } else if !termCoalesceScheduled {
+            termCoalesceScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                self?.flushTermCoalesce()
+            }
+        }
+        // Mirror keeps the ORIGINAL text (no CR injection) so
+        // anything that copies the buffer (Cmd+C / share) gets the
+        // clean output users actually wrote.
         terminalLogBuffer.append(text)
         // Cap the mirror to ~1MB so long-running sessions don't balloon
         // memory; drop the oldest half when we hit the limit.
@@ -4532,6 +5353,10 @@ except Exception:
     private var lastSavedText: String?
 
     func loadFile(url: URL) {
+        // Session-restore hook: remember the last opened file so the
+        // next app launch can reopen it automatically.
+        SessionRestore.lastOpenFile = url
+        SessionRestore.lastWorkspace = url.deletingLastPathComponent()
         // Try UTF-8 first, then Latin-1 (which maps every byte 0x00-0xFF),
         // then a lossy fallback from raw bytes. LaTeX .log files commonly
         // have Latin-1 bytes (font names, math glyph debug output) that
@@ -4704,7 +5529,18 @@ except Exception:
     /// made it to disk and subsequent re-reads picked up stale content.
     func scheduleAutoSave(text: String) {
         guard currentFileURL != nil else { return }
+        // Settings toggle gate — when the user disables Auto-save in
+        // the Settings tab, keystrokes are still tracked
+        // (`pendingSaveText`) but the debounced disk write is
+        // skipped. Manual saves (⌘S, Run, file-switch) still go
+        // through `flushAutoSave` directly so an explicit save
+        // works regardless.
         pendingSaveText = text
+        guard Settings.autoSaveEnabled else {
+            autoSaveTimer?.cancel()
+            autoSaveTimer = nil
+            return
+        }
         autoSaveTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + .milliseconds(200))
@@ -5600,21 +6436,24 @@ private final class ForcedEndedTapRecognizer: UITapGestureRecognizer {
 }
 
 
-/// UIPanGestureRecognizer subclass whose `state` reads as .changed
-/// and whose `location(in:)` / `translation(in:)` return forced
-/// values. Used as the parameter when forwarding finger-drag
-/// movement to SwiftTerm's @objc panSelectionHandler — that
-/// handler only does selection-extension work in the .changed
-/// state, so we pin our fake there.
-private final class ForcedChangedPanRecognizer: UIPanGestureRecognizer {
+/// UIPanGestureRecognizer subclass whose `state` and
+/// `location(in:)` / `translation(in:)` return whatever was forced
+/// into them. Used as the parameter when forwarding finger-drag
+/// to SwiftTerm's @objc panSelectionHandler — that handler
+/// switches on state, so we need to hit .began (sets pivot),
+/// .changed (extends), and .ended (closes + shows menu).
+private final class ForcedStatePanRecognizer: UIPanGestureRecognizer {
     weak var attached: UIView?
     var fakeLocation: CGPoint = .zero
     var fakeTranslation: CGPoint = .zero
+    var fakeState: UIGestureRecognizer.State = .changed
     override var state: UIGestureRecognizer.State {
-        get { .changed }
+        get { fakeState }
         set { /* ignored */ }
     }
     override var view: UIView? { attached }
     override func location(in view: UIView?) -> CGPoint { fakeLocation }
     override func translation(in view: UIView?) -> CGPoint { fakeTranslation }
+    // panSelectionHandler calls setTranslation(.zero, in: self) — must be a no-op
+    override func setTranslation(_ translation: CGPoint, in view: UIView?) { }
 }

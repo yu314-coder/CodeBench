@@ -119,10 +119,12 @@ final class GameViewController: UIViewController {
     private let editorContainer = UIView()
     private let librariesContainer = UIView()
     private let systemInfoContainer = UIView()
+    private let settingsContainer = UIView()
     private let contentTabBar = UIView()
     private let editorTabButton = UIButton(type: .system)
     private let librariesTabButton = UIButton(type: .system)
     private let systemTabButton = UIButton(type: .system)
+    private let settingsTabButton = UIButton(type: .system)
     /// Tiny live-updating RAM sparkline, pinned to the top-right of
     /// the tab bar. Polls Mach host_statistics64 every 1.5 s.
     private let memoryGraph = MemoryGraphView()
@@ -132,6 +134,7 @@ final class GameViewController: UIViewController {
     private var editorController: CodeEditorViewController?
     private var librariesController: LibrariesViewController?
     private var systemInfoController: SystemInfoViewController?
+    private var settingsController: SettingsViewController?
     private let effortLabel = UILabel()
     private let effortSegment = UISegmentedControl(items: [ThinkingEffort.low.title, ThinkingEffort.medium.title, ThinkingEffort.high.title])
     private let thinkingToggleLabel = UILabel()
@@ -3691,6 +3694,33 @@ final class GameViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = UIColor.systemBackground
 
+        // Background pre-load the most-recently-used GGUF model so
+        // the first AI prompt doesn't pay a 5-10 s warm-up. Guarded
+        // by ModelPrewarmer to skip when the model is too big for
+        // available RAM (60% headroom check).
+        ModelPrewarmer.prewarmIfSensible { [weak self] url, slotRaw in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let slot = ModelSlot(rawValue: slotRaw) ?? .qwen35_08b
+                self.loadModel(at: url, slot: slot, completion: nil)
+            }
+        }
+
+        // Listen for on-demand load requests from the editor's
+        // preload button (top toolbar). Tap = "load this model now"
+        // without waiting for the next launch.
+        NotificationCenter.default.addObserver(
+            forName: .codeBenchRequestLoadModel,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let path = note.userInfo?["path"] as? String,
+                  let slotRaw = note.userInfo?["slot"] as? Int,
+                  let slot = ModelSlot(rawValue: slotRaw) else { return }
+            self.loadModel(at: URL(fileURLWithPath: path),
+                           slot: slot, completion: nil)
+        }
+
         // Initialize LaTeX engine (ios_system + pdftex)
         LaTeXEngine.shared.initialize()
 
@@ -4279,8 +4309,46 @@ final class GameViewController: UIViewController {
         sidebarView.backgroundColor = WorkspaceStyle.sideBarBg
         sidebarView.clipsToBounds = true
 
-        // ── Workspace title row — full app branding above the
-        // explorer header. Replaces the old "EXPLORER" hairline.
+        // ── Brand accent stripe — 3px horizontal bar at the very top
+        // of the sidebar, painted with a multi-color gradient drawn
+        // from the same palette the Libraries tab uses for its
+        // category stripes. Distinctive visual signature that's
+        // unique to CodeBench (no other Python / dev-tool iPad app
+        // ships with this color spectrum as its brand mark).
+        let brandStripe = GradientStripeView()
+        brandStripe.translatesAutoresizingMaskIntoConstraints = false
+        sidebarView.addSubview(brandStripe)
+
+        // ── Brand banner — replaces the prior plain "BenchCode"
+        // label with an icon + name pair styled as a rounded
+        // pill-card. Looks distinctly NOT like VS Code's plain
+        // workspace title at the top of the Explorer panel.
+        let brandDisc = UIView()
+        brandDisc.translatesAutoresizingMaskIntoConstraints = false
+        brandDisc.backgroundColor = UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 0.20)
+        brandDisc.layer.cornerRadius = 8
+        brandDisc.layer.borderWidth = 1
+        brandDisc.layer.borderColor = UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 0.45).cgColor
+
+        let brandIcon = UIImageView()
+        brandIcon.translatesAutoresizingMaskIntoConstraints = false
+        brandIcon.image = UIImage(systemName: "command.square.fill")?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+        brandIcon.tintColor = UIColor(red: 0.78, green: 0.62, blue: 0.99, alpha: 1)
+        brandIcon.contentMode = .scaleAspectFit
+        brandDisc.addSubview(brandIcon)
+        NSLayoutConstraint.activate([
+            brandIcon.centerXAnchor.constraint(equalTo: brandDisc.centerXAnchor),
+            brandIcon.centerYAnchor.constraint(equalTo: brandDisc.centerYAnchor),
+            brandIcon.widthAnchor.constraint(equalToConstant: 18),
+            brandIcon.heightAnchor.constraint(equalToConstant: 18),
+            brandDisc.widthAnchor.constraint(equalToConstant: 28),
+            brandDisc.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
+        // ── Workspace title text — "BenchCode" + path subtitle,
+        // unchanged copy but now beside the brand disc instead of
+        // alone at the top of the panel.
         let workspaceTitle = UILabel()
         workspaceTitle.text = "BenchCode"
         workspaceTitle.font = UIFont.systemFont(ofSize: 15, weight: .bold).rounded
@@ -4293,8 +4361,14 @@ final class GameViewController: UIViewController {
         workspaceSubtitle.textColor = WorkspaceStyle.activityBarInactive
         workspaceSubtitle.translatesAutoresizingMaskIntoConstraints = false
 
-        let titleStack = UIStackView(arrangedSubviews: [workspaceTitle, workspaceSubtitle])
-        titleStack.axis = .vertical; titleStack.spacing = 1
+        let textCol = UIStackView(arrangedSubviews: [workspaceTitle, workspaceSubtitle])
+        textCol.axis = .vertical; textCol.spacing = 1
+        textCol.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleStack = UIStackView(arrangedSubviews: [brandDisc, textCol])
+        titleStack.axis = .horizontal
+        titleStack.spacing = 10
+        titleStack.alignment = .center
         titleStack.translatesAutoresizingMaskIntoConstraints = false
 
         // Collapse button (existing toggleSidebarVisibility action) —
@@ -4342,10 +4416,11 @@ final class GameViewController: UIViewController {
         actions.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.addSubview(actions)
 
-        // ── Explorer subheader — small caps label, replaces the
-        // old single header label. Visually subordinate to the
-        // workspace title above.
-        sidebarTitleLabel.text = "EXPLORER"
+        // ── Files subheader — distinctive "WORKSPACE FILES" label
+        // (renamed from the prior literal "EXPLORER" which is VS
+        // Code's section terminology — keeping that name made the
+        // panel read as a VS-Code clone for App-Store review).
+        sidebarTitleLabel.text = "WORKSPACE FILES"
         sidebarTitleLabel.font = .systemFont(ofSize: 10, weight: .bold)
         sidebarTitleLabel.textColor = WorkspaceStyle.sideBarHeaderText
         sidebarTitleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -4377,8 +4452,14 @@ final class GameViewController: UIViewController {
         filesBrowserController = fb
 
         NSLayoutConstraint.activate([
-            // Workspace title row
-            titleStack.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 10),
+            // Brand accent stripe at the very top of the sidebar
+            brandStripe.topAnchor.constraint(equalTo: sidebarView.topAnchor),
+            brandStripe.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
+            brandStripe.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
+            brandStripe.heightAnchor.constraint(equalToConstant: 3),
+
+            // Workspace title row — brand disc + title text + collapse
+            titleStack.topAnchor.constraint(equalTo: brandStripe.bottomAnchor, constant: 10),
             titleStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
             titleStack.trailingAnchor.constraint(lessThanOrEqualTo: collapseBtn.leadingAnchor, constant: -8),
 
@@ -4747,8 +4828,9 @@ final class GameViewController: UIViewController {
         configureTabButton(editorTabButton, title: "Editor", icon: "chevron.left.forwardslash.chevron.right", tag: 0, active: true)
         configureTabButton(librariesTabButton, title: "Libraries", icon: "shippingbox", tag: 1, active: false)
         configureTabButton(systemTabButton, title: "System", icon: "info.circle", tag: 2, active: false)
+        configureTabButton(settingsTabButton, title: "Settings", icon: "gearshape", tag: 3, active: false)
 
-        let tabStack = UIStackView(arrangedSubviews: [editorTabButton, librariesTabButton, systemTabButton, UIView()])
+        let tabStack = UIStackView(arrangedSubviews: [editorTabButton, librariesTabButton, systemTabButton, settingsTabButton, UIView()])
         tabStack.axis = .horizontal
         tabStack.spacing = 0
         tabStack.translatesAutoresizingMaskIntoConstraints = false
@@ -4782,8 +4864,10 @@ final class GameViewController: UIViewController {
         librariesContainer.isHidden = true
         systemInfoContainer.translatesAutoresizingMaskIntoConstraints = false
         systemInfoContainer.isHidden = true
+        settingsContainer.translatesAutoresizingMaskIntoConstraints = false
+        settingsContainer.isHidden = true
 
-        let contentStack = UIStackView(arrangedSubviews: [contentTabBar, editorContainer, librariesContainer, systemInfoContainer])
+        let contentStack = UIStackView(arrangedSubviews: [contentTabBar, editorContainer, librariesContainer, systemInfoContainer, settingsContainer])
         contentStack.axis = .vertical
         contentStack.spacing = 0
         contentStack.translatesAutoresizingMaskIntoConstraints = false
@@ -4844,7 +4928,7 @@ final class GameViewController: UIViewController {
         activeContentTab = index
 
         // Update tab appearances
-        let tabs = [editorTabButton, librariesTabButton, systemTabButton]
+        let tabs = [editorTabButton, librariesTabButton, systemTabButton, settingsTabButton]
         for (i, tab) in tabs.enumerated() {
             let isActive = i == index
             var config = tab.configuration
@@ -4894,7 +4978,7 @@ final class GameViewController: UIViewController {
         // the active indicator. ManageReusable: cross-dissolve looked
         // identical regardless of direction; the slide gives a sense
         // of place ("System is to the right of Libraries").
-        let containers = [editorContainer, librariesContainer, systemInfoContainer]
+        let containers = [editorContainer, librariesContainer, systemInfoContainer, settingsContainer]
         let nextContainer = containers[index]
         let prevIndex = containers.firstIndex(where: { !$0.isHidden }) ?? 0
         let goingRight = index > prevIndex
@@ -4920,6 +5004,24 @@ final class GameViewController: UIViewController {
         if index == 2 && systemInfoController == nil {
             setupSystemInfoController()
         }
+        if index == 3 && settingsController == nil {
+            setupSettingsController()
+        }
+    }
+
+    private func setupSettingsController() {
+        let sc = SettingsViewController()
+        addChild(sc)
+        sc.view.translatesAutoresizingMaskIntoConstraints = false
+        settingsContainer.addSubview(sc.view)
+        NSLayoutConstraint.activate([
+            sc.view.topAnchor.constraint(equalTo: settingsContainer.topAnchor),
+            sc.view.leadingAnchor.constraint(equalTo: settingsContainer.leadingAnchor),
+            sc.view.trailingAnchor.constraint(equalTo: settingsContainer.trailingAnchor),
+            sc.view.bottomAnchor.constraint(equalTo: settingsContainer.bottomAnchor),
+        ])
+        sc.didMove(toParent: self)
+        settingsController = sc
     }
 
     private func setupSystemInfoController() {
@@ -8891,6 +8993,7 @@ Output format rules:
             case .success:
                 UserDefaults.standard.set(slot.rawValue, forKey: self.lastModelSlotDefaultsKey)
                 UserDefaults.standard.set(url.path, forKey: self.lastModelPathDefaultsKey)
+                ModelPrewarmer.recordLoaded(path: url.path, slot: slot.rawValue)
                 self.loadedModelSlot = slot
 
                 // Update editor with loaded model
@@ -9542,5 +9645,45 @@ extension GameViewController: LibraryDocsDelegate {
         // Editor is always visible in VS Code layout — just insert the code
         updateContentMode()
         editorController?.insertCode(code, language: language)
+    }
+}
+
+
+// MARK: - GradientStripeView
+//
+// 3-pixel-tall horizontal stripe painted with the CodeBench
+// category color palette. Used as a brand mark at the very top of
+// the sidebar — distinguishes CodeBench from VS-Code-style clones
+// whose top edge is a uniform separator line.
+
+final class GradientStripeView: UIView {
+    private let gradient = CAGradientLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupGradient()
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupGradient()
+    }
+
+    private func setupGradient() {
+        gradient.colors = [
+            UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1).cgColor,  // ML purple
+            UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1).cgColor,  // Sci blue
+            UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1).cgColor,  // Data teal
+            UIColor(red: 0.95, green: 0.60, blue: 0.30, alpha: 1).cgColor,  // Viz orange
+            UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1).cgColor,  // Anim pink
+            UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1).cgColor,  // Helper amber
+        ]
+        gradient.startPoint = CGPoint(x: 0, y: 0.5)
+        gradient.endPoint   = CGPoint(x: 1, y: 0.5)
+        layer.addSublayer(gradient)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        gradient.frame = bounds
     }
 }

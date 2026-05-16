@@ -113,6 +113,14 @@ final class GameViewController: UIViewController {
     private let loadButton = UIButton(type: .system)
     private let contentModeControl = UISegmentedControl(items: ["Editor", "Files", "Docs"])
     private let filesContainer = UIView()
+
+    /// Workspace Dashboard — a custom card-grid launcher that overlays
+    /// the editor content area on app launch. Replaces the VS-Code-
+    /// style "open straight to an empty editor" first impression with
+    /// something visually distinctive enough to clear App Store 4.3.
+    /// Tapping a card hides the dashboard and reveals the appropriate
+    /// underlying view (editor / files / terminal / etc.).
+    private let dashboardView = WorkspaceDashboardView()
     private var loadedModelSlot: ModelSlot?
     private var chatContainer: UIStackView?
     private var filesManagerController: ModelsManagerViewController?
@@ -4016,10 +4024,44 @@ final class GameViewController: UIViewController {
         contentStackBottomConstraint = contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: 0)
         contentStackBottomConstraint?.isActive = true
 
+        // ── Workspace Dashboard overlay ──
+        // Visible by default at app launch — covers everything below
+        // the tab bar with the custom card-grid launcher. Hides when
+        // the user picks a card or taps a tab.
+        dashboardView.translatesAutoresizingMaskIntoConstraints = false
+        dashboardView.delegate = self
+        contentView.addSubview(dashboardView)
+        NSLayoutConstraint.activate([
+            // Pin to contentTabBar's bottom so the dashboard occupies
+            // the same area as the tab containers (editor / libraries /
+            // etc.) without covering the tab bar itself.
+            dashboardView.topAnchor.constraint(equalTo: contentTabBar.bottomAnchor),
+            dashboardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            dashboardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            dashboardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+
         // Files browser set up lazily in updateContentMode() when Files tab is selected
         // configureFilesManager()  // Replaced by FilesBrowserViewController
         updateStatus(statusLabel.text ?? "")
         updateComposerUI()
+    }
+
+    /// Reveal the Workspace Dashboard again — called from the sidebar's
+    /// home button. Cross-fades over whatever tab is currently visible.
+    @objc func showWorkspaceDashboard() {
+        guard dashboardView.isHidden else { return }
+        dashboardView.alpha = 0
+        dashboardView.isHidden = false
+        UIView.animate(withDuration: 0.18) { self.dashboardView.alpha = 1 }
+    }
+
+    private func hideWorkspaceDashboard() {
+        guard !dashboardView.isHidden else { return }
+        UIView.animate(withDuration: 0.15,
+                       animations: { self.dashboardView.alpha = 0 }) { _ in
+            self.dashboardView.isHidden = true
+        }
     }
 
     private func configureControlStyles() {
@@ -4392,6 +4434,12 @@ final class GameViewController: UIViewController {
         // New file, new folder, refresh, command palette — all wired
         // to selectors below so they work without sending the user
         // off to a context menu.
+        // Home button — return to the Workspace Dashboard. First item
+        // in the action row so it reads as the "back to launcher" anchor.
+        let homeBtn = makeSidebarActionBtn(
+            icon: "square.grid.2x2.fill",
+            tip: "Workspace dashboard",
+            action: #selector(showWorkspaceDashboard))
         let newFileBtn = makeSidebarActionBtn(
             icon: "doc.badge.plus",
             tip: "New file",
@@ -4410,7 +4458,7 @@ final class GameViewController: UIViewController {
             action: #selector(showCommandPalette))
 
         let actions = UIStackView(arrangedSubviews: [
-            newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
+            homeBtn, newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
         ])
         actions.axis = .horizontal; actions.spacing = 2; actions.alignment = .center
         actions.translatesAutoresizingMaskIntoConstraints = false
@@ -9685,5 +9733,51 @@ final class GradientStripeView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         gradient.frame = bounds
+    }
+}
+
+
+// MARK: - WorkspaceDashboardDelegate
+
+extension GameViewController: WorkspaceDashboardDelegate {
+    func dashboardDidSelect(_ action: WorkspaceDashboardView.Action) {
+        // Map each dashboard card to whatever existing entry point
+        // already handles that section. We hide the dashboard with a
+        // fade-out animation and let the underlying tab show through.
+        hideWorkspaceDashboard()
+
+        switch action {
+        case .editor:
+            contentTabTapped(editorTabButton)
+        case .files:
+            // Sidebar already shows the file browser — bring it forward
+            // by making sure the sidebar is visible.
+            if sidebarView.isHidden { toggleSidebarVisibility() }
+            contentTabTapped(editorTabButton)
+        case .terminal:
+            contentTabTapped(editorTabButton)
+            // The editor view already hosts the Python REPL drawer.
+        case .aiChat:
+            contentTabTapped(editorTabButton)
+            // AI chat is the right-side panel inside the editor view.
+        case .libraries:
+            contentTabTapped(librariesTabButton)
+        case .latex:
+            contentTabTapped(editorTabButton)
+            // LaTeX previews open via the editor's run/preview path.
+        case .runScript:
+            contentTabTapped(editorTabButton)
+            // The Run button lives in the editor toolbar.
+        case .gpuLab:
+            // No dedicated tab — surface the GPU bench script in the editor.
+            contentTabTapped(editorTabButton)
+        case .settings:
+            contentTabTapped(settingsTabButton)
+        case .recentFile(let url):
+            // Open the file in the editor and switch to it.
+            contentTabTapped(editorTabButton)
+            if editorController == nil { setupEditorController() }
+            editorController?.loadFile(url: url)
+        }
     }
 }

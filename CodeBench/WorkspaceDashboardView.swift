@@ -1,405 +1,1001 @@
 import UIKit
+import Darwin       // mach_task_self_, task_info, KERN_SUCCESS
+import Metal        // MTLCreateSystemDefaultDevice for GPU status pill
 
-/// Workspace Dashboard — a card-grid launcher that replaces the
-/// "blank editor" first-impression most iPad code editors show
-/// (Pythonista / Carnets / Pyto / VS-Code-clone pattern). The
-/// dashboard is the first thing users see on app launch; tapping a
-/// card transitions to that section's view (editor, terminal, AI
-/// chat, etc.). Designed specifically to make the App Store 4.3
-/// "looks like an existing dev tool" rejection vanish.
+/// Workspace Dashboard — premium landing screen that replaces the
+/// IDE-clone first impression. Visually layered:
 ///
-/// Visual identity matches the rest of CodeBench's category-color
-/// system (the Libraries tab uses the same palette). Each card has:
-///   • A tinted icon disc in the upper-left
-///   • A title (large, semibold-rounded)
-///   • A 1-line subtitle
-///   • A gradient accent corner
-///   • Rounded corners with subtle border
+///   ┌─ Gradient brand stripe ───────────────────────────────────┐
+///   │ Hero ── BenchCode title + stats pills (Python / GPU / RAM)│
+///   │                                                           │
+///   │ QUICK ACTIONS — 4 wide pill buttons                       │
+///   │                                                           │
+///   │ RECENT — horizontal scroll of file cards                  │
+///   │                                                           │
+///   │ ALL TOOLS — 2-D grid of category-tinted cards             │
+///   └───────────────────────────────────────────────────────────┘
 ///
-/// The grid auto-adapts: 2 columns on iPhone, 3 columns on iPad
-/// portrait, 4 columns on iPad landscape.
+/// The visual identity is intentionally NOT a stock UICollectionView
+/// of identical cells (which is exactly what App Store 4.3 reviewers
+/// cite as "looks like every other dev tool"). Hero gives the screen
+/// a unique anchor, the per-category color system carries through
+/// every interactive element, and the typography (heavy rounded
+/// titles, letter-spaced section caps, monospaced version pills)
+/// reads as a deliberate design language no competitor uses.
 
 protocol WorkspaceDashboardDelegate: AnyObject {
     func dashboardDidSelect(_ action: WorkspaceDashboardView.Action)
 }
 
-final class WorkspaceDashboardView: UIView, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout {
+final class WorkspaceDashboardView: UIView {
 
     enum Action {
-        case editor          // open the code editor
-        case files           // file browser
-        case terminal        // Python REPL / shell
-        case aiChat          // local LLM chat
-        case libraries       // installed Python packages
-        case latex           // LaTeX workspace
-        case runScript       // run currently-selected file
-        case gpuLab          // PyTorch Metal GPU bench
-        case settings        // app settings
-        case recentFile(URL) // open a specific recent file
-    }
-
-    private struct Card {
-        let title: String
-        let subtitle: String
-        let symbol: String
-        let tint: UIColor
-        let action: Action
+        case editor, files, terminal, aiChat, libraries
+        case latex, runScript, gpuLab, settings
+        case recentFile(URL)
+        // Quick actions
+        case runLast, newPyFile
     }
 
     weak var delegate: WorkspaceDashboardDelegate?
 
-    private let titleLabel = UILabel()
-    private let subtitleLabel = UILabel()
-    private let collectionView: UICollectionView
+    private let scrollView = UIScrollView()
+    private let contentStack = UIStackView()
 
-    private var cards: [Card] = []
+    private let heroView = HeroView()
+    private let quickActionsRow = QuickActionsRow()
+    private let recentSection = RecentFilesSection()
+    private let toolsGrid = ToolsGrid()
+
     private var recentFiles: [URL] = []
 
     // MARK: - Init
 
     override init(frame: CGRect) {
-        let layout = UICollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = 14
-        layout.minimumLineSpacing = 14
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(frame: frame)
-        buildCards()
         setupUI()
+        refreshStats()
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    private func buildCards() {
-        cards = [
-            Card(title: "Code Editor",
-                 subtitle: "Monaco with IntelliSense",
-                 symbol: "doc.text.below.ecg",
-                 tint: UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1),
-                 action: .editor),
-            Card(title: "Files",
-                 subtitle: "Browse your workspace",
-                 symbol: "folder.fill.badge.gearshape",
-                 tint: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1),
-                 action: .files),
-            Card(title: "Python REPL",
-                 subtitle: "Interactive shell",
-                 symbol: "terminal.fill",
-                 tint: UIColor(red: 0.55, green: 0.65, blue: 0.95, alpha: 1),
-                 action: .terminal),
-            Card(title: "AI Chat",
-                 subtitle: "Local on-device LLM",
-                 symbol: "brain.head.profile",
-                 tint: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1),
-                 action: .aiChat),
-            Card(title: "Libraries",
-                 subtitle: "115+ bundled packages",
-                 symbol: "books.vertical.fill",
-                 tint: UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1),
-                 action: .libraries),
-            Card(title: "LaTeX",
-                 subtitle: "Math + full document",
-                 symbol: "x.squareroot",
-                 tint: UIColor(red: 0.85, green: 0.72, blue: 0.35, alpha: 1),
-                 action: .latex),
-            Card(title: "Run Script",
-                 subtitle: "Execute current file",
-                 symbol: "play.fill",
-                 tint: UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1),
-                 action: .runScript),
-            Card(title: "GPU Lab",
-                 subtitle: "Metal matmul benchmark",
-                 symbol: "memorychip.fill",
-                 tint: UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1),
-                 action: .gpuLab),
-            Card(title: "Settings",
-                 subtitle: "Themes, model, etc.",
-                 symbol: "gearshape.2.fill",
-                 tint: UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1),
-                 action: .settings),
-        ]
-    }
-
     private func setupUI() {
-        backgroundColor = UIColor(red: 0.075, green: 0.078, blue: 0.090, alpha: 1)
+        // Layered background — base dark + subtle top vignette so the
+        // hero appears to float. The gradient is much lower contrast
+        // than typical CSS-style dashboards, intentional for low-light
+        // iPad use at night.
+        backgroundColor = UIColor(red: 0.062, green: 0.066, blue: 0.078, alpha: 1)
+        let bgGradient = CAGradientLayer()
+        bgGradient.colors = [
+            UIColor(red: 0.10, green: 0.10, blue: 0.13, alpha: 1).cgColor,
+            UIColor(red: 0.062, green: 0.066, blue: 0.078, alpha: 1).cgColor,
+        ]
+        bgGradient.startPoint = CGPoint(x: 0, y: 0)
+        bgGradient.endPoint   = CGPoint(x: 0, y: 0.45)
+        layer.addSublayer(bgGradient)
+        self.bgGradient = bgGradient
 
-        // ── Heading ──
-        titleLabel.text = "Workspace"
-        titleLabel.font = UIFont.systemFont(ofSize: 34, weight: .heavy).rounded
-        titleLabel.textColor = UIColor(white: 0.96, alpha: 1)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(titleLabel)
+        // ScrollView for everything
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.alwaysBounceVertical = true
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 32, right: 0)
+        addSubview(scrollView)
 
-        subtitleLabel.text = "Pick what you want to do."
-        subtitleLabel.font = .systemFont(ofSize: 15, weight: .regular)
-        subtitleLabel.textColor = UIColor(white: 0.6, alpha: 1)
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(subtitleLabel)
+        // Vertical content stack
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.axis = .vertical
+        contentStack.spacing = 26
+        contentStack.alignment = .fill
+        scrollView.addSubview(contentStack)
 
-        // ── Collection view ──
-        collectionView.backgroundColor = .clear
-        collectionView.translatesAutoresizingMaskIntoConstraints = false
-        collectionView.dataSource = self
-        collectionView.delegate = self
-        collectionView.alwaysBounceVertical = true
-        collectionView.contentInset = UIEdgeInsets(top: 4, left: 24, bottom: 28, right: 24)
-        collectionView.register(CardCell.self, forCellWithReuseIdentifier: "card")
-        collectionView.register(SectionHeader.self,
-                                forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader,
-                                withReuseIdentifier: "section")
-        addSubview(collectionView)
+        // Wire delegates to action passthrough
+        quickActionsRow.onSelect = { [weak self] in self?.fire($0) }
+        recentSection.onSelect   = { [weak self] in self?.fire(.recentFile($0)) }
+        toolsGrid.onSelect       = { [weak self] in self?.fire($0) }
+
+        contentStack.addArrangedSubview(heroView)
+        contentStack.setCustomSpacing(20, after: heroView)
+        contentStack.addArrangedSubview(quickActionsRow)
+        contentStack.addArrangedSubview(recentSection)
+        contentStack.addArrangedSubview(toolsGrid)
 
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 24),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 28),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -28),
+            scrollView.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-
-            collectionView.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 16),
-            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentStack.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 28),
+            contentStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 28),
+            contentStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -28),
+            contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -28),
+            contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -56),
         ])
     }
 
-    /// Update the recent-files list shown at the top of the dashboard.
-    /// Called by the host VC whenever the workspace's recent list
-    /// changes (file opened / saved).
+    private var bgGradient: CAGradientLayer?
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        bgGradient?.frame = bounds
+    }
+
+    private func fire(_ action: Action) {
+        // Subtle haptic so card taps feel responsive even before the
+        // dashboard fades out.
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        delegate?.dashboardDidSelect(action)
+    }
+
+    // MARK: - Public API
+
     func setRecentFiles(_ files: [URL]) {
-        recentFiles = Array(files.prefix(6))
-        collectionView.reloadData()
+        recentFiles = Array(files.prefix(8))
+        recentSection.setFiles(recentFiles)
+        recentSection.isHidden = recentFiles.isEmpty
     }
 
-    // MARK: - UICollectionView data source
-
-    func numberOfSections(in cv: UICollectionView) -> Int {
-        return recentFiles.isEmpty ? 1 : 2
+    func refreshStats() {
+        // Stats are best-effort. If anything fails, the badge silently
+        // shows a placeholder; nothing here should ever break the
+        // dashboard rendering.
+        heroView.setStats(
+            python: pythonVersionString(),
+            gpu: gpuStatusString(),
+            ram: ramUsageString()
+        )
     }
 
-    func collectionView(_ cv: UICollectionView, numberOfItemsInSection s: Int) -> Int {
-        if recentFiles.isEmpty { return cards.count }
-        return s == 0 ? recentFiles.count : cards.count
+    // MARK: - Stat sources
+
+    private func pythonVersionString() -> String {
+        // The bundled Python.xcframework ships 3.14 from BeeWare.
+        // Hard-coded rather than runtime-probed — querying Python's
+        // sys.version requires initializing the embedded interpreter,
+        // which the dashboard shouldn't trigger.
+        return "Python 3.14"
     }
 
-    func collectionView(_ cv: UICollectionView, cellForItemAt ip: IndexPath) -> UICollectionViewCell {
-        let cell = cv.dequeueReusableCell(withReuseIdentifier: "card", for: ip) as! CardCell
-        let isRecent = !recentFiles.isEmpty && ip.section == 0
-        if isRecent {
-            let url = recentFiles[ip.item]
-            cell.configure(
-                title: url.lastPathComponent,
-                subtitle: url.deletingLastPathComponent().path
-                    .replacingOccurrences(of: NSHomeDirectory(), with: "~"),
-                symbol: iconForFileExtension(url.pathExtension),
-                tint: UIColor(red: 0.60, green: 0.75, blue: 0.95, alpha: 1))
-        } else {
-            let card = cards[ip.item]
-            cell.configure(title: card.title, subtitle: card.subtitle,
-                           symbol: card.symbol, tint: card.tint)
+    private func gpuStatusString() -> String {
+        // Metal device existence is a sufficient proxy. Apps that
+        // can't create a default device fall back to CPU, which the
+        // matmul bridge already handles transparently.
+        return MTLCreateSystemDefaultDevice() != nil ? "Metal GPU" : "CPU"
+    }
+
+    private func ramUsageString() -> String {
+        // Apple's `phys_footprint` matches Xcode's Memory gauge —
+        // the same number Apple reviewers see in their dev tools.
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size /
+                                            MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
         }
-        return cell
+        guard kr == KERN_SUCCESS else { return "—" }
+        let mb = Double(info.phys_footprint) / (1024 * 1024)
+        return String(format: "%.0f MB", mb)
+    }
+}
+
+// MARK: - HeroView
+
+/// Top-of-screen hero: workspace name, path, and three live status
+/// pills (Python version, GPU device, RAM). The hero spans the full
+/// width of the dashboard with a colored side-rail accent that
+/// shifts hue down the gradient stack — a unique visual signature.
+private final class HeroView: UIView {
+
+    private let railView = UIView()
+    private let railGradient = CAGradientLayer()
+    private let title = UILabel()
+    private let subtitle = UILabel()
+    private let pythonPill = StatPill()
+    private let gpuPill = StatPill()
+    private let ramPill = StatPill()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build() {
+        backgroundColor = .clear
+
+        // Vertical gradient rail running down the left edge — the
+        // hero's identifying mark. Same palette as the Libraries
+        // category system so the dashboard feels visually unified
+        // with the rest of the app.
+        railView.translatesAutoresizingMaskIntoConstraints = false
+        railView.clipsToBounds = true
+        railView.layer.cornerRadius = 2
+        railGradient.colors = [
+            UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1).cgColor,  // ML purple
+            UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1).cgColor,  // Sci blue
+            UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1).cgColor,  // Data teal
+            UIColor(red: 0.95, green: 0.60, blue: 0.30, alpha: 1).cgColor,  // Viz orange
+        ]
+        railGradient.startPoint = CGPoint(x: 0.5, y: 0)
+        railGradient.endPoint   = CGPoint(x: 0.5, y: 1)
+        railView.layer.addSublayer(railGradient)
+        addSubview(railView)
+
+        // ── Title with subtle letter-spacing for a custom feel ──
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.attributedText = NSAttributedString(
+            string: "BenchCode",
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 36, weight: .heavy).rounded,
+                .foregroundColor: UIColor(white: 0.97, alpha: 1),
+                .kern: -0.5,
+            ])
+        addSubview(title)
+
+        // Path subtitle, monospaced for tech feel
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
+        subtitle.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        subtitle.textColor = UIColor(white: 0.55, alpha: 1)
+        subtitle.text = "~/Documents/Workspace"
+        addSubview(subtitle)
+
+        // Stat pills row
+        let pillRow = UIStackView(arrangedSubviews: [pythonPill, gpuPill, ramPill])
+        pillRow.translatesAutoresizingMaskIntoConstraints = false
+        pillRow.axis = .horizontal
+        pillRow.spacing = 8
+        pillRow.alignment = .center
+        addSubview(pillRow)
+
+        // Initial pill content (will get updated via setStats)
+        pythonPill.configure(icon: "chevron.left.forwardslash.chevron.right",
+                             text: "Python", tint: UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1))
+        gpuPill.configure(icon: "memorychip.fill",
+                          text: "GPU", tint: UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1))
+        ramPill.configure(icon: "circle.grid.cross.fill",
+                          text: "RAM", tint: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1))
+
+        NSLayoutConstraint.activate([
+            railView.topAnchor.constraint(equalTo: topAnchor),
+            railView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            railView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            railView.widthAnchor.constraint(equalToConstant: 4),
+
+            title.topAnchor.constraint(equalTo: topAnchor),
+            title.leadingAnchor.constraint(equalTo: railView.trailingAnchor, constant: 16),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            subtitle.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+
+            pillRow.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 12),
+            pillRow.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            pillRow.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            pillRow.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
 
-    func collectionView(_ cv: UICollectionView,
-                       viewForSupplementaryElementOfKind kind: String,
-                       at ip: IndexPath) -> UICollectionReusableView {
-        let v = cv.dequeueReusableSupplementaryView(
-            ofKind: kind, withReuseIdentifier: "section", for: ip) as! SectionHeader
-        if !recentFiles.isEmpty && ip.section == 0 {
-            v.setTitle("Recent")
-        } else {
-            v.setTitle("Open")
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        railGradient.frame = railView.bounds
+    }
+
+    func setStats(python: String, gpu: String, ram: String) {
+        pythonPill.setText(python)
+        gpuPill.setText(gpu)
+        ramPill.setText(ram)
+    }
+}
+
+// MARK: - StatPill
+
+/// Rounded pill with an SF Symbol icon + label. Used in the hero for
+/// at-a-glance status (Python version / GPU device / RAM use).
+/// Distinct visually from every other element: rounded ends, glassy
+/// fill, hairline outline, tinted icon, white text.
+private final class StatPill: UIView {
+
+    private let icon = UIImageView()
+    private let label = UILabel()
+    private var tint: UIColor = .white
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.cornerRadius = 12
+        layer.borderWidth = 1
+        layer.borderColor = UIColor(white: 0.25, alpha: 1).cgColor
+        backgroundColor = UIColor(white: 0.12, alpha: 1)
+
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.contentMode = .scaleAspectFit
+        addSubview(icon)
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
+        label.textColor = UIColor(white: 0.9, alpha: 1)
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 12),
+            icon.heightAnchor.constraint(equalToConstant: 12),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(icon symbol: String, text: String, tint: UIColor) {
+        self.tint = tint
+        icon.image = UIImage(systemName: symbol)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        icon.tintColor = tint
+        label.text = text
+        layer.borderColor = tint.withAlphaComponent(0.4).cgColor
+        backgroundColor = tint.withAlphaComponent(0.10)
+    }
+
+    func setText(_ s: String) { label.text = s }
+}
+
+// MARK: - SectionHeader
+
+/// Letter-spaced caps label + colored accent dot — the small heading
+/// used above each dashboard section ("QUICK ACTIONS", "RECENT",
+/// "ALL TOOLS"). Distinct from stock UITableView headers.
+private final class SectionHeader: UIView {
+
+    private let dot = UIView()
+    private let label = UILabel()
+    private let line = UIView()
+
+    init(title: String, accent: UIColor) {
+        super.init(frame: .zero)
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.backgroundColor = accent
+        dot.layer.cornerRadius = 3
+        addSubview(dot)
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.attributedText = NSAttributedString(
+            string: title.uppercased(),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 11, weight: .heavy),
+                .foregroundColor: UIColor(white: 0.55, alpha: 1),
+                .kern: 2.0,
+            ])
+        addSubview(label)
+
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.backgroundColor = UIColor(white: 0.2, alpha: 1)
+        addSubview(line)
+
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor),
+            dot.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+
+            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 8),
+            label.topAnchor.constraint(equalTo: topAnchor),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            line.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 12),
+            line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            line.heightAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - QuickActionsRow
+
+/// Four wide pill-buttons for the most common one-tap actions:
+/// Run Last, New Py File, Code Editor, AI Chat. Visually distinct
+/// from the smaller tool cards below — these are LARGER and read
+/// as "main verbs."
+private final class QuickActionsRow: UIView {
+
+    var onSelect: ((WorkspaceDashboardView.Action) -> Void)?
+
+    private let actions: [(title: String, icon: String, tint: UIColor, action: WorkspaceDashboardView.Action)] = [
+        ("Run Last",   "play.fill",
+         UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1), .runLast),
+        ("New File",   "plus.app.fill",
+         UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1), .newPyFile),
+        ("Editor",     "chevron.left.forwardslash.chevron.right",
+         UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1), .editor),
+        ("AI Chat",    "sparkles",
+         UIColor(red: 0.78, green: 0.62, blue: 0.99, alpha: 1), .aiChat),
+    ]
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build() {
+        let header = SectionHeader(title: "Quick actions",
+                                    accent: UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1))
+        header.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
+
+        let row = UIStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.axis = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = 10
+        addSubview(row)
+
+        for (i, a) in actions.enumerated() {
+            let btn = QuickActionButton(title: a.title, icon: a.icon, tint: a.tint)
+            btn.tag = i
+            btn.addTarget(self, action: #selector(tap(_:)), for: .touchUpInside)
+            row.addArrangedSubview(btn)
         }
-        return v
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: 18),
+
+            row.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.heightAnchor.constraint(equalToConstant: 66),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
 
-    // MARK: - Layout
+    @objc private func tap(_ sender: UIButton) {
+        onSelect?(actions[sender.tag].action)
+    }
+}
 
-    func collectionView(_ cv: UICollectionView, layout: UICollectionViewLayout,
-                       sizeForItemAt ip: IndexPath) -> CGSize {
-        let cols = optimalColumnCount(width: cv.bounds.width)
-        let totalInset: CGFloat = 24 * 2  // matches contentInset above
-        let totalGaps: CGFloat = 14 * CGFloat(cols - 1)
-        let available = cv.bounds.width - totalInset - totalGaps
-        let w = floor(available / CGFloat(cols))
-        // Recent-file cards: slightly shorter; section cards: taller
-        let isRecent = !recentFiles.isEmpty && ip.section == 0
-        return CGSize(width: w, height: isRecent ? 92 : 116)
+// MARK: - QuickActionButton
+
+private final class QuickActionButton: UIControl {
+
+    private let iconView = UIImageView()
+    private let titleLabel = UILabel()
+    private let bgLayer = CAGradientLayer()
+    private let glowLayer = CAGradientLayer()
+    private let tint: UIColor
+
+    init(title: String, icon: String, tint: UIColor) {
+        self.tint = tint
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        layer.cornerRadius = 14
+        layer.borderWidth = 1
+        layer.borderColor = tint.withAlphaComponent(0.35).cgColor
+        clipsToBounds = true
+
+        // Inner gradient — subtle tint, brighter at top, fades down
+        bgLayer.colors = [
+            tint.withAlphaComponent(0.22).cgColor,
+            tint.withAlphaComponent(0.08).cgColor,
+        ]
+        bgLayer.startPoint = CGPoint(x: 0.2, y: 0)
+        bgLayer.endPoint   = CGPoint(x: 0.8, y: 1)
+        layer.insertSublayer(bgLayer, at: 0)
+
+        // Glow accent in upper-left corner — adds depth, makes the
+        // button feel more premium than a flat-color fill.
+        glowLayer.colors = [
+            tint.withAlphaComponent(0.45).cgColor,
+            UIColor.clear.cgColor,
+        ]
+        glowLayer.startPoint = CGPoint(x: 0, y: 0)
+        glowLayer.endPoint   = CGPoint(x: 0.65, y: 0.65)
+        glowLayer.opacity = 0.8
+        layer.insertSublayer(glowLayer, at: 1)
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = UIImage(systemName: icon)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+        iconView.tintColor = tint
+        iconView.contentMode = .scaleAspectFit
+        addSubview(iconView)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = title
+        titleLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold).rounded
+        titleLabel.textColor = UIColor(white: 0.97, alpha: 1)
+        titleLabel.textAlignment = .left
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 22),
+            iconView.heightAnchor.constraint(equalToConstant: 22),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        bgLayer.frame = bounds
+        let glowSize = max(bounds.width, bounds.height) * 0.65
+        glowLayer.frame = CGRect(x: 0, y: 0, width: glowSize, height: glowSize)
     }
 
-    func collectionView(_ cv: UICollectionView, layout: UICollectionViewLayout,
-                       referenceSizeForHeaderInSection s: Int) -> CGSize {
-        return CGSize(width: cv.bounds.width, height: 34)
+    override var isHighlighted: Bool {
+        didSet {
+            UIView.animate(withDuration: 0.12,
+                           delay: 0,
+                           usingSpringWithDamping: 0.6,
+                           initialSpringVelocity: 0.8,
+                           options: [.allowUserInteraction],
+                           animations: {
+                self.transform = self.isHighlighted
+                    ? CGAffineTransform(scaleX: 0.96, y: 0.96)
+                    : .identity
+                self.alpha = self.isHighlighted ? 0.85 : 1
+            })
+        }
+    }
+}
+
+// MARK: - RecentFilesSection
+
+/// Horizontal scroll of cards representing recently opened files.
+/// Larger / squarer than the tool grid cards so they read as a
+/// distinct row. Visible only when there are recents.
+private final class RecentFilesSection: UIView {
+
+    var onSelect: ((URL) -> Void)?
+
+    private let header = SectionHeader(
+        title: "Recent",
+        accent: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1))
+    private let scrollView = UIScrollView()
+    private let row = UIStackView()
+    private var files: [URL] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build() {
+        header.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.showsHorizontalScrollIndicator = false
+        addSubview(scrollView)
+
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.axis = .horizontal
+        row.spacing = 10
+        row.alignment = .center
+        scrollView.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: 18),
+
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.heightAnchor.constraint(equalToConstant: 84),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            row.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            row.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+            row.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            row.heightAnchor.constraint(equalTo: scrollView.heightAnchor),
+        ])
+    }
+
+    func setFiles(_ files: [URL]) {
+        self.files = files
+        row.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for url in files {
+            let card = RecentFileCard(url: url)
+            card.onTap = { [weak self] in self?.onSelect?(url) }
+            row.addArrangedSubview(card)
+        }
+    }
+}
+
+// MARK: - RecentFileCard
+
+private final class RecentFileCard: UIControl {
+
+    var onTap: (() -> Void)?
+    private let url: URL
+
+    init(url: URL) {
+        self.url = url
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 160).isActive = true
+        heightAnchor.constraint(equalToConstant: 80).isActive = true
+        layer.cornerRadius = 12
+        layer.borderWidth = 1
+        layer.borderColor = UIColor(white: 0.22, alpha: 1).cgColor
+        backgroundColor = UIColor(white: 0.10, alpha: 1)
+
+        let (sym, tint) = iconAndTint(for: url.pathExtension)
+
+        let iconBg = UIView()
+        iconBg.translatesAutoresizingMaskIntoConstraints = false
+        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
+        iconBg.layer.cornerRadius = 7
+        addSubview(iconBg)
+
+        let icon = UIImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = UIImage(systemName: sym)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+        icon.tintColor = tint
+        icon.contentMode = .scaleAspectFit
+        iconBg.addSubview(icon)
+
+        let name = UILabel()
+        name.translatesAutoresizingMaskIntoConstraints = false
+        name.text = url.lastPathComponent
+        name.font = UIFont.systemFont(ofSize: 13, weight: .semibold).rounded
+        name.textColor = UIColor(white: 0.96, alpha: 1)
+        name.numberOfLines = 1
+        name.lineBreakMode = .byTruncatingMiddle
+        addSubview(name)
+
+        let path = UILabel()
+        path.translatesAutoresizingMaskIntoConstraints = false
+        path.text = url.deletingLastPathComponent().path
+            .replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        path.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        path.textColor = UIColor(white: 0.5, alpha: 1)
+        path.numberOfLines = 1
+        path.lineBreakMode = .byTruncatingMiddle
+        addSubview(path)
+
+        NSLayoutConstraint.activate([
+            iconBg.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            iconBg.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconBg.widthAnchor.constraint(equalToConstant: 26),
+            iconBg.heightAnchor.constraint(equalToConstant: 26),
+            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
+            name.topAnchor.constraint(equalTo: iconBg.bottomAnchor, constant: 8),
+            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            path.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 1),
+            path.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            path.trailingAnchor.constraint(equalTo: name.trailingAnchor),
+        ])
+
+        addTarget(self, action: #selector(fired), for: .touchUpInside)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func fired() { onTap?() }
+
+    override var isHighlighted: Bool {
+        didSet {
+            UIView.animate(withDuration: 0.12,
+                           delay: 0,
+                           usingSpringWithDamping: 0.6,
+                           initialSpringVelocity: 0.8,
+                           options: [.allowUserInteraction], animations: {
+                self.transform = self.isHighlighted
+                    ? CGAffineTransform(scaleX: 0.96, y: 0.96) : .identity
+            })
+        }
+    }
+
+    private func iconAndTint(for ext: String) -> (String, UIColor) {
+        switch ext.lowercased() {
+        case "py":         return ("chevron.left.forwardslash.chevron.right",
+                                   UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1))
+        case "tex":        return ("x.squareroot",
+                                   UIColor(red: 0.85, green: 0.72, blue: 0.35, alpha: 1))
+        case "c", "cpp":   return ("c.square.fill",
+                                   UIColor(red: 0.95, green: 0.45, blue: 0.45, alpha: 1))
+        case "swift":      return ("swift",
+                                   UIColor(red: 0.95, green: 0.60, blue: 0.30, alpha: 1))
+        case "md", "txt":  return ("doc.text",
+                                   UIColor(white: 0.7, alpha: 1))
+        case "json":       return ("curlybraces.square",
+                                   UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1))
+        default:           return ("doc",
+                                   UIColor(white: 0.6, alpha: 1))
+        }
+    }
+}
+
+// MARK: - ToolsGrid
+
+private final class ToolsGrid: UIView {
+
+    var onSelect: ((WorkspaceDashboardView.Action) -> Void)?
+
+    private struct Tool {
+        let title: String, subtitle: String, icon: String
+        let tint: UIColor, action: WorkspaceDashboardView.Action
+    }
+
+    private let tools: [Tool] = [
+        Tool(title: "Code Editor",
+             subtitle: "Monaco · IntelliSense",
+             icon: "chevron.left.forwardslash.chevron.right",
+             tint: UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1),
+             action: .editor),
+        Tool(title: "Files",
+             subtitle: "Browse workspace",
+             icon: "folder.fill",
+             tint: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1),
+             action: .files),
+        Tool(title: "Python REPL",
+             subtitle: "Interactive shell",
+             icon: "terminal.fill",
+             tint: UIColor(red: 0.55, green: 0.65, blue: 0.95, alpha: 1),
+             action: .terminal),
+        Tool(title: "AI Chat",
+             subtitle: "On-device LLM",
+             icon: "brain.head.profile",
+             tint: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1),
+             action: .aiChat),
+        Tool(title: "Libraries",
+             subtitle: "115+ packages",
+             icon: "books.vertical.fill",
+             tint: UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1),
+             action: .libraries),
+        Tool(title: "LaTeX",
+             subtitle: "Math · documents",
+             icon: "x.squareroot",
+             tint: UIColor(red: 0.85, green: 0.72, blue: 0.35, alpha: 1),
+             action: .latex),
+        Tool(title: "Run Script",
+             subtitle: "Execute current file",
+             icon: "play.fill",
+             tint: UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1),
+             action: .runScript),
+        Tool(title: "GPU Lab",
+             subtitle: "Metal benchmark",
+             icon: "memorychip.fill",
+             tint: UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1),
+             action: .gpuLab),
+        Tool(title: "Settings",
+             subtitle: "Themes · model",
+             icon: "gearshape.2.fill",
+             tint: UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1),
+             action: .settings),
+    ]
+
+    private let header = SectionHeader(
+        title: "All tools",
+        accent: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1))
+    private let grid = UIStackView()  // vertical of rows
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build() {
+        header.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
+
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.axis = .vertical
+        grid.spacing = 12
+        addSubview(grid)
+
+        // Build rows lazily on layout (we don't know width yet)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: 18),
+
+            grid.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
+            grid.leadingAnchor.constraint(equalTo: leadingAnchor),
+            grid.trailingAnchor.constraint(equalTo: trailingAnchor),
+            grid.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    private var lastColumnCount = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let cols = optimalColumnCount(width: bounds.width)
+        guard cols != lastColumnCount else { return }
+        lastColumnCount = cols
+        rebuildGrid(columns: cols)
     }
 
     private func optimalColumnCount(width: CGFloat) -> Int {
         switch width {
-        case ..<480:   return 2
-        case ..<840:   return 3
-        case ..<1100:  return 4
-        default:       return 5
+        case ..<420:  return 2
+        case ..<780:  return 3
+        case ..<1080: return 4
+        default:      return 5
         }
     }
 
-    private func iconForFileExtension(_ ext: String) -> String {
-        switch ext.lowercased() {
-        case "py":               return "chevron.left.forwardslash.chevron.right"
-        case "c", "cpp", "cc":   return "c.square.fill"
-        case "f", "f90", "f95":  return "f.square.fill"
-        case "tex":              return "x.squareroot"
-        case "txt", "md":        return "doc.text"
-        case "json":             return "curlybraces.square"
-        case "yml", "yaml":      return "list.bullet.indent"
-        case "html", "htm":      return "doc.richtext"
-        case "css":              return "paintbrush"
-        case "js", "ts":         return "j.square.fill"
-        case "swift":            return "swift"
-        case "png", "jpg", "jpeg", "gif":  return "photo"
-        default:                 return "doc"
+    private func rebuildGrid(columns: Int) {
+        grid.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        var i = 0
+        while i < tools.count {
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.distribution = .fillEqually
+            row.spacing = 12
+            row.alignment = .fill
+            for c in 0..<columns {
+                let idx = i + c
+                if idx < tools.count {
+                    let t = tools[idx]
+                    let card = ToolCard(tool: t)
+                    card.onTap = { [weak self] in self?.onSelect?(t.action) }
+                    row.addArrangedSubview(card)
+                } else {
+                    // Filler so the last row aligns with the grid
+                    let spacer = UIView()
+                    spacer.isUserInteractionEnabled = false
+                    row.addArrangedSubview(spacer)
+                }
+            }
+            grid.addArrangedSubview(row)
+            i += columns
         }
     }
 
-    // MARK: - Tap handling
+    // ── ToolCard ──
+    private final class ToolCard: UIControl {
 
-    func collectionView(_ cv: UICollectionView, didSelectItemAt ip: IndexPath) {
-        cv.deselectItem(at: ip, animated: true)
-        let isRecent = !recentFiles.isEmpty && ip.section == 0
-        if isRecent {
-            delegate?.dashboardDidSelect(.recentFile(recentFiles[ip.item]))
-        } else {
-            delegate?.dashboardDidSelect(cards[ip.item].action)
-        }
-    }
+        var onTap: (() -> Void)?
+        private let bgGradient = CAGradientLayer()
+        private let cornerGlow = CAGradientLayer()
 
-    // MARK: - Card cell
+        init(tool: Tool) {
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+            heightAnchor.constraint(equalToConstant: 116).isActive = true
+            layer.cornerRadius = 16
+            layer.borderWidth = 1
+            layer.borderColor = UIColor(white: 0.22, alpha: 1).cgColor
+            clipsToBounds = true
+            backgroundColor = UIColor(white: 0.10, alpha: 1)
 
-    private final class CardCell: UICollectionViewCell {
-        private let iconDisc = UIView()
-        private let iconView = UIImageView()
-        private let titleLabel = UILabel()
-        private let subtitleLabel = UILabel()
-        private let cornerAccent = CAGradientLayer()
+            // Subtle inner top-to-bottom darkening — gives depth
+            bgGradient.colors = [
+                tool.tint.withAlphaComponent(0.07).cgColor,
+                UIColor(white: 0.10, alpha: 1).cgColor,
+            ]
+            bgGradient.startPoint = CGPoint(x: 0, y: 0)
+            bgGradient.endPoint   = CGPoint(x: 0, y: 0.7)
+            layer.insertSublayer(bgGradient, at: 0)
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            buildUI()
-        }
-        required init?(coder: NSCoder) { fatalError() }
-
-        private func buildUI() {
-            // Card chrome
-            contentView.backgroundColor = UIColor(white: 0.13, alpha: 1)
-            contentView.layer.cornerRadius = 16
-            contentView.layer.borderWidth = 1
-            contentView.layer.borderColor = UIColor(white: 0.22, alpha: 1).cgColor
-            contentView.layer.masksToBounds = true
-
-            // Corner gradient accent — top-left diagonal flourish that
-            // signals the category, distinct from VS-Code-style cards.
-            cornerAccent.startPoint = CGPoint(x: 0, y: 0)
-            cornerAccent.endPoint = CGPoint(x: 0.7, y: 0.7)
-            cornerAccent.opacity = 0.16
-            contentView.layer.insertSublayer(cornerAccent, at: 0)
+            // Corner glow flourish — top-left, fades into clear
+            cornerGlow.colors = [
+                tool.tint.withAlphaComponent(0.45).cgColor,
+                UIColor.clear.cgColor,
+            ]
+            cornerGlow.startPoint = CGPoint(x: 0, y: 0)
+            cornerGlow.endPoint   = CGPoint(x: 0.7, y: 0.7)
+            cornerGlow.opacity = 0.55
+            layer.insertSublayer(cornerGlow, at: 1)
 
             // Icon disc
-            iconDisc.translatesAutoresizingMaskIntoConstraints = false
-            iconDisc.layer.cornerRadius = 10
-            contentView.addSubview(iconDisc)
+            let iconBg = UIView()
+            iconBg.translatesAutoresizingMaskIntoConstraints = false
+            iconBg.backgroundColor = tool.tint.withAlphaComponent(0.22)
+            iconBg.layer.cornerRadius = 11
+            iconBg.layer.borderColor = tool.tint.withAlphaComponent(0.4).cgColor
+            iconBg.layer.borderWidth = 1
+            addSubview(iconBg)
 
-            iconView.translatesAutoresizingMaskIntoConstraints = false
-            iconView.contentMode = .scaleAspectFit
-            iconDisc.addSubview(iconView)
+            let icon = UIImageView()
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            icon.image = UIImage(systemName: tool.icon)?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))
+            icon.tintColor = tool.tint
+            icon.contentMode = .scaleAspectFit
+            iconBg.addSubview(icon)
 
             // Title
-            titleLabel.translatesAutoresizingMaskIntoConstraints = false
-            titleLabel.font = UIFont.systemFont(ofSize: 16, weight: .bold).rounded
-            titleLabel.textColor = UIColor(white: 0.96, alpha: 1)
-            titleLabel.numberOfLines = 1
-            contentView.addSubview(titleLabel)
+            let title = UILabel()
+            title.translatesAutoresizingMaskIntoConstraints = false
+            title.text = tool.title
+            title.font = UIFont.systemFont(ofSize: 16, weight: .bold).rounded
+            title.textColor = UIColor(white: 0.97, alpha: 1)
+            title.numberOfLines = 1
+            addSubview(title)
 
             // Subtitle
-            subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-            subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
-            subtitleLabel.textColor = UIColor(white: 0.6, alpha: 1)
-            subtitleLabel.numberOfLines = 1
-            subtitleLabel.lineBreakMode = .byTruncatingTail
-            contentView.addSubview(subtitleLabel)
+            let subtitle = UILabel()
+            subtitle.translatesAutoresizingMaskIntoConstraints = false
+            subtitle.text = tool.subtitle
+            subtitle.font = .systemFont(ofSize: 12, weight: .medium)
+            subtitle.textColor = UIColor(white: 0.55, alpha: 1)
+            subtitle.numberOfLines = 1
+            subtitle.lineBreakMode = .byTruncatingTail
+            addSubview(subtitle)
+
+            // Trailing chevron — subtle navigation cue
+            let chev = UIImageView()
+            chev.translatesAutoresizingMaskIntoConstraints = false
+            chev.image = UIImage(systemName: "arrow.up.forward")?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+            chev.tintColor = tool.tint.withAlphaComponent(0.7)
+            chev.contentMode = .scaleAspectFit
+            addSubview(chev)
 
             NSLayoutConstraint.activate([
-                iconDisc.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
-                iconDisc.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-                iconDisc.widthAnchor.constraint(equalToConstant: 38),
-                iconDisc.heightAnchor.constraint(equalToConstant: 38),
-                iconView.centerXAnchor.constraint(equalTo: iconDisc.centerXAnchor),
-                iconView.centerYAnchor.constraint(equalTo: iconDisc.centerYAnchor),
-                iconView.widthAnchor.constraint(equalToConstant: 22),
-                iconView.heightAnchor.constraint(equalToConstant: 22),
+                iconBg.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+                iconBg.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                iconBg.widthAnchor.constraint(equalToConstant: 40),
+                iconBg.heightAnchor.constraint(equalToConstant: 40),
+                icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+                icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 22),
+                icon.heightAnchor.constraint(equalToConstant: 22),
 
-                titleLabel.topAnchor.constraint(equalTo: iconDisc.bottomAnchor, constant: 10),
-                titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-                titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+                chev.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+                chev.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                chev.widthAnchor.constraint(equalToConstant: 14),
+                chev.heightAnchor.constraint(equalToConstant: 14),
 
-                subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-                subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-                subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+                title.topAnchor.constraint(equalTo: iconBg.bottomAnchor, constant: 12),
+                title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+
+                subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
+                subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+                subtitle.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+                subtitle.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
             ])
+
+            addTarget(self, action: #selector(fired), for: .touchUpInside)
         }
+        required init?(coder: NSCoder) { fatalError() }
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            // Cover the top-left ~60% of the card with the diagonal
-            // gradient — gives each card a colored corner flourish.
-            let w = contentView.bounds.width
-            cornerAccent.frame = CGRect(x: 0, y: 0, width: w * 0.7, height: w * 0.5)
+            bgGradient.frame = bounds
+            let glowSize = max(bounds.width, bounds.height) * 0.7
+            cornerGlow.frame = CGRect(x: 0, y: 0, width: glowSize, height: glowSize)
         }
+
+        @objc private func fired() { onTap?() }
 
         override var isHighlighted: Bool {
             didSet {
-                UIView.animate(withDuration: 0.12) {
-                    self.contentView.transform = self.isHighlighted
-                        ? CGAffineTransform(scaleX: 0.97, y: 0.97)
-                        : .identity
-                    self.contentView.alpha = self.isHighlighted ? 0.8 : 1
-                }
+                UIView.animate(withDuration: 0.14,
+                               delay: 0,
+                               usingSpringWithDamping: 0.55,
+                               initialSpringVelocity: 0.9,
+                               options: [.allowUserInteraction], animations: {
+                    self.transform = self.isHighlighted
+                        ? CGAffineTransform(scaleX: 0.97, y: 0.97) : .identity
+                    self.cornerGlow.opacity = self.isHighlighted ? 0.85 : 0.55
+                })
             }
-        }
-
-        func configure(title: String, subtitle: String, symbol: String, tint: UIColor) {
-            titleLabel.text = title
-            subtitleLabel.text = subtitle
-            iconView.image = UIImage(systemName: symbol)?
-                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
-            iconView.tintColor = tint
-            iconDisc.backgroundColor = tint.withAlphaComponent(0.18)
-            iconDisc.layer.borderColor = tint.withAlphaComponent(0.35).cgColor
-            iconDisc.layer.borderWidth = 1
-            cornerAccent.colors = [tint.cgColor, UIColor.clear.cgColor]
-        }
-    }
-
-    private final class SectionHeader: UICollectionReusableView {
-        private let label = UILabel()
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.font = .systemFont(ofSize: 12, weight: .heavy)
-            label.textColor = UIColor(white: 0.55, alpha: 1)
-            addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 28),
-                label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            ])
-        }
-        required init?(coder: NSCoder) { fatalError() }
-
-        func setTitle(_ s: String) {
-            // Letter-spaced caps for a custom typographic identity that
-            // doesn't read as stock iOS section headers.
-            label.attributedText = NSAttributedString(
-                string: s.uppercased(),
-                attributes: [.kern: 1.5])
         }
     }
 }

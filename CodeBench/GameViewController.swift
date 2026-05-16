@@ -9883,6 +9883,37 @@ extension GameViewController: WorkspaceDashboardDelegate {
             contentTabTapped(editorTabButton)
             if editorController == nil { setupEditorController() }
             editorController?.loadFile(url: url)
+
+        case .runLast:
+            // Quick-action: open editor + immediately fire Run on the
+            // currently-loaded file. Identical to tapping the green
+            // Run button in the editor toolbar.
+            contentTabTapped(editorTabButton)
+            if editorController == nil { setupEditorController() }
+            editorController?.runCurrentFile()
+
+        case .newPyFile:
+            // Quick-action: create a uniquely-named scratch .py file
+            // in the workspace so the user can start typing right
+            // away without manually picking a name.
+            let fm = FileManager.default
+            try? fm.createDirectory(at: workspaceURL,
+                                    withIntermediateDirectories: true)
+            var n = 1
+            var url = workspaceURL.appendingPathComponent("scratch.py")
+            while fm.fileExists(atPath: url.path) {
+                n += 1
+                url = workspaceURL.appendingPathComponent("scratch_\(n).py")
+            }
+            let body = """
+            # New Python scratch — \(url.lastPathComponent)
+
+            print(\"hello\")
+            """
+            try? body.write(to: url, atomically: true, encoding: .utf8)
+            contentTabTapped(editorTabButton)
+            if editorController == nil { setupEditorController() }
+            editorController?.loadFile(url: url)
         }
     }
 }

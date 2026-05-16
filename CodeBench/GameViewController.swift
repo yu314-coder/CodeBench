@@ -4035,7 +4035,9 @@ final class GameViewController: UIViewController {
             // Pin to contentTabBar's bottom so the dashboard occupies
             // the same area as the tab containers (editor / libraries /
             // etc.) without covering the tab bar itself.
-            dashboardView.topAnchor.constraint(equalTo: contentTabBar.bottomAnchor),
+            // Dashboard now fills the entire content area (the top tab
+            // bar is gone — sidebar is the primary nav).
+            dashboardView.topAnchor.constraint(equalTo: contentView.topAnchor),
             dashboardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             dashboardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             dashboardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -4434,12 +4436,10 @@ final class GameViewController: UIViewController {
         // New file, new folder, refresh, command palette — all wired
         // to selectors below so they work without sending the user
         // off to a context menu.
-        // Home button — return to the Workspace Dashboard. First item
-        // in the action row so it reads as the "back to launcher" anchor.
-        let homeBtn = makeSidebarActionBtn(
-            icon: "square.grid.2x2.fill",
-            tip: "Workspace dashboard",
-            action: #selector(showWorkspaceDashboard))
+        // Home moved out of the action toolbar — it's now a proper
+        // entry in the sidebar nav list below (with full label + icon
+        // + selection state). Keeping it here would double-up the
+        // same destination.
         let newFileBtn = makeSidebarActionBtn(
             icon: "doc.badge.plus",
             tip: "New file",
@@ -4458,11 +4458,17 @@ final class GameViewController: UIViewController {
             action: #selector(showCommandPalette))
 
         let actions = UIStackView(arrangedSubviews: [
-            homeBtn, newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
+            newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
         ])
         actions.axis = .horizontal; actions.spacing = 2; actions.alignment = .center
         actions.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.addSubview(actions)
+
+        // ── Primary navigation — replaces the top tab bar.
+        // Each item is a sidebar nav row that switches the main
+        // content area. Selected item shows a tinted background +
+        // a colored left-edge stripe + brighter text.
+        let navStack = buildSidebarNavStack()
 
         // ── Files subheader — distinctive "WORKSPACE FILES" label
         // (renamed from the prior literal "EXPLORER" which is VS
@@ -4487,6 +4493,7 @@ final class GameViewController: UIViewController {
         settingsBtn.isPointerInteractionEnabled = true
         settingsBtn.accessibilityHint = "App & device info"
 
+        sidebarView.addSubview(navStack)
         sidebarView.addSubview(sidebarTitleLabel)
         sidebarView.addSubview(settingsBtn)
 
@@ -4522,8 +4529,13 @@ final class GameViewController: UIViewController {
             actions.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -8),
             actions.heightAnchor.constraint(equalToConstant: 28),
 
-            // Explorer header (small caps)
-            sidebarTitleLabel.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12),
+            // Primary nav stack (Home / Editor / Libraries / System / Settings)
+            navStack.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 14),
+            navStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 6),
+            navStack.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -6),
+
+            // Files header (small caps)
+            sidebarTitleLabel.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 16),
             sidebarTitleLabel.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 14),
 
             settingsBtn.centerYAnchor.constraint(equalTo: sidebarTitleLabel.centerYAnchor),
@@ -4538,6 +4550,160 @@ final class GameViewController: UIViewController {
         ])
 
         return sidebarView
+    }
+
+    // MARK: - Sidebar primary navigation
+
+    /// Sidebar nav buttons (Home / Editor / Libraries / System / Settings).
+    /// Replaces the top tab bar so the app has a single navigation
+    /// paradigm — distinctly NOT VS Code's "activity bar + sidebar +
+    /// tabs" pattern that App Store reviewers flag under 4.3.
+    private let homeNavButton       = UIButton(type: .system)
+    private let editorNavButton     = UIButton(type: .system)
+    private let librariesNavButton  = UIButton(type: .system)
+    private let systemNavButton     = UIButton(type: .system)
+    private let settingsNavButton   = UIButton(type: .system)
+
+    private func buildSidebarNavStack() -> UIStackView {
+        // 5 nav items, each: tinted icon disc + label, with selection
+        // shown via a left-edge stripe + tinted background + brighter
+        // text.
+        configureSidebarNavButton(homeNavButton,
+            title: "Home",      icon: "square.grid.2x2.fill",
+            tint: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1),
+            tag: 100, selector: #selector(navHomeTapped))
+        configureSidebarNavButton(editorNavButton,
+            title: "Editor",    icon: "chevron.left.forwardslash.chevron.right",
+            tint: UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1),
+            tag: 0, selector: #selector(navEditorTapped))
+        configureSidebarNavButton(librariesNavButton,
+            title: "Libraries", icon: "shippingbox.fill",
+            tint: UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1),
+            tag: 1, selector: #selector(navLibrariesTapped))
+        configureSidebarNavButton(systemNavButton,
+            title: "System",    icon: "cpu.fill",
+            tint: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1),
+            tag: 2, selector: #selector(navSystemTapped))
+        configureSidebarNavButton(settingsNavButton,
+            title: "Settings",  icon: "gearshape.2.fill",
+            tint: UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1),
+            tag: 3, selector: #selector(navSettingsTapped))
+
+        let stack = UIStackView(arrangedSubviews: [
+            homeNavButton, editorNavButton, librariesNavButton,
+            systemNavButton, settingsNavButton])
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        // Default selection: Home
+        setSidebarNavSelected(homeNavButton)
+        return stack
+    }
+
+    private func configureSidebarNavButton(_ button: UIButton, title: String,
+                                            icon: String, tint: UIColor,
+                                            tag: Int, selector: Selector) {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.tag = tag
+        button.contentHorizontalAlignment = .leading
+        button.addTarget(self, action: selector, for: .touchUpInside)
+        button.isPointerInteractionEnabled = true
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        button.layer.cornerRadius = 7
+        button.clipsToBounds = true
+
+        // Configuration: icon + title with consistent padding.
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        config.imagePadding = 10
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 10)
+        var titleAttr = AttributeContainer()
+        titleAttr.font = UIFont.systemFont(ofSize: 13, weight: .semibold).rounded
+        config.attributedTitle = AttributedString(title, attributes: titleAttr)
+        button.configuration = config
+
+        // Store tint via accessibilityIdentifier so setSidebarNavSelected
+        // can read it back without a dict lookup.
+        button.accessibilityValue = "rgb:\(tint.red255),\(tint.green255),\(tint.blue255)"
+        applySidebarNavStyle(button, selected: false)
+    }
+
+    private func applySidebarNavStyle(_ button: UIButton, selected: Bool) {
+        let tint = parseTintFromAccessibilityValue(button.accessibilityValue)
+            ?? UIColor(white: 0.7, alpha: 1)
+        var config = button.configuration
+        config?.baseForegroundColor = selected
+            ? UIColor(white: 0.97, alpha: 1)
+            : UIColor(white: 0.6, alpha: 1)
+        // Re-tint icon explicitly so it's color-coded even when inactive
+        config?.imageColorTransformer = UIConfigurationColorTransformer { _ in
+            selected ? tint : tint.withAlphaComponent(0.6)
+        }
+        button.configuration = config
+        button.backgroundColor = selected
+            ? tint.withAlphaComponent(0.16)
+            : .clear
+
+        // Left-edge accent stripe — visual selection indicator
+        button.viewWithTag(7777)?.removeFromSuperview()
+        if selected {
+            let stripe = UIView()
+            stripe.tag = 7777
+            stripe.backgroundColor = tint
+            stripe.layer.cornerRadius = 1.5
+            stripe.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(stripe)
+            NSLayoutConstraint.activate([
+                stripe.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+                stripe.topAnchor.constraint(equalTo: button.topAnchor, constant: 6),
+                stripe.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -6),
+                stripe.widthAnchor.constraint(equalToConstant: 3),
+            ])
+        }
+    }
+
+    private func setSidebarNavSelected(_ selected: UIButton) {
+        for btn in [homeNavButton, editorNavButton, librariesNavButton,
+                    systemNavButton, settingsNavButton] {
+            applySidebarNavStyle(btn, selected: btn === selected)
+        }
+    }
+
+    @objc private func navHomeTapped() {
+        setSidebarNavSelected(homeNavButton)
+        showWorkspaceDashboard()
+    }
+    @objc private func navEditorTapped() {
+        setSidebarNavSelected(editorNavButton)
+        hideWorkspaceDashboard()
+        contentTabTapped(editorTabButton)
+    }
+    @objc private func navLibrariesTapped() {
+        setSidebarNavSelected(librariesNavButton)
+        hideWorkspaceDashboard()
+        contentTabTapped(librariesTabButton)
+    }
+    @objc private func navSystemTapped() {
+        setSidebarNavSelected(systemNavButton)
+        hideWorkspaceDashboard()
+        contentTabTapped(systemTabButton)
+    }
+    @objc private func navSettingsTapped() {
+        setSidebarNavSelected(settingsNavButton)
+        hideWorkspaceDashboard()
+        contentTabTapped(settingsTabButton)
+    }
+
+    private func parseTintFromAccessibilityValue(_ s: String?) -> UIColor? {
+        guard let s = s, s.hasPrefix("rgb:") else { return nil }
+        let parts = s.dropFirst(4).split(separator: ",")
+        guard parts.count == 3,
+              let r = Int(parts[0]), let g = Int(parts[1]), let b = Int(parts[2])
+        else { return nil }
+        return UIColor(red: CGFloat(r)/255, green: CGFloat(g)/255,
+                       blue: CGFloat(b)/255, alpha: 1)
     }
 
     private func makeSidebarActionBtn(icon: String, tip: String, action: Selector) -> UIButton {
@@ -4915,7 +5081,13 @@ final class GameViewController: UIViewController {
         settingsContainer.translatesAutoresizingMaskIntoConstraints = false
         settingsContainer.isHidden = true
 
-        let contentStack = UIStackView(arrangedSubviews: [contentTabBar, editorContainer, librariesContainer, systemInfoContainer, settingsContainer])
+        // Top tab bar is intentionally NOT in the content stack —
+        // primary navigation now lives in the sidebar (Home / Editor
+        // / Libraries / System / Settings). The contentTabBar view
+        // is still built (above) so contentTabTapped()'s indicator
+        // styling block has its child tab buttons to dereference, but
+        // by leaving it out of the layout it never appears on screen.
+        let contentStack = UIStackView(arrangedSubviews: [editorContainer, librariesContainer, systemInfoContainer, settingsContainer])
         contentStack.axis = .vertical
         contentStack.spacing = 0
         contentStack.translatesAutoresizingMaskIntoConstraints = false
@@ -9768,6 +9940,16 @@ extension GameViewController: WorkspaceDashboardDelegate {
     func dashboardDidSelect(_ action: WorkspaceDashboardView.Action) {
         hideWorkspaceDashboard()
 
+        // Mirror the destination selection in the sidebar nav so the
+        // user can see WHERE the dashboard jumped them to — otherwise
+        // tapping a card and ending up in the editor is jarring (the
+        // sidebar still shows "Home" highlighted).
+        switch action {
+        case .libraries: setSidebarNavSelected(librariesNavButton)
+        case .settings:  setSidebarNavSelected(settingsNavButton)
+        default:         setSidebarNavSelected(editorNavButton)
+        }
+
         switch action {
 
         case .editor:
@@ -9916,4 +10098,18 @@ extension GameViewController: WorkspaceDashboardDelegate {
             editorController?.loadFile(url: url)
         }
     }
+}
+
+
+// MARK: - UIColor helpers for sidebar nav tint persistence
+//
+// The sidebar nav buttons store their category tint in the
+// accessibilityValue string so applySidebarNavStyle can re-apply
+// it without keeping a parallel dictionary. These helpers
+// roundtrip the color to/from a "rgb:R,G,B" string of 0–255 ints.
+
+private extension UIColor {
+    var red255:   Int { var r: CGFloat = 0; getRed(&r, green: nil, blue: nil, alpha: nil); return Int(r * 255) }
+    var green255: Int { var g: CGFloat = 0; getRed(nil, green: &g, blue: nil, alpha: nil); return Int(g * 255) }
+    var blue255:  Int { var b: CGFloat = 0; getRed(nil, green: nil, blue: &b, alpha: nil); return Int(b * 255) }
 }

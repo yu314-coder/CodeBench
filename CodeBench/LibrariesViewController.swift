@@ -258,6 +258,68 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         return CATEGORY_MAP[key] ?? "Other"
     }
 
+    /// SF Symbol name + accent color for each category. Used to give
+    /// each row a distinct visual identity instead of stock-iOS table
+    /// rows. Returns a small image for cell badges and a tint color
+    /// for the row's left-edge stripe.
+    static func iconForCategory(_ category: String) -> (symbol: String, tint: UIColor) {
+        switch category {
+        case "Pip installed":
+            return ("arrow.down.app.fill",
+                    UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1))     // green
+        case "Machine Learning":
+            return ("brain.head.profile",
+                    UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1))     // purple
+        case "Scientific Computing":
+            return ("function",
+                    UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1))     // blue
+        case "Visualization":
+            return ("chart.line.uptrend.xyaxis",
+                    UIColor(red: 0.95, green: 0.60, blue: 0.30, alpha: 1))     // orange
+        case "Animation & Math":
+            return ("wand.and.stars",
+                    UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1))     // pink
+        case "Media (image / video / audio / docs)":
+            return ("photo.on.rectangle.angled",
+                    UIColor(red: 0.95, green: 0.45, blue: 0.45, alpha: 1))     // red
+        case "LaTeX":
+            return ("x.squareroot",
+                    UIColor(red: 0.85, green: 0.72, blue: 0.35, alpha: 1))     // gold
+        case "Web & Network":
+            return ("network",
+                    UIColor(red: 0.35, green: 0.78, blue: 0.85, alpha: 1))     // cyan
+        case "Data Formats":
+            return ("tablecells",
+                    UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1))     // teal
+        case "CLI / Terminal UI":
+            return ("terminal",
+                    UIColor(red: 0.55, green: 0.65, blue: 0.95, alpha: 1))     // indigo
+        case "Testing & Dev Tools":
+            return ("checkmark.shield",
+                    UIColor(red: 0.92, green: 0.85, blue: 0.30, alpha: 1))     // yellow
+        case "Templating / Utility":
+            return ("wrench.and.screwdriver",
+                    UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1))     // slate
+        case "Package Management":
+            return ("shippingbox",
+                    UIColor(red: 0.55, green: 0.78, blue: 0.55, alpha: 1))     // mint
+        case "CodeBench helpers":
+            return ("sparkles",
+                    UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1))     // amber
+        default:
+            return ("shippingbox",
+                    UIColor(white: 0.55, alpha: 1))
+        }
+    }
+
+    /// Per-row category — Pip-installed rows get their own marker.
+    static func iconForPackage(name: String, origin: String) -> (symbol: String, tint: UIColor) {
+        if origin == "User" {
+            return iconForCategory("Pip installed")
+        }
+        return iconForCategory(categorize(name))
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
@@ -465,26 +527,64 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
     }
 
     func tableView(_ tv: UITableView, viewForHeaderInSection s: Int) -> UIView? {
-        // Custom header so the Pip-installed section gets accent styling
-        // (green tint) to stand out from the Bundled sections (white-ish).
+        // Custom header: category icon + title, color-coded by category.
+        // Gives each section a clear visual identity instead of stock-iOS
+        // text headers.
         let title = sections[s].title
         let isPip = title.hasPrefix("Pip installed")
 
+        // Extract the bare category name for icon lookup.
+        // "Bundled — Machine Learning  (8)"  →  "Machine Learning"
+        // "Pip installed  (3)"               →  "Pip installed"
+        let catName: String = {
+            if isPip { return "Pip installed" }
+            var t = title
+            if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
+            if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
+            return t
+        }()
+        let (symbol, tint) = Self.iconForCategory(catName)
+
         let container = UIView()
         container.backgroundColor = .clear
+
+        // Tinted icon disc
+        let iconBg = UIView()
+        iconBg.translatesAutoresizingMaskIntoConstraints = false
+        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
+        iconBg.layer.cornerRadius = 9
+        container.addSubview(iconBg)
+
+        let icon = UIImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = UIImage(systemName: symbol)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+        icon.tintColor = tint
+        icon.contentMode = .scaleAspectFit
+        container.addSubview(icon)
+
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = title
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.textColor = isPip
-            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)   // green for Pip
-            : UIColor(white: 0.7, alpha: 1)                          // dim for bundled
+            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
+            : UIColor(white: 0.75, alpha: 1)
         container.addSubview(label)
+
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            iconBg.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            iconBg.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
+            iconBg.widthAnchor.constraint(equalToConstant: 18),
+            iconBg.heightAnchor.constraint(equalToConstant: 18),
+            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 12),
+            icon.heightAnchor.constraint(equalToConstant: 12),
+            label.leadingAnchor.constraint(equalTo: iconBg.trailingAnchor, constant: 8),
             label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
         ])
         return container
     }
@@ -492,9 +592,61 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
     func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: ip)
         let pkg = sections[ip.section].rows[ip.row]
+        let (symbol, tint) = Self.iconForPackage(name: pkg.name, origin: pkg.origin)
+
         cell.backgroundColor = UIColor(white: 0.12, alpha: 1)
         cell.selectionStyle = .default
         cell.accessoryType = .disclosureIndicator
+
+        // Strip any prior custom subviews from reused cells (cellForRowAt
+        // gets called with recycled instances; without this the icon
+        // accumulates).
+        cell.contentView.subviews
+            .filter { $0.tag == 9101 || $0.tag == 9102 || $0.tag == 9103 }
+            .forEach { $0.removeFromSuperview() }
+
+        // Left-edge category accent stripe — 3px tall colored bar that
+        // matches the section's tint. Distinct from default iOS table
+        // rows, gives the user a quick category cue without reading
+        // the section header again.
+        let stripe = UIView()
+        stripe.tag = 9101
+        stripe.translatesAutoresizingMaskIntoConstraints = false
+        stripe.backgroundColor = tint
+        stripe.layer.cornerRadius = 1.5
+        cell.contentView.addSubview(stripe)
+
+        // Tinted icon disc on the left
+        let iconBg = UIView()
+        iconBg.tag = 9102
+        iconBg.translatesAutoresizingMaskIntoConstraints = false
+        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
+        iconBg.layer.cornerRadius = 8
+        cell.contentView.addSubview(iconBg)
+
+        let icon = UIImageView()
+        icon.tag = 9103
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = UIImage(systemName: symbol)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+        icon.tintColor = tint
+        icon.contentMode = .scaleAspectFit
+        cell.contentView.addSubview(icon)
+
+        NSLayoutConstraint.activate([
+            stripe.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 6),
+            stripe.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 6),
+            stripe.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -6),
+            stripe.widthAnchor.constraint(equalToConstant: 3),
+            iconBg.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 14),
+            iconBg.centerYAnchor.constraint(equalTo: cell.contentView.centerYAnchor),
+            iconBg.widthAnchor.constraint(equalToConstant: 30),
+            iconBg.heightAnchor.constraint(equalToConstant: 30),
+            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+        ])
 
         var cfg = cell.defaultContentConfiguration()
         cfg.text = pkg.name
@@ -505,6 +657,8 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
             ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
             : UIColor(white: 0.55, alpha: 1)
         cfg.secondaryTextProperties.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        // Indent text past the icon disc.
+        cfg.directionalLayoutMargins.leading = 50
         cell.contentConfiguration = cfg
         return cell
     }
@@ -683,32 +837,105 @@ final class PackageDetailViewController: UIViewController {
     // MARK: - View builders
 
     private func makeMetaRow() -> UIView {
+        // Hero header: big category-tinted icon on the left + version
+        // text + category name pill on the right. Replaces the prior
+        // plain "version + BUNDLED" row with something visually
+        // distinctive that anchors the detail view.
         let row = UIView()
-        let version = UILabel()
-        version.text = "version  \(pkg.version)"
-        version.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        version.textColor = UIColor(white: 0.7, alpha: 1)
-        version.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(version)
+        let category = InstalledLibsViewController.categorize(pkg.name)
+        let (symbol, tint) = InstalledLibsViewController.iconForCategory(category)
 
-        let badge = UILabel()
-        badge.text = "  BUNDLED  "
-        badge.font = .systemFont(ofSize: 11, weight: .heavy)
-        badge.textColor = UIColor(white: 0.1, alpha: 1)
-        badge.backgroundColor = UIColor(white: 0.65, alpha: 1)
-        badge.layer.cornerRadius = 4
-        badge.layer.masksToBounds = true
-        badge.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(badge)
+        // Hero icon disc (60×60, tinted background)
+        let iconBg = UIView()
+        iconBg.translatesAutoresizingMaskIntoConstraints = false
+        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
+        iconBg.layer.cornerRadius = 12
+        iconBg.layer.borderWidth = 1
+        iconBg.layer.borderColor = tint.withAlphaComponent(0.35).cgColor
+        row.addSubview(iconBg)
+
+        let icon = UIImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = UIImage(systemName: symbol)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 28, weight: .semibold))
+        icon.tintColor = tint
+        icon.contentMode = .scaleAspectFit
+        row.addSubview(icon)
+
+        // Right side: stack of version + category pill
+        let textStack = UIStackView()
+        textStack.axis = .vertical
+        textStack.spacing = 6
+        textStack.alignment = .leading
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(textStack)
+
+        let version = UILabel()
+        version.text = "v\(pkg.version)"
+        version.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
+        version.textColor = UIColor(white: 0.92, alpha: 1)
+        textStack.addArrangedSubview(version)
+
+        // Pill row: category name + BUNDLED tag
+        let pillRow = UIStackView()
+        pillRow.axis = .horizontal
+        pillRow.spacing = 6
+        pillRow.alignment = .center
+        textStack.addArrangedSubview(pillRow)
+
+        let catPill = Self.makePill(text: category, tint: tint, filled: false)
+        pillRow.addArrangedSubview(catPill)
+        let bundledPill = Self.makePill(text: "BUNDLED",
+                                        tint: UIColor(white: 0.65, alpha: 1),
+                                        filled: true)
+        pillRow.addArrangedSubview(bundledPill)
+        pillRow.addArrangedSubview(UIView())   // flexible spacer
 
         NSLayoutConstraint.activate([
-            version.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            version.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            badge.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            badge.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            row.heightAnchor.constraint(equalToConstant: 24),
+            iconBg.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            iconBg.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            iconBg.widthAnchor.constraint(equalToConstant: 60),
+            iconBg.heightAnchor.constraint(equalToConstant: 60),
+            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 34),
+            icon.heightAnchor.constraint(equalToConstant: 34),
+            textStack.leadingAnchor.constraint(equalTo: iconBg.trailingAnchor, constant: 14),
+            textStack.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            textStack.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            row.heightAnchor.constraint(equalToConstant: 64),
         ])
         return row
+    }
+
+    /// Small rounded pill label — used for category / origin tags in
+    /// the detail-view hero header.
+    private static func makePill(text: String, tint: UIColor, filled: Bool) -> UIView {
+        let pill = UIView()
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        if filled {
+            pill.backgroundColor = tint
+        } else {
+            pill.backgroundColor = tint.withAlphaComponent(0.18)
+            pill.layer.borderColor = tint.withAlphaComponent(0.5).cgColor
+            pill.layer.borderWidth = 1
+        }
+        pill.layer.cornerRadius = 5
+        pill.layer.masksToBounds = true
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = text
+        label.font = .systemFont(ofSize: 10, weight: .bold)
+        label.textColor = filled ? UIColor(white: 0.08, alpha: 1) : tint
+        pill.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: pill.topAnchor, constant: 4),
+            label.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -4),
+        ])
+        return pill
     }
 
     private func makeSection(title: String,

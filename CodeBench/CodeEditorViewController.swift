@@ -28,6 +28,18 @@ extension Notification.Name {
     /// scoped copy logic). The editor listens for this so it can call
     /// loadFile(url:) on whichever editor instance is foreground.
     static let openExternalFile = Notification.Name("CodeBench.openExternalFile")
+
+    /// Posted by `PywebviewBridge` when WKWebView's separate WebContent
+    /// process is terminated by the system (memory pressure while the
+    /// app is backgrounded — common when the user slides to another
+    /// app and comes back). The `object` is the affected ``WKWebView``.
+    /// The editor listens for this so it can re-issue ``showImageOutput``
+    /// for the last-shown chart/HTML, recovering the preview without
+    /// the user having to re-run the script. Without this, the WebView
+    /// silently shows a blank/dark page after every app-switch round
+    /// trip — the rendered chart appears to "reset".
+    static let previewWebContentDied =
+        Notification.Name("CodeBench.previewWebContentDied")
 }
 
 // MARK: - CodeEditorViewController
@@ -823,6 +835,20 @@ final class CodeEditorViewController: UIViewController {
             self,
             selector: #selector(handleOpenExternalFile(_:)),
             name: .openExternalFile,
+            object: nil)
+
+        // WKWebView's WebContent process can be terminated by iOS
+        // (most commonly when the app is backgrounded for a while
+        // and the user comes back). Without recovery, the preview
+        // pane / sheet show a blank page and the user sees the
+        // chart "reset". PywebviewBridge posts this notification on
+        // ``webViewWebContentProcessDidTerminate``; we respond by
+        // re-issuing ``showImageOutput(path: currentOutputPath)``
+        // so the chart re-renders from disk.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePreviewWebContentDied(_:)),
+            name: .previewWebContentDied,
             object: nil)
 
         // AI CLI asked us to open a file — happens when the user
@@ -6188,6 +6214,29 @@ except Exception:
         }
     }
 
+    /// Called when WKWebView's WebContent process gets killed by
+    /// iOS (memory pressure during backgrounding). The view's
+    /// rendered DOM is gone; re-load the same path from disk so
+    /// the user doesn't see the chart "reset" on app-switch return.
+    @objc private func handlePreviewWebContentDied(_ note: Notification) {
+        // Only act if the affected WebView is one we care about
+        // (outputWebView or a PreviewSheetViewController's own).
+        // PreviewSheetViewController handles its own reload via its
+        // delegate, so here we just take care of the inline panel.
+        guard let affected = note.object as? WKWebView,
+              affected === outputWebView else { return }
+        guard let path = currentOutputPath,
+              !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return }
+        NSLog("[editor] outputWebView WebContent died — reloading %@", path)
+        // Re-issue via the normal entry point so all the visibility
+        // bookkeeping (isHidden flags, expand button, etc.) stays
+        // consistent. ``showImageOutput`` is idempotent — re-loading
+        // the same path doesn't fire the iPhone sheet auto-present
+        // (the path is already presented; dedup will no-op).
+        showImageOutput(path: path)
+    }
+
     /// True if ``path`` lives under ``~/Documents/ToolOutputs/`` —
     /// the canonical directory where matplotlib's ``_show_hook`` /
     /// plotly's patched ``Figure.show`` / manim renders write their
@@ -7992,7 +8041,7 @@ private final class ForcedStatePanRecognizer: UIPanGestureRecognizer {
 // this sheet. User dismisses with swipe-down or the close button.
 // ---------------------------------------------------------------------------
 
-fileprivate final class PreviewSheetViewController: UIViewController {
+fileprivate final class PreviewSheetViewController: UIViewController, WKNavigationDelegate {
     private(set) var currentPath: String
     private let webView = WKWebView()
     private let closeButton = UIButton(type: .system)
@@ -8034,6 +8083,12 @@ fileprivate final class PreviewSheetViewController: UIViewController {
         webView.isOpaque = false
         webView.scrollView.bounces = false
         webView.scrollView.alwaysBounceVertical = false
+        // Own our navigation delegate so we can recover from
+        // WebContent process death — iOS routinely kills the
+        // WebContent process when the app is backgrounded for a
+        // while. Without this, the sheet shows a blank page when
+        // the user returns from app-switch.
+        webView.navigationDelegate = self
 
         view.addSubview(pathLabel)
         view.addSubview(closeButton)
@@ -8171,5 +8226,19 @@ fileprivate final class PreviewSheetViewController: UIViewController {
 
     @objc private func closeTapped() {
         dismiss(animated: true)
+    }
+
+    // MARK: - WKNavigationDelegate
+
+    /// WebContent process killed by iOS (memory pressure during
+    /// backgrounding). Re-load from disk so the user doesn't see
+    /// a blank sheet on app-switch return.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        NSLog("[preview-sheet] WebContent process terminated — reloading %@",
+              currentPath)
+        // The file is still on disk in ToolOutputs — re-render same
+        // content via the existing load() pipeline (handles HTML
+        // images PDF + diagnostic fallback for missing files).
+        load(path: currentPath)
     }
 }

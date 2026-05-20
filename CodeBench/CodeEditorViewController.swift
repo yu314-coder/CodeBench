@@ -2304,6 +2304,15 @@ final class CodeEditorViewController: UIViewController {
         configureOutputTab(outputTabPreview, "Preview", tag: 1)
         configureOutputTab(outputTabPlots,   "Plots",   tag: 2)
 
+        // These three tabs are wired only to a visual selection state —
+        // the actual content-switch (Console=stdout, Preview=webview,
+        // Plots=image grid) was never implemented. Hide them entirely
+        // until someone wires the content branches; leaving useless
+        // tappable chrome on screen confuses users. The configuration
+        // above is preserved so the wire-up can be revived later
+        // without rebuilding the layout from scratch.
+        outputTabsContainer.isHidden = true
+
         let outputTabsRow = UIStackView(arrangedSubviews: [outputTabConsole, outputTabPreview, outputTabPlots])
         outputTabsRow.translatesAutoresizingMaskIntoConstraints = false
         outputTabsRow.axis = .horizontal
@@ -5953,6 +5962,14 @@ except Exception:
     private var toolOutputDirFD: Int32 = -1
     private var lastShownChartTime: Date = .distantPast
     private var lastShownChartPath: String = ""
+    /// Currently-presented preview sheet on iPhone. The inline
+    /// outputPanel is hidden on compact width (would take the whole
+    /// screen), so charts are surfaced as a half-sheet modal that
+    /// the user can dismiss. Kept around so we don't re-present
+    /// the same chart multiple times if showImageOutput is called
+    /// repeatedly with the same path (e.g. dir-watch + PTY scanner
+    /// both fire).
+    private weak var presentedPreviewSheet: PreviewSheetViewController?
     /// Paths currently being polled for write-completion. The dir-watch
     /// fs-event fires when a file's inode is created (size 0), but does
     /// NOT re-fire when its content is later written — DispatchSource's
@@ -6169,6 +6186,35 @@ except Exception:
         DispatchQueue.main.async { [weak self] in
             self?.tryShowChart(path: pick.path, source: "dir-watch")
         }
+    }
+
+    /// iPhone-only: present (or update in place) a half-sheet modal
+    /// showing the chart at ``path``. Called from ``showImageOutput``
+    /// on compact width because the inline outputPanel is hidden
+    /// there. Dedupes by path so consecutive ``showImageOutput``
+    /// calls for the same file (e.g. dir-watch + PTY scanner both
+    /// firing) don't dismiss-then-re-present and cause flicker.
+    private func presentOrUpdatePreviewSheet(path: String) {
+        // Already showing this exact path? Nothing to do.
+        if let current = presentedPreviewSheet, current.currentPath == path {
+            return
+        }
+        // Different path while a sheet is up — load the new content
+        // in-place so the user keeps the same sheet they were viewing.
+        if let current = presentedPreviewSheet {
+            current.load(path: path)
+            return
+        }
+        // No sheet up — create + present.
+        let vc = PreviewSheetViewController(path: path)
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 16
+            sheet.largestUndimmedDetentIdentifier = .medium
+        }
+        present(vc, animated: true)
+        presentedPreviewSheet = vc
     }
 
     /// Single entry point — both the PTY scanner and the dir watcher
@@ -7062,6 +7108,16 @@ except Exception:
             return
         }
 
+        // iPhone (compact width): the inline outputPanel is hidden
+        // (it'd take the whole screen). Also surface the chart as a
+        // half-sheet so the user can actually see it. Dedupes by
+        // path — no re-present if the sheet is already showing this
+        // same file (avoids flicker when dir-watch + PTY scanner
+        // both fire for the same chart).
+        if isCompactWidth {
+            presentOrUpdatePreviewSheet(path: path)
+        }
+
         // pywebview shim can send http(s):// URLs straight through.
         // Those go to the WKWebView as a real network request so the
         // page gets the correct origin (cookies, referer, CSP, JS
@@ -7900,4 +7956,129 @@ private final class ForcedStatePanRecognizer: UIPanGestureRecognizer {
     override func translation(in view: UIView?) -> CGPoint { fakeTranslation }
     // panSelectionHandler calls setTranslation(.zero, in: self) — must be a no-op
     override func setTranslation(_ translation: CGPoint, in view: UIView?) { }
+}
+
+
+// ---------------------------------------------------------------------------
+// PreviewSheetViewController — half-sheet wrapper for showing charts /
+// HTML / images on iPhone (compact width). The inline ``outputPanel``
+// in ``CodeEditorViewController`` is hidden on compact because it
+// would consume the whole screen; instead, ``showImageOutput`` calls
+// ``presentOrUpdatePreviewSheet`` which puts the same content into
+// this sheet. User dismisses with swipe-down or the close button.
+// ---------------------------------------------------------------------------
+
+fileprivate final class PreviewSheetViewController: UIViewController {
+    private(set) var currentPath: String
+    private let webView = WKWebView()
+    private let closeButton = UIButton(type: .system)
+    private let pathLabel = UILabel()
+
+    init(path: String) {
+        self.currentPath = path
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .pageSheet
+    }
+    required init?(coder: NSCoder) {
+        fatalError("PreviewSheetViewController only used programmatically")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(red: 0x0a/255.0,
+                                       green: 0x0a/255.0,
+                                       blue: 0x0f/255.0, alpha: 1)
+
+        // Title row — shows the filename + a close button so users
+        // who don't know to swipe-down to dismiss have a clear way out.
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pathLabel.textColor = UIColor(white: 0.65, alpha: 1)
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+
+        var closeCfg = UIButton.Configuration.plain()
+        closeCfg.image = UIImage(systemName: "xmark.circle.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+        closeCfg.baseForegroundColor = UIColor(white: 0.55, alpha: 1)
+        closeCfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 12)
+        closeButton.configuration = closeCfg
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.backgroundColor = view.backgroundColor
+        webView.isOpaque = false
+        webView.scrollView.bounces = false
+        webView.scrollView.alwaysBounceVertical = false
+
+        view.addSubview(pathLabel)
+        view.addSubview(closeButton)
+        view.addSubview(webView)
+
+        NSLayoutConstraint.activate([
+            pathLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -8),
+            pathLabel.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+            closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            closeButton.heightAnchor.constraint(equalToConstant: 36),
+
+            webView.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 4),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        load(path: currentPath)
+    }
+
+    /// Reload the sheet's WebView with a new chart file. Called by
+    /// ``CodeEditorViewController.presentOrUpdatePreviewSheet`` when
+    /// a new chart arrives while the sheet is already presented.
+    func load(path: String) {
+        currentPath = path
+        pathLabel.text = (path as NSString).lastPathComponent
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        let parentDir = url.deletingLastPathComponent()
+
+        if ext == "html" || ext == "htm" {
+            // Mirror CodeEditorViewController.showImageOutput — read
+            // file content + loadHTMLString so we sidestep WKWebView's
+            // ``loadFileURL(allowingReadAccessTo:)`` sandbox race on
+            // macOS Catalyst. Fall back to loadFileURL if the file
+            // is huge (>20 MB) — String(contentsOf:) would copy the
+            // whole thing into memory.
+            let fileSize = (try? FileManager.default
+                .attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
+               let html = try? String(contentsOf: url, encoding: .utf8) {
+                webView.loadHTMLString(html, baseURL: parentDir)
+            } else {
+                webView.loadFileURL(url, allowingReadAccessTo: parentDir)
+            }
+        } else if ["png", "jpg", "jpeg", "gif", "webp"].contains(ext) {
+            // Wrap image in a centered HTML page for clean display.
+            let html = """
+            <!DOCTYPE html><html><head>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>html,body{margin:0;background:#0a0a0f;height:100%}
+            body{display:flex;align-items:center;justify-content:center}
+            img{max-width:100%;max-height:100%;object-fit:contain}</style>
+            </head><body><img src="\(url.lastPathComponent)"></body></html>
+            """
+            webView.loadHTMLString(html, baseURL: parentDir)
+        } else if ext == "pdf" {
+            webView.loadFileURL(url, allowingReadAccessTo: parentDir)
+        }
+        // Video / other formats: caller should fall back to the inline
+        // outputPanel (which on compact stays hidden — that's fine,
+        // video preview from iPhone shell isn't a current use case).
+    }
+
+    @objc private func closeTapped() {
+        dismiss(animated: true)
+    }
 }

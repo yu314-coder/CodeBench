@@ -3796,7 +3796,7 @@ final class GameViewController: UIViewController {
         if isSidebarHidden != shouldHide {
             isSidebarHidden = shouldHide
             sidebarView.isHidden = shouldHide
-            sidebarWidthConstraint?.constant = shouldHide ? 0 : 220
+            sidebarWidthConstraint?.constant = shouldHide ? 0 : 64
             view.layoutIfNeeded()
             if shouldHide {
                 showSidebarExpandButton()
@@ -4000,7 +4000,12 @@ final class GameViewController: UIViewController {
         view.addSubview(rootStack)
 
         // Sidebar width constraint (used by toggleSidebarVisibility)
-        sidebarWidthConstraint = sidebarView.widthAnchor.constraint(equalToConstant: 220)
+        // Slim sidebar — 64pt per Claude Design styles.css `.canvas { grid-template-columns: 64px 1fr }`.
+        // Was 220pt with an embedded file browser + workspace title row;
+        // the file browser is gone (Files is now reached via the Home
+        // dashboard's tool card), the title row is replaced with the
+        // CB workspace badge.
+        sidebarWidthConstraint = sidebarView.widthAnchor.constraint(equalToConstant: 64)
         sidebarWidthConstraint?.isActive = true
 
         let contentStack = buildContentStack()
@@ -4349,204 +4354,146 @@ final class GameViewController: UIViewController {
 
     @discardableResult
     private func buildSidebarSection() -> UIView {
+        // Slim 64pt navigation rail per Claude Design.
+        // Layout, top to bottom:
+        //   1. CB workspace badge (34×34, indigo→violet gradient)
+        //   2. 5 nav items stacked (56pt each, icon + small label)
+        //   3. Spacer
+        //   4. Workspace switcher chip ("interp…lab" + ▼)
+        // The chunky brand stripe, workspace-title row, action toolbar,
+        // "WORKSPACE FILES" header, and embedded FilesBrowserViewController
+        // are all removed — Files is reached via the Home dashboard's
+        // Files tool card, not embedded permanently in the sidebar.
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.backgroundColor = WorkspaceStyle.sideBarBg
-        sidebarView.clipsToBounds = true
+        sidebarView.backgroundColor = UIColor(red: 0x12/255.0, green: 0x12/255.0, blue: 0x1a/255.0, alpha: 1.0)
+        sidebarView.clipsToBounds = false
 
-        // ── Brand accent stripe — 3px horizontal bar at the very top
-        // of the sidebar, painted with a multi-color gradient drawn
-        // from the same palette the Libraries tab uses for its
-        // category stripes. Distinctive visual signature that's
-        // unique to CodeBench (no other Python / dev-tool iPad app
-        // ships with this color spectrum as its brand mark).
-        let brandStripe = GradientStripeView()
-        brandStripe.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.addSubview(brandStripe)
+        // Trailing 1pt indigo splitter — same idiom the design uses for
+        // the sidebar's right edge (`border-right: 1px solid var(--border-sub)`).
+        let sidebarSplitter = UIView()
+        sidebarSplitter.translatesAutoresizingMaskIntoConstraints = false
+        sidebarSplitter.backgroundColor = UIColor(red: 0x63/255.0, green: 0x66/255.0, blue: 0xf1/255.0, alpha: 0.15)
+        sidebarView.addSubview(sidebarSplitter)
 
-        // ── Brand banner — replaces the prior plain "BenchCode"
-        // label with an icon + name pair styled as a rounded
-        // pill-card. Looks distinctly NOT like VS Code's plain
-        // workspace title at the top of the Explorer panel.
-        let brandDisc = UIView()
-        brandDisc.translatesAutoresizingMaskIntoConstraints = false
-        brandDisc.backgroundColor = UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 0.20)
-        brandDisc.layer.cornerRadius = 8
-        brandDisc.layer.borderWidth = 1
-        brandDisc.layer.borderColor = UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 0.45).cgColor
+        // CB workspace badge — 34×34, radius 9, indigo→violet 135° gradient,
+        // bold 15pt "BC" white text (BenchCode — the App Store-facing
+        // name) + inner highlight + soft drop shadow.
+        let cbBadge = UIView()
+        cbBadge.translatesAutoresizingMaskIntoConstraints = false
+        cbBadge.layer.cornerRadius = 9
+        cbBadge.layer.cornerCurve = .continuous
+        cbBadge.layer.masksToBounds = false
+        let cbGradient = CAGradientLayer()
+        cbGradient.name = "cb.badge.gradient"
+        cbGradient.colors = [
+            UIColor(red: 0x63/255.0, green: 0x66/255.0, blue: 0xf1/255.0, alpha: 1).cgColor,
+            UIColor(red: 0xa8/255.0, green: 0x55/255.0, blue: 0xf7/255.0, alpha: 1).cgColor,
+        ]
+        cbGradient.startPoint = CGPoint(x: 0, y: 0)
+        cbGradient.endPoint = CGPoint(x: 1, y: 1)
+        cbGradient.cornerRadius = 9
+        cbGradient.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+        cbBadge.layer.insertSublayer(cbGradient, at: 0)
+        cbBadge.layer.shadowColor = UIColor(red: 0x63/255.0, green: 0x66/255.0, blue: 0xf1/255.0, alpha: 1).cgColor
+        cbBadge.layer.shadowOpacity = 0.45
+        cbBadge.layer.shadowOffset = CGSize(width: 0, height: 4)
+        cbBadge.layer.shadowRadius = 6
+        // Long-press 1.5 s on the BC badge → Developer Panel.
+        // Hidden Games is reachable from inside the Developer Panel
+        // (it has an "Open Hidden Games" row in its Easter-eggs
+        // section) so we don't need a separate tap-on-BC entry point.
+        // Single gesture, single destination.
+        cbBadge.isUserInteractionEnabled = true
+        let cbLong = UILongPressGestureRecognizer(target: self,
+            action: #selector(openDeveloperPanelFromBadge(_:)))
+        cbLong.minimumPressDuration = 1.5
+        cbBadge.addGestureRecognizer(cbLong)
+        cbBadge.accessibilityLabel = "BenchCode — Developer tools"
+        cbBadge.accessibilityHint = "Long-press to open the developer panel"
 
-        let brandIcon = UIImageView()
-        brandIcon.translatesAutoresizingMaskIntoConstraints = false
-        brandIcon.image = UIImage(systemName: "command.square.fill")?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
-        brandIcon.tintColor = UIColor(red: 0.78, green: 0.62, blue: 0.99, alpha: 1)
-        brandIcon.contentMode = .scaleAspectFit
-        brandDisc.addSubview(brandIcon)
-        NSLayoutConstraint.activate([
-            brandIcon.centerXAnchor.constraint(equalTo: brandDisc.centerXAnchor),
-            brandIcon.centerYAnchor.constraint(equalTo: brandDisc.centerYAnchor),
-            brandIcon.widthAnchor.constraint(equalToConstant: 18),
-            brandIcon.heightAnchor.constraint(equalToConstant: 18),
-            brandDisc.widthAnchor.constraint(equalToConstant: 28),
-            brandDisc.heightAnchor.constraint(equalToConstant: 28),
-        ])
+        let cbLabel = UILabel()
+        cbLabel.translatesAutoresizingMaskIntoConstraints = false
+        cbLabel.text = "BC"
+        cbLabel.textColor = .white
+        cbLabel.font = UIFont.systemFont(ofSize: 15, weight: .bold).rounded
+        cbLabel.textAlignment = .center
+        cbBadge.addSubview(cbLabel)
 
-        // ── Workspace title text — "BenchCode" + path subtitle,
-        // unchanged copy but now beside the brand disc instead of
-        // alone at the top of the panel.
-        let workspaceTitle = UILabel()
-        workspaceTitle.text = "BenchCode"
-        workspaceTitle.font = UIFont.systemFont(ofSize: 15, weight: .bold).rounded
-        workspaceTitle.textColor = UIColor(white: 0.96, alpha: 1)
-        workspaceTitle.translatesAutoresizingMaskIntoConstraints = false
-
-        let workspaceSubtitle = UILabel()
-        workspaceSubtitle.text = "~/Documents/Workspace"
-        workspaceSubtitle.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        workspaceSubtitle.textColor = WorkspaceStyle.activityBarInactive
-        workspaceSubtitle.translatesAutoresizingMaskIntoConstraints = false
-
-        let textCol = UIStackView(arrangedSubviews: [workspaceTitle, workspaceSubtitle])
-        textCol.axis = .vertical; textCol.spacing = 1
-        textCol.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleStack = UIStackView(arrangedSubviews: [brandDisc, textCol])
-        titleStack.axis = .horizontal
-        titleStack.spacing = 10
-        titleStack.alignment = .center
-        titleStack.translatesAutoresizingMaskIntoConstraints = false
-
-        // Collapse button (existing toggleSidebarVisibility action) —
-        // moved up to the workspace row so it's at the top of the
-        // sidebar where users expect to find a "close panel" control.
-        let collapseBtn = UIButton(type: .system)
-        collapseBtn.setImage(UIImage(systemName: "sidebar.left",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)),
-            for: .normal)
-        collapseBtn.tintColor = WorkspaceStyle.activityBarInactive
-        collapseBtn.addTarget(self, action: #selector(toggleSidebarVisibility),
-                              for: .touchUpInside)
-        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
-        collapseBtn.isPointerInteractionEnabled = true
-
-        sidebarView.addSubview(titleStack)
-        sidebarView.addSubview(collapseBtn)
-
-        // ── Action toolbar — VS Code idiom: small icon row beneath
-        // the workspace title for the most common file operations.
-        // New file, new folder, refresh, command palette — all wired
-        // to selectors below so they work without sending the user
-        // off to a context menu.
-        // Home moved out of the action toolbar — it's now a proper
-        // entry in the sidebar nav list below (with full label + icon
-        // + selection state). Keeping it here would double-up the
-        // same destination.
-        let newFileBtn = makeSidebarActionBtn(
-            icon: "doc.badge.plus",
-            tip: "New file",
-            action: #selector(sidebarNewFileTapped))
-        let newFolderBtn = makeSidebarActionBtn(
-            icon: "folder.badge.plus",
-            tip: "New folder",
-            action: #selector(sidebarNewFolderTapped))
-        let refreshBtn = makeSidebarActionBtn(
-            icon: "arrow.clockwise",
-            tip: "Refresh",
-            action: #selector(sidebarRefreshTapped))
-        let paletteBtn = makeSidebarActionBtn(
-            icon: "command.square",
-            tip: "Command palette (⌘P)",
-            action: #selector(showCommandPalette))
-
-        let actions = UIStackView(arrangedSubviews: [
-            newFileBtn, newFolderBtn, refreshBtn, paletteBtn, UIView()
-        ])
-        actions.axis = .horizontal; actions.spacing = 2; actions.alignment = .center
-        actions.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.addSubview(actions)
-
-        // ── Primary navigation — replaces the top tab bar.
-        // Each item is a sidebar nav row that switches the main
-        // content area. Selected item shows a tinted background +
-        // a colored left-edge stripe + brighter text.
+        // Primary nav stack (5 items).
         let navStack = buildSidebarNavStack()
 
-        // ── Files subheader — distinctive "WORKSPACE FILES" label
-        // (renamed from the prior literal "EXPLORER" which is VS
-        // Code's section terminology — keeping that name made the
-        // panel read as a VS-Code clone for App-Store review).
-        sidebarTitleLabel.text = "WORKSPACE FILES"
-        sidebarTitleLabel.font = .systemFont(ofSize: 10, weight: .bold)
-        sidebarTitleLabel.textColor = WorkspaceStyle.sideBarHeaderText
-        sidebarTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Bottom workspace switcher chip — 52pt wide rounded card with
+        // "interp…lab" mono text + tiny chev-down glyph.
+        let wsChip = UIView()
+        wsChip.translatesAutoresizingMaskIntoConstraints = false
+        wsChip.backgroundColor = UIColor.white.withAlphaComponent(0.04)
+        wsChip.layer.cornerRadius = 8
+        wsChip.layer.cornerCurve = .continuous
+        wsChip.layer.borderColor = UIColor.white.withAlphaComponent(0.06).cgColor
+        wsChip.layer.borderWidth = 1
 
-        // Renamed from "Settings" to a more meaningful "About"
-        // entry point — it now jumps to the System tab where the
-        // device / app / Python info lives. The previous gear opened
-        // the AI-chat settings panel which had nothing to do with
-        // the EXPLORER section it was placed under.
-        let settingsBtn = UIButton(type: .system)
-        settingsBtn.setImage(UIImage(systemName: "info.circle",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
-        settingsBtn.tintColor = WorkspaceStyle.activityBarInactive
-        settingsBtn.addTarget(self, action: #selector(jumpToSystemTab), for: .touchUpInside)
-        settingsBtn.translatesAutoresizingMaskIntoConstraints = false
-        settingsBtn.isPointerInteractionEnabled = true
-        settingsBtn.accessibilityHint = "App & device info"
+        let wsName = UILabel()
+        wsName.translatesAutoresizingMaskIntoConstraints = false
+        wsName.text = "interp…lab"
+        wsName.font = .monospacedSystemFont(ofSize: 8.5, weight: .regular)
+        wsName.textColor = UIColor(white: 0.69, alpha: 1.0)
+        wsName.textAlignment = .center
+        wsName.lineBreakMode = .byTruncatingTail
 
+        let wsChev = UIImageView()
+        wsChev.translatesAutoresizingMaskIntoConstraints = false
+        wsChev.image = UIImage(systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .semibold))
+        wsChev.tintColor = UIColor(red: 0x6b/255.0, green: 0x6b/255.0, blue: 0x80/255.0, alpha: 1.0)
+
+        wsChip.addSubview(wsName)
+        wsChip.addSubview(wsChev)
+
+        sidebarView.addSubview(cbBadge)
         sidebarView.addSubview(navStack)
-        sidebarView.addSubview(sidebarTitleLabel)
-        sidebarView.addSubview(settingsBtn)
+        sidebarView.addSubview(wsChip)
 
-        // File browser fills the rest
-        let fb = FilesBrowserViewController()
-        fb.delegate = self
-        addChild(fb)
-        fb.view.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.addSubview(fb.view)
-        fb.didMove(toParent: self)
-        filesBrowserController = fb
+        // The embedded FilesBrowserViewController is gone from the
+        // sidebar; the property stays nil so other code paths that
+        // optionally chain (`filesBrowserController?.refresh()`) no-op.
+        filesBrowserController = nil
+        sidebarTitleLabel.text = ""
+        sidebarTitleLabel.isHidden = true
 
         NSLayoutConstraint.activate([
-            // Brand accent stripe at the very top of the sidebar
-            brandStripe.topAnchor.constraint(equalTo: sidebarView.topAnchor),
-            brandStripe.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
-            brandStripe.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            brandStripe.heightAnchor.constraint(equalToConstant: 3),
+            // Sidebar trailing splitter
+            sidebarSplitter.topAnchor.constraint(equalTo: sidebarView.topAnchor),
+            sidebarSplitter.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
+            sidebarSplitter.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
+            sidebarSplitter.widthAnchor.constraint(equalToConstant: 1),
 
-            // Workspace title row — brand disc + title text + collapse
-            titleStack.topAnchor.constraint(equalTo: brandStripe.bottomAnchor, constant: 10),
-            titleStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
-            titleStack.trailingAnchor.constraint(lessThanOrEqualTo: collapseBtn.leadingAnchor, constant: -8),
+            // CB badge centered horizontally, 14pt top inset
+            cbBadge.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 14),
+            cbBadge.centerXAnchor.constraint(equalTo: sidebarView.centerXAnchor),
+            cbBadge.widthAnchor.constraint(equalToConstant: 34),
+            cbBadge.heightAnchor.constraint(equalToConstant: 34),
 
-            collapseBtn.centerYAnchor.constraint(equalTo: titleStack.centerYAnchor),
-            collapseBtn.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -6),
-            collapseBtn.widthAnchor.constraint(equalToConstant: 30),
-            collapseBtn.heightAnchor.constraint(equalToConstant: 30),
+            cbLabel.centerXAnchor.constraint(equalTo: cbBadge.centerXAnchor),
+            cbLabel.centerYAnchor.constraint(equalTo: cbBadge.centerYAnchor),
 
-            // Action toolbar
-            actions.topAnchor.constraint(equalTo: titleStack.bottomAnchor, constant: 8),
-            actions.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 8),
-            actions.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -8),
-            actions.heightAnchor.constraint(equalToConstant: 28),
+            // Nav stack — 8pt below badge, full width with 4pt insets
+            navStack.topAnchor.constraint(equalTo: cbBadge.bottomAnchor, constant: 10),
+            navStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 4),
+            navStack.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -4),
 
-            // Primary nav stack (Home / Editor / Libraries / System / Settings)
-            navStack.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 14),
-            navStack.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 6),
-            navStack.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -6),
+            // Workspace switcher chip at the bottom — 52pt wide, 26pt tall
+            wsChip.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor, constant: -10),
+            wsChip.centerXAnchor.constraint(equalTo: sidebarView.centerXAnchor),
+            wsChip.widthAnchor.constraint(equalToConstant: 52),
+            wsChip.heightAnchor.constraint(equalToConstant: 26),
 
-            // Files header (small caps)
-            sidebarTitleLabel.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 16),
-            sidebarTitleLabel.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 14),
-
-            settingsBtn.centerYAnchor.constraint(equalTo: sidebarTitleLabel.centerYAnchor),
-            settingsBtn.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -8),
-            settingsBtn.widthAnchor.constraint(equalToConstant: 26),
-            settingsBtn.heightAnchor.constraint(equalToConstant: 26),
-
-            fb.view.topAnchor.constraint(equalTo: sidebarTitleLabel.bottomAnchor, constant: 6),
-            fb.view.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
-            fb.view.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            fb.view.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
+            wsName.topAnchor.constraint(equalTo: wsChip.topAnchor, constant: 4),
+            wsName.leadingAnchor.constraint(equalTo: wsChip.leadingAnchor, constant: 2),
+            wsName.trailingAnchor.constraint(equalTo: wsChip.trailingAnchor, constant: -2),
+            wsChev.topAnchor.constraint(equalTo: wsName.bottomAnchor, constant: 1),
+            wsChev.centerXAnchor.constraint(equalTo: wsChip.centerXAnchor),
+            wsChev.widthAnchor.constraint(equalToConstant: 8),
+            wsChev.heightAnchor.constraint(equalToConstant: 8),
         ])
 
         return sidebarView
@@ -4568,26 +4515,25 @@ final class GameViewController: UIViewController {
         // 5 nav items, each: tinted icon disc + label, with selection
         // shown via a left-edge stripe + tinted background + brighter
         // text.
+        // SF Symbols matching the Claude Design `icons.jsx` glyphs.
+        // (House, code-brackets, grid-3x3, gauge, gear). Per-item tint
+        // is ignored by applySidebarNavStyle now (single violet active),
+        // kept as a parameter for signature compatibility.
         configureSidebarNavButton(homeNavButton,
-            title: "Home",      icon: "square.grid.2x2.fill",
-            tint: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1),
-            tag: 100, selector: #selector(navHomeTapped))
+            title: "Home",      icon: "house.fill",
+            tint: .systemGray, tag: 100, selector: #selector(navHomeTapped))
         configureSidebarNavButton(editorNavButton,
             title: "Editor",    icon: "chevron.left.forwardslash.chevron.right",
-            tint: UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1),
-            tag: 0, selector: #selector(navEditorTapped))
+            tint: .systemGray, tag: 0, selector: #selector(navEditorTapped))
         configureSidebarNavButton(librariesNavButton,
-            title: "Libraries", icon: "shippingbox.fill",
-            tint: UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1),
-            tag: 1, selector: #selector(navLibrariesTapped))
+            title: "Libraries", icon: "square.grid.3x3.fill",
+            tint: .systemGray, tag: 1, selector: #selector(navLibrariesTapped))
         configureSidebarNavButton(systemNavButton,
-            title: "System",    icon: "cpu.fill",
-            tint: UIColor(red: 0.40, green: 0.80, blue: 0.70, alpha: 1),
-            tag: 2, selector: #selector(navSystemTapped))
+            title: "System",    icon: "gauge.with.dots.needle.bottom.50percent",
+            tint: .systemGray, tag: 2, selector: #selector(navSystemTapped))
         configureSidebarNavButton(settingsNavButton,
-            title: "Settings",  icon: "gearshape.2.fill",
-            tint: UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1),
-            tag: 3, selector: #selector(navSettingsTapped))
+            title: "Settings",  icon: "gearshape.fill",
+            tint: .systemGray, tag: 3, selector: #selector(navSettingsTapped))
 
         let stack = UIStackView(arrangedSubviews: [
             homeNavButton, editorNavButton, librariesNavButton,
@@ -4604,62 +4550,72 @@ final class GameViewController: UIViewController {
     private func configureSidebarNavButton(_ button: UIButton, title: String,
                                             icon: String, tint: UIColor,
                                             tag: Int, selector: Selector) {
+        // Claude Design `.sb-item`: 56pt tall, icon-above-label,
+        // vertical centered. Active state: violet tint (NOT the per-
+        // item color), rgba(168,85,247,0.08) bg, plus a 2.5pt violet
+        // accent stripe pinned to the LEFT edge of the sidebar with a
+        // glow shadow.
         button.translatesAutoresizingMaskIntoConstraints = false
         button.tag = tag
-        button.contentHorizontalAlignment = .leading
         button.addTarget(self, action: selector, for: .touchUpInside)
         button.isPointerInteractionEnabled = true
-        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        button.layer.cornerRadius = 7
+        button.heightAnchor.constraint(equalToConstant: 56).isActive = true
+        button.layer.cornerRadius = 10
+        button.layer.cornerCurve = .continuous
         button.clipsToBounds = true
 
-        // Configuration: icon + title with consistent padding.
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: icon,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        config.imagePadding = 10
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 10)
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular))
+        config.imagePlacement = .top
+        config.imagePadding = 3
+        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 4, bottom: 6, trailing: 4)
         var titleAttr = AttributeContainer()
-        titleAttr.font = UIFont.systemFont(ofSize: 13, weight: .semibold).rounded
+        titleAttr.font = UIFont.systemFont(ofSize: 9, weight: .medium)
         config.attributedTitle = AttributedString(title, attributes: titleAttr)
+        config.titleAlignment = .center
         button.configuration = config
 
-        // Store tint via accessibilityIdentifier so setSidebarNavSelected
-        // can read it back without a dict lookup.
-        button.accessibilityValue = "rgb:\(tint.red255),\(tint.green255),\(tint.blue255)"
+        // Per-item tint is intentionally NOT stored — design uses
+        // a single violet for the active state regardless of item.
+        // We keep the parameter so call sites don't need to change.
+        _ = tint
         applySidebarNavStyle(button, selected: false)
     }
 
     private func applySidebarNavStyle(_ button: UIButton, selected: Bool) {
-        let tint = parseTintFromAccessibilityValue(button.accessibilityValue)
-            ?? UIColor(white: 0.7, alpha: 1)
+        let violet = UIColor(red: 0xa8/255.0, green: 0x55/255.0, blue: 0xf7/255.0, alpha: 1.0)
+        let inactiveFg = UIColor(red: 0x7a/255.0, green: 0x7a/255.0, blue: 0x90/255.0, alpha: 1.0)
         var config = button.configuration
-        config?.baseForegroundColor = selected
-            ? UIColor(white: 0.97, alpha: 1)
-            : UIColor(white: 0.6, alpha: 1)
-        // Re-tint icon explicitly so it's color-coded even when inactive
-        config?.imageColorTransformer = UIConfigurationColorTransformer { _ in
-            selected ? tint : tint.withAlphaComponent(0.6)
-        }
+        config?.baseForegroundColor = selected ? violet : inactiveFg
         button.configuration = config
         button.backgroundColor = selected
-            ? tint.withAlphaComponent(0.16)
+            ? violet.withAlphaComponent(0.08)
             : .clear
 
-        // Left-edge accent stripe — visual selection indicator
+        // Left-edge accent stripe — 2.5pt wide, violet, with glow.
+        // Design CSS: `left: -8px; top: 14px; bottom: 14px; width: 2.5px;
+        //              box-shadow: 0 0 8px rgba(168,85,247,0.55)`
+        // We anchor it INSIDE the button (so clipsToBounds doesn't clip)
+        // at leading 0, which sits flush with the sidebar's left edge.
         button.viewWithTag(7777)?.removeFromSuperview()
         if selected {
             let stripe = UIView()
             stripe.tag = 7777
-            stripe.backgroundColor = tint
-            stripe.layer.cornerRadius = 1.5
+            stripe.backgroundColor = violet
+            stripe.layer.cornerRadius = 1.25
+            stripe.layer.shadowColor = violet.cgColor
+            stripe.layer.shadowOpacity = 0.55
+            stripe.layer.shadowOffset = .zero
+            stripe.layer.shadowRadius = 4
+            stripe.layer.masksToBounds = false
             stripe.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(stripe)
             NSLayoutConstraint.activate([
                 stripe.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-                stripe.topAnchor.constraint(equalTo: button.topAnchor, constant: 6),
-                stripe.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -6),
-                stripe.widthAnchor.constraint(equalToConstant: 3),
+                stripe.topAnchor.constraint(equalTo: button.topAnchor, constant: 14),
+                stripe.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -14),
+                stripe.widthAnchor.constraint(equalToConstant: 2.5),
             ])
         }
     }
@@ -4671,29 +4627,70 @@ final class GameViewController: UIViewController {
         }
     }
 
+    /// On iPhone (compact width), the sidebar takes ~16% of the
+    /// horizontal screen, which crowds the editor / file tabs /
+    /// terminal panes. After the user picks a destination via a
+    /// sidebar item, auto-collapse the sidebar so the destination
+    /// view gets the full width. The floating sidebar.left button
+    /// in the top-left lets them bring it back when needed.
+    /// No-op on iPad — the sidebar stays pinned there because the
+    /// regular-width screen has room for both.
+    private func autoHideSidebarIfCompact() {
+        guard isCompactLayout, !isSidebarHidden else { return }
+        isSidebarHidden = true
+        UIView.animate(withDuration: 0.22) {
+            self.sidebarView.isHidden = true
+            self.sidebarWidthConstraint?.constant = 0
+            self.view.layoutIfNeeded()
+        }
+        showSidebarExpandButton()
+    }
+
     @objc private func navHomeTapped() {
         setSidebarNavSelected(homeNavButton)
         showWorkspaceDashboard()
+        autoHideSidebarIfCompact()
+    }
+
+    /// Long-press on the BC badge — opens the Developer Panel. This
+    /// was the Konami code reward (↑↑↓↓ on physical keyboard); the
+    /// arrow-key path was removed and the badge gesture replaces it.
+    /// `.began` only so we don't double-fire while the press is held.
+    @objc private func openDeveloperPanelFromBadge(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        // Haptic feedback so the user feels the long-press "unlocking"
+        // the dev panel (regular taps stay haptic-free).
+        let gen = UIImpactFeedbackGenerator(style: .medium)
+        gen.prepare()
+        gen.impactOccurred()
+        let vc = DeveloperPanelViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
     }
     @objc private func navEditorTapped() {
         setSidebarNavSelected(editorNavButton)
         hideWorkspaceDashboard()
         contentTabTapped(editorTabButton)
+        autoHideSidebarIfCompact()
     }
     @objc private func navLibrariesTapped() {
         setSidebarNavSelected(librariesNavButton)
         hideWorkspaceDashboard()
         contentTabTapped(librariesTabButton)
+        autoHideSidebarIfCompact()
     }
     @objc private func navSystemTapped() {
         setSidebarNavSelected(systemNavButton)
         hideWorkspaceDashboard()
         contentTabTapped(systemTabButton)
+        autoHideSidebarIfCompact()
     }
     @objc private func navSettingsTapped() {
         setSidebarNavSelected(settingsNavButton)
         hideWorkspaceDashboard()
         contentTabTapped(settingsTabButton)
+        autoHideSidebarIfCompact()
     }
 
     private func parseTintFromAccessibilityValue(_ s: String?) -> UIColor? {
@@ -8910,7 +8907,7 @@ Output format rules:
         isSidebarHidden.toggle()
         UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0.5) {
             self.sidebarView.isHidden = self.isSidebarHidden
-            self.sidebarWidthConstraint?.constant = self.isSidebarHidden ? 0 : 220
+            self.sidebarWidthConstraint?.constant = self.isSidebarHidden ? 0 : 64
             self.view.layoutIfNeeded()
         }
         // Show a small expand button when sidebar is collapsed

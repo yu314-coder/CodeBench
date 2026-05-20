@@ -1519,18 +1519,36 @@ final class CodeEditorViewController: UIViewController {
         editorMemoryGraph.widthAnchor.constraint(equalToConstant: 140).isActive = true
         editorMemoryGraph.heightAnchor.constraint(equalToConstant: 26).isActive = true
 
+        // Toolbar contents differ for iPhone (compact) vs iPad
+        // (regular). On iPhone the previous layout overflowed:
+        // Run + 3 file buttons + RAM graph (140 pt) + preload + LaTeX
+        // test + settings + 3 dividers + ~5 status labels can't fit
+        // in ~390 pt of width. The Run button visibly clipped into
+        // the PYTHON file-tab badge underneath. Compact branch now
+        // drops the secondary widgets — RAM graph (visible on System
+        // tab anyway), LaTeX test (niche), status tail labels —
+        // and keeps the action buttons that matter for editing.
         var toolbarItems: [UIView] = [
             runButton,
             toolbarDivider(),
             filesToggleButton, openFileButton, clearButton,
             spacer,
-            editorMemoryGraph,
-            toolbarDivider(),
-            preloadButton,
-            toolbarDivider(),
-            latexTestButton, settingsButton,
         ]
-        if !compact {
+        if compact {
+            // iPhone: keep only the essentials on the right —
+            // preload (model warm-up) + settings. RAM gauge and
+            // LaTeX test are easily reachable via System / Math
+            // dashboards; not worth blocking the editor for.
+            toolbarItems.append(preloadButton)
+            toolbarItems.append(settingsButton)
+        } else {
+            // iPad: full status row.
+            toolbarItems.append(editorMemoryGraph)
+            toolbarItems.append(toolbarDivider())
+            toolbarItems.append(preloadButton)
+            toolbarItems.append(toolbarDivider())
+            toolbarItems.append(latexTestButton)
+            toolbarItems.append(settingsButton)
             toolbarItems.append(toolbarDivider())
             toolbarItems.append(statusCursorLabel)
             toolbarItems.append(statusEncodingLabel)
@@ -2041,6 +2059,16 @@ final class CodeEditorViewController: UIViewController {
     private func updateBreadcrumb() {
         guard let url = currentFileURL else {
             breadcrumbLabel.text = ""
+            breadcrumbLabel.isHidden = true
+            return
+        }
+        // iPhone: the editor header is already cramped with the file
+        // tab pill + language pill + AI Assist chip — the breadcrumb
+        // squeezes between langPill and aiAssistChip and truncates
+        // unrecoverably ("...nts / Workspace"). Hide it on compact
+        // width; the file tab pill itself shows the file name and
+        // the user can see the full path in the Files browser.
+        if isCompactWidth {
             breadcrumbLabel.isHidden = true
             return
         }
@@ -2785,6 +2813,21 @@ final class CodeEditorViewController: UIViewController {
         terminalTitleBar.addSubview(termPathPill)
         terminalTitleBar.addSubview(termCollapseChevron)
         terminalTitleBar.addSubview(rightControls)
+
+        // iPhone (compact width): hide the lower-priority metadata
+        // pieces that cause the title bar to overflow. Without this,
+        // the rightControls' "Stop" button sits visually on top of
+        // termSessionsLabel ("· 1 session" — the user reports this
+        // as "Stop button overlapping Session text"). Stack views
+        // collapse hidden subviews, so this actually frees layout
+        // space rather than just making them invisible.
+        if isCompactWidth {
+            termMetaLabel.isHidden = true        // "· zsh · 80×24"
+            termSessionsLabel.isHidden = true    // "· 1 session"
+            termPathPill.isHidden = true         // " ~ " pill — rarely useful on iPhone
+            terminalCopyButton.isHidden = true   // copy button → long-press terminal instead
+            terminalClearButton.isHidden = true  // clear → use `clear` command
+        }
 
         // Terminal output — SwiftTerm xterm emulator backed by the shared PTY.
         // Use SF Mono explicitly and a slightly larger default (14pt) since

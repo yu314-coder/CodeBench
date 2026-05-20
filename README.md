@@ -24,6 +24,20 @@ Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** —
 
 ---
 
+## Recent improvements
+
+- **Reliable inline preview for shell-launched python** — `python foo.py` from the integrated terminal now displays the resulting matplotlib/plotly chart in the preview pane the same way the Run button does. Previously flaky for several reasons, all fixed:
+  - PTY scanner missed `[plot saved] /…` / `[manim rendered] /…` markers prefixed with ANSI escape codes (CSI clear-line, prompt redraws). The `hasPrefix` check is now preceded by `stripAnsiEscapes` and also handles the `[manim rendered]` marker.
+  - `WKWebView.loadFileURL(allowingReadAccessTo:)` flaked on macOS Catalyst — the access grant to the sandboxed `WebContent` process raced the actual load (`WebProcessProxy::hasAssumedReadAccessToURL: no access`). The HTML branch of `showImageOutput` now reads the file (up to 20 MB) and uses `loadHTMLString(html, baseURL: parentDir)`, sidestepping the sandbox grant entirely.
+  - A blank-HTML preload meant to drop a previous manim video DOM was causing back-to-back async loads for HTML→HTML transitions; the blank's cancellation (`NSURLErrorCancelled -999`) intermittently propagated into the chart load. Skipped when the next content is also HTML — the new HTML replaces the DOM atomically.
+  - The dir-watcher's `DispatchSource.makeFileSystemObjectSource(.write)` fires on inode create (file size 0) but doesn't re-fire on subsequent content writes into an existing entry. Heavy plotly HTML can take 60–80 s to serialize on iOS Python. A new `pollForChartCompletion` polls every 0.5 s for up to 120 s once a too-small file is seen, then routes through `tryShowChart` when `size ≥ 4 KB`.
+  - `flush=True` added to the embedded `_offlinai_*_show` print sites so the marker line definitely reaches the PTY.
+  - Diagnostic `NSLog` lines added across the chain: filter Xcode console on `[chart-watch]` to trace dir-event → poll → load.
+
+- **Inherited from [python-ios-lib](https://github.com/yu314-coder/python-ios-lib)**: matplotlib shim no longer crashes user scripts on chained attribute access (`ax.xaxis.line.set_color(...)` etc.), and full plotly styling — titles, axis ranges, backgrounds — now applies correctly (was being silently aborted by a `__figure__` sentinel leak). See [python-ios-lib's recent changes](https://github.com/yu314-coder/python-ios-lib#recent-app-side-changes).
+
+---
+
 ## What CodeBench adds
 
 | Capability | How |

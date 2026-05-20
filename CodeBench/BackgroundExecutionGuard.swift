@@ -119,6 +119,15 @@ final class BackgroundExecutionGuard {
         // finishes — so users only see it if the run actually
         // outlives the foreground session.
         scheduleBackgroundReminderLocked(title: title, subtitle: subtitle)
+        // Submit a BGProcessingTaskRequest so iOS gives us another
+        // 10-minute slot AFTER the silent-audio + beginBackgroundTask
+        // combination eventually runs out (or if iOS reclaims the
+        // audio session). One-shot scheduled work — when it fires
+        // AppDelegate.handleBackgroundTask will re-acquire this
+        // guard so the Python computation keeps running. Without
+        // this submit, when iOS finally suspends the app there's
+        // no continuation slot and the script dies at suspension.
+        AppDelegate.scheduleNextBackgroundTask(kind: "render")
         NSLog("[BGGuard] start title=%@ subtitle=%@  state: depth=%d sessionActive=%d engineRunning=%d bgTask=%lu  appState=%d",
               title, subtitle, depth,
               sessionActive ? 1 : 0,

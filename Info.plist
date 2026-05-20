@@ -436,6 +436,26 @@
     <true/>
     <key>UIBackgroundModes</key>
     <array>
+        <!-- "audio": required for BackgroundExecutionGuard's silent-
+             audio trick to actually grant indefinite background time.
+             Without this entitlement, the AVAudioSession activates
+             and the engine plays the silent buffer — but iOS still
+             suspends the app within ~3 min (it's the entitlement that
+             flags the process as audio-active, not the running
+             engine alone). With this entry the same code keeps the
+             process alive while audio is playing, which is forever
+             for our zero-amplitude looped buffer.
+             App Store note: Apple's review guidelines (2.5.4) allow
+             "audio" mode only for apps that genuinely play audio.
+             For pure compute-keep-alive use, Apple may reject — be
+             prepared to defend the use case (matplotlib renders,
+             on-device LLM inference, manim Scene.render) and/or
+             remove this entry before App Store submission. TestFlight
+             + dev installs are unaffected. -->
+        <string>audio</string>
+        <!-- "processing": required for BGTaskScheduler-based long-
+             running renders (manim, scipy) that get scheduled to
+             continue after iOS reclaims the foreground. -->
         <string>processing</string>
     </array>
     <!-- Required when UIBackgroundModes contains "processing": Apple

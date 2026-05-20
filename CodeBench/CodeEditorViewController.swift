@@ -6188,6 +6188,23 @@ except Exception:
         }
     }
 
+    /// True if ``path`` lives under ``~/Documents/ToolOutputs/`` —
+    /// the canonical directory where matplotlib's ``_show_hook`` /
+    /// plotly's patched ``Figure.show`` / manim renders write their
+    /// output files. Used to gate the iPhone auto-present sheet so
+    /// it ONLY fires for actual script-produced charts, not for the
+    /// many other ``showImageOutput`` callers (editor HTML preview,
+    /// file-save refresh, asset→index.html dev-server shim, etc.).
+    private func isChartOutputPath(_ path: String) -> Bool {
+        guard let documents = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        let toolOutputs = documents.appendingPathComponent("ToolOutputs").path
+        let resolved = (path as NSString).standardizingPath
+        return resolved.hasPrefix(toolOutputs)
+    }
+
     /// iPhone-only: present (or update in place) a half-sheet modal
     /// showing the chart at ``path``. Called from ``showImageOutput``
     /// on compact width because the inline outputPanel is hidden
@@ -7108,13 +7125,20 @@ except Exception:
             return
         }
 
-        // iPhone (compact width): the inline outputPanel is hidden
-        // (it'd take the whole screen). Also surface the chart as a
-        // half-sheet so the user can actually see it. Dedupes by
-        // path — no re-present if the sheet is already showing this
-        // same file (avoids flicker when dir-watch + PTY scanner
-        // both fire for the same chart).
-        if isCompactWidth {
+        // iPhone (compact width): surface the chart as a half-sheet
+        // because the inline outputPanel is hidden. BUT only auto-
+        // present for actual chart renders — not for the many other
+        // ``showImageOutput`` callers (HTML file open, file-save
+        // refresh, asset → index.html dev-server shim, restored
+        // ``currentOutputPath`` on launch, etc.). Otherwise the
+        // sheet pops up uninvited every time the user just opens
+        // an HTML file in the editor and they have to dismiss it.
+        //
+        // Chart files written by sitecustomize.py / PythonRuntime
+        // .swift's _show_hook variants land in ToolOutputs/. User
+        // HTML lives elsewhere in the workspace. The path-prefix
+        // check separates the two cleanly.
+        if isCompactWidth, isChartOutputPath(path) {
             presentOrUpdatePreviewSheet(path: path)
         }
 
@@ -8036,13 +8060,45 @@ fileprivate final class PreviewSheetViewController: UIViewController {
     /// Reload the sheet's WebView with a new chart file. Called by
     /// ``CodeEditorViewController.presentOrUpdatePreviewSheet`` when
     /// a new chart arrives while the sheet is already presented.
+    /// Falls back to a visible diagnostic HTML page if the file is
+    /// missing / empty / unreadable — previously the WebView's dark
+    /// background just showed through making the sheet look "broken
+    /// — only a black thing".
     func load(path: String) {
         currentPath = path
         pathLabel.text = (path as NSString).lastPathComponent
-        guard FileManager.default.fileExists(atPath: path) else { return }
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            NSLog("[preview-sheet] file does not exist: %@", path)
+            webView.loadHTMLString(_diagHTML(
+                title: "File not found",
+                detail: "The preview file no longer exists:\n\(path)"),
+                baseURL: nil)
+            return
+        }
+
         let url = URL(fileURLWithPath: path)
         let ext = url.pathExtension.lowercased()
         let parentDir = url.deletingLastPathComponent()
+        let fileSize = (try? FileManager.default
+            .attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+
+        // Empty / nearly-empty file — shows what's happening rather
+        // than letting the WebView's dark background fool the user
+        // into thinking the sheet is broken.
+        if fileSize < 64 {
+            NSLog("[preview-sheet] file is too small (%d bytes): %@",
+                  fileSize, path)
+            webView.loadHTMLString(_diagHTML(
+                title: "Waiting for content",
+                detail: "The file is still being written (\(fileSize) bytes). " +
+                        "If the script is still running, this will update " +
+                        "once the file is complete. If the script has " +
+                        "finished, it may have failed before writing the " +
+                        "full output."),
+                baseURL: nil)
+            return
+        }
 
         if ext == "html" || ext == "htm" {
             // Mirror CodeEditorViewController.showImageOutput — read
@@ -8051,12 +8107,14 @@ fileprivate final class PreviewSheetViewController: UIViewController {
             // macOS Catalyst. Fall back to loadFileURL if the file
             // is huge (>20 MB) — String(contentsOf:) would copy the
             // whole thing into memory.
-            let fileSize = (try? FileManager.default
-                .attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
+            if fileSize < 20 * 1024 * 1024,
                let html = try? String(contentsOf: url, encoding: .utf8) {
+                NSLog("[preview-sheet] loading HTML (%d bytes): %@",
+                      fileSize, path)
                 webView.loadHTMLString(html, baseURL: parentDir)
             } else {
+                NSLog("[preview-sheet] loadFileURL fallback (%d bytes): %@",
+                      fileSize, path)
                 webView.loadFileURL(url, allowingReadAccessTo: parentDir)
             }
         } else if ["png", "jpg", "jpeg", "gif", "webp"].contains(ext) {
@@ -8072,10 +8130,43 @@ fileprivate final class PreviewSheetViewController: UIViewController {
             webView.loadHTMLString(html, baseURL: parentDir)
         } else if ext == "pdf" {
             webView.loadFileURL(url, allowingReadAccessTo: parentDir)
+        } else {
+            NSLog("[preview-sheet] unsupported extension: %@", ext)
+            webView.loadHTMLString(_diagHTML(
+                title: "Unsupported preview format",
+                detail: "This sheet shows HTML / PNG / JPG / GIF / WebP / " +
+                        "PDF. The file extension '.\(ext)' isn't one of " +
+                        "those — open the file from the file browser " +
+                        "instead."),
+                baseURL: nil)
         }
-        // Video / other formats: caller should fall back to the inline
-        // outputPanel (which on compact stays hidden — that's fine,
-        // video preview from iPhone shell isn't a current use case).
+    }
+
+    /// Diagnostic HTML page used when the requested file can't be
+    /// rendered — empty file, missing file, unsupported format.
+    /// Light text on the sheet's dark background so the user knows
+    /// the sheet is alive (not "stuck on black").
+    private func _diagHTML(title: String, detail: String) -> String {
+        let safeDetail = detail
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        return """
+        <!DOCTYPE html><html><head>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>
+          html,body{margin:0;background:#0a0a0f;color:#cdd6f4;
+            font:14px -apple-system,system-ui,sans-serif;height:100%}
+          body{display:flex;flex-direction:column;align-items:center;
+            justify-content:center;padding:32px;text-align:center;
+            -webkit-user-select:text;user-select:text}
+          h1{color:#89b4fa;font-size:18px;font-weight:600;margin:0 0 12px}
+          p{color:#a6adc8;line-height:1.5;max-width:340px;
+            font-size:13px;margin:0;white-space:pre-wrap;
+            font-family:-apple-system,system-ui,sans-serif}
+        </style></head>
+        <body><h1>\(title)</h1><p>\(safeDetail)</p></body></html>
+        """
     }
 
     @objc private func closeTapped() {

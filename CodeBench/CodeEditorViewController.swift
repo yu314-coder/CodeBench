@@ -43,6 +43,7 @@ final class CodeEditorViewController: UIViewController {
         case cpp = 2
         case fortran = 3
         case latex = 4
+        case swift = 5
 
         var title: String {
             switch self {
@@ -51,6 +52,7 @@ final class CodeEditorViewController: UIViewController {
             case .cpp: return "C++"
             case .fortran: return "Fortran"
             case .latex: return "LaTeX"
+            case .swift: return "Swift"
             }
         }
 
@@ -62,6 +64,7 @@ final class CodeEditorViewController: UIViewController {
             case .cpp: return "cpp"
             case .fortran: return "fortran" // Tokenizer is registered by editor.js
             case .latex: return "latex"     // Monaco has builtin latex tokenizer
+            case .swift: return "swift"     // Monaco has builtin swift tokenizer
             }
         }
 
@@ -77,6 +80,8 @@ final class CodeEditorViewController: UIViewController {
                 return "program hello\n    implicit none\n    integer :: i\n    real :: pi\n    pi = 4.0 * atan(1.0)\n    print *, \"Hello, World!\"\n    print *, \"pi =\", pi\n    do i = 1, 5\n        print *, \"i =\", i, \"i^2 =\", i*i\n    end do\nend program hello\n"
             case .latex:
                 return "\\documentclass{article}\n\\usepackage{amsmath, amssymb}\n\n\\title{Hello, \\LaTeX{}}\n\\author{CodeBench}\n\n\\begin{document}\n\\maketitle\n\nThis is a sample LaTeX document.\n\n\\section{Math}\n\\begin{equation}\n  e^{i\\pi} + 1 = 0\n\\end{equation}\n\n\\end{document}\n"
+            case .swift:
+                return "// Swift playground (tree-walking interpreter — no JIT)\nimport Foundation\n\nfunc greet(_ name: String) -> String {\n    return \"Hello, \\(name)!\"\n}\n\nprint(greet(\"World\"))\n\nlet nums = [1, 2, 3, 4, 5]\nlet squares = nums.map { $0 * $0 }\nprint(\"squares = \\(squares)\")\n\nlet total = nums.reduce(0) { $0 + $1 }\nprint(\"sum = \\(total)\")\n"
             }
         }
     }
@@ -293,6 +298,29 @@ final class CodeEditorViewController: UIViewController {
         "function", "end function", "module", "end module",
     ]
 
+    // Swift keywords recognised by the in-house tree-walking interpreter
+    // (SwiftInterpreter.swift). Limited to tier-2 surface: declarations,
+    // control flow, optionals. We intentionally omit symbols the runtime
+    // cannot evaluate (e.g. `actor`, `async`, `throws`) so autocomplete
+    // doesn't suggest constructs that will fail at run-time.
+    private static let swiftKeywords: Set<String> = [
+        "let", "var", "func", "return", "if", "else", "guard", "while", "repeat",
+        "for", "in", "switch", "case", "default", "break", "continue", "do",
+        "true", "false", "nil", "self", "where", "as", "is",
+        "Int", "Double", "String", "Bool", "Array", "Dictionary", "Optional",
+        "Void", "Any", "AnyObject",
+    ]
+
+    private static let swiftBuiltins: [String] = [
+        "print", "abs", "min", "max", "sqrt", "pow",
+        "Int", "Double", "String", "Bool",
+        ".count", ".isEmpty", ".append", ".first", ".last", ".map", ".filter",
+        ".reduce", ".sorted", ".reversed", ".contains", ".removeLast", ".removeFirst",
+        ".uppercased", ".lowercased", ".hasPrefix", ".hasSuffix", ".split", ".trimmed",
+        ".keys", ".values",
+        "if let", "guard let", "?? ", "func main()",
+    ]
+
     // MARK: - Properties
 
     private var currentLanguage: Language = .python
@@ -310,10 +338,14 @@ final class CodeEditorViewController: UIViewController {
 
     // Toolbar
     private let toolbar = UIView()
-    private let languageControl = UISegmentedControl(items: ["Python", "C", "C++", "Fortran"])  // hidden, kept for internal state
+    private let languageControl = UISegmentedControl(items: ["Python", "C", "C++", "Fortran", "LaTeX", "Swift"])  // hidden, kept for internal state — indices must match Language enum raw values
     private let runButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
     private let openFileButton = UIButton(type: .system)
+    /// Toolbar toggle for the embedded file panel — folder icon that
+    /// collapses (width → 0) or expands (width → 220pt) the files
+    /// browser pinned to the left of the editor.
+    private let filesToggleButton = UIButton(type: .system)
     private let templatesButton = UIButton(type: .system)  // unused but kept for compile compat
     private let aiToggleButton = UIButton(type: .system)
     private let latexTestButton = UIButton(type: .system)
@@ -322,8 +354,51 @@ final class CodeEditorViewController: UIViewController {
 
     // Editor
     private let editorContainer = UIView()
+    // Files panel mounted inside the editor's leftPanel (replaces the
+    // file browser that used to live in the app sidebar). Collapsible
+    // via the toolbar's folder icon — width 220pt when shown, 0 when
+    // hidden. The FilesBrowserViewController child still owns its own
+    // navigation state.
+    private let editorFilesPanel = UIView()
+    private var editorFilesWidthConstraint: NSLayoutConstraint!
+    private var editorFilesPanelVisible: Bool = true
+    /// The child FilesBrowserViewController hosted inside editorFilesPanel.
+    /// Different instance from `GameViewController.filesBrowserController`
+    /// (which is now nil after the sidebar slim-down).
+    private weak var editorFilesBrowserController: FilesBrowserViewController?
     private let editorHeaderBar = UIView()
     private let editorFileNameLabel = UILabel()
+    // Faint path breadcrumb on the right side of the editor header.
+    // Reads as "Workspace / parent / src" — a quiet locator hint.
+    // Added during the Claude Design merge to balance the header bar
+    // (file pill on the leading edge was previously paired with empty
+    // space on the trailing edge).
+    private let breadcrumbLabel = UILabel()
+    // Tasteful "AI Assist" chip sitting on the header's trailing edge.
+    // Violet capsule + plus icon — invites the user into the in-app
+    // AI chat without competing visually with Run.
+    private let aiAssistChip = UIButton(type: .system)
+    // Always-on RAM sparkline pinned between the breadcrumb and the
+    // AI Assist chip. Polls phys_footprint vs jetsam limit every
+    // 1.5s; tap to bring up the breakdown sheet. Same widget Game-
+    // ViewController uses on the chat home screen.
+    private let editorMemoryGraph = MemoryGraphView()
+    // Per-language SF Symbol icon for the active file tab. Swapped on
+    // load (see iconSymbol(for:)) so a .swift file gets the Swift mark,
+    // .py gets a chevron-bracket icon, etc.
+    private let fileIconView = UIImageView()
+    // Small filled circle that appears to the right of the filename
+    // when the buffer has unsaved changes — the familiar "modified"
+    // indicator from VS Code / Xcode. Updated via updateModifiedDot().
+    private let modifiedDot = UIView()
+    // Language pill on the right of the header. Shows the current
+    // Language.title in a colour-tinted capsule (no toggle, just an
+    // unambiguous label so the tab itself doesn't have to spell it out).
+    private let langPill = UILabel()
+    // 1.5pt accent bar pinned to the TOP edge of the file pill. Makes
+    // the pill look like an active editor tab — same visual idiom as
+    // VS Code's active-tab indicator. Recolored when the language changes.
+    private let tabTopAccent = UIView()
 
     /// VS Code–style thin status bar pinned to the bottom of the
     /// editor pane. Shows file name, detected language, cursor
@@ -373,6 +448,22 @@ final class CodeEditorViewController: UIViewController {
 
     // Output panel (right side)
     private let outputPanel = UIView()
+    // Output panel header (matches editorHeaderBar's 36pt baseline).
+    // Roll-your-own pill toggle (per design CSS .ed-seg) instead of
+    // UISegmentedControl — the design wants inset indigo bg on active
+    // segments which UISegmentedControl can't replicate cleanly.
+    private let outputHeaderBar = UIView()
+    private let outputTitleLabel = UILabel()
+    private let outputTabsContainer = UIView()
+    private let outputTabConsole = UIButton(type: .system)
+    private let outputTabPreview = UIButton(type: .system)
+    private let outputTabPlots = UIButton(type: .system)
+    private var outputTabsSelectedIndex: Int = 0
+    // Play-circle + grid overlay + meta footer for the empty-state body.
+    private let outputPlaymark = UIView()
+    private let outputPlaymarkIcon = UIImageView()
+    private let outputMetaLabel = UILabel()
+    private weak var outputPlaceholderGridLayer: CALayer?
     private let outputWebView: WKWebView = {
         let config = WKWebViewConfiguration()
         // iOS 14+: per-navigation JS toggle on WKWebpagePreferences. The
@@ -452,6 +543,66 @@ final class CodeEditorViewController: UIViewController {
             })();
         """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         config.userContentController.addUserScript(viewportScript)
+        // Clipboard polyfill — WKWebView's `navigator.clipboard.writeText`
+        // silently no-ops in non-https contexts and inside iframes, which
+        // breaks every "Copy" button on pages loaded into the preview
+        // pane. Install a polyfill at document-start that routes
+        // writeText through a Swift message handler, which copies to
+        // UIPasteboard.general (the system clipboard). Also intercept
+        // `document.execCommand('copy')` for older pages — we read the
+        // current selection's text and forward it the same way. Pages
+        // that already have native clipboard access still work; we
+        // overwrite the global anyway so behaviour is deterministic.
+        let clipboardScript = WKUserScript(source: """
+            (function() {
+              function _send(text) {
+                try {
+                  window.webkit.messageHandlers.clipboard.postMessage(
+                    String(text == null ? '' : text));
+                } catch (e) {}
+              }
+              // navigator.clipboard.writeText shim — always resolves.
+              var clip = navigator.clipboard || {};
+              clip.writeText = function(text) {
+                _send(text);
+                return Promise.resolve();
+              };
+              // Provide a stub readText so feature-detection passes.
+              if (!clip.readText) {
+                clip.readText = function() { return Promise.resolve(''); };
+              }
+              try { navigator.clipboard = clip; } catch (e) {}
+              // Intercept document.execCommand('copy'/'cut') — read the
+              // current selection and forward it. Returns true so JS
+              // that branches on the result continues happily.
+              var _orig = document.execCommand
+                ? document.execCommand.bind(document) : null;
+              document.execCommand = function(cmd) {
+                if (cmd === 'copy' || cmd === 'cut') {
+                  var sel = window.getSelection
+                    ? String(window.getSelection()) : '';
+                  // Fallback: if there's no selection, look for a
+                  // focused <input>/<textarea> selection.
+                  if (!sel) {
+                    var el = document.activeElement;
+                    if (el && ('value' in el)) {
+                      var s = el.selectionStart, e = el.selectionEnd;
+                      if (typeof s === 'number' && typeof e === 'number'
+                          && s !== e) {
+                        sel = String(el.value).slice(s, e);
+                      } else {
+                        sel = String(el.value || '');
+                      }
+                    }
+                  }
+                  _send(sel);
+                  return true;
+                }
+                return _orig ? _orig.apply(document, arguments) : false;
+              };
+            })();
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        config.userContentController.addUserScript(clipboardScript)
         // Install the pywebview JS↔Python bridge: WKScriptMessageHandler
         // for "pywebview" messages plus the document-start bootstrap that
         // exposes window.pywebview.api as a Proxy. Pages that don't use
@@ -502,10 +653,13 @@ final class CodeEditorViewController: UIViewController {
     }()
     private let outputPlaceholderLabel: UILabel = {
         let l = UILabel()
-        l.text = "▶  Run code to see output"
-        l.textColor = UIColor(white: 0.30, alpha: 1)
+        // Design CSS .ed-empty: 13pt color #5e5e72. No leading ▶ glyph
+        // — the play-circle (outputPlaymark) sits to the left of this
+        // label instead, matching the mockup's .ed-playmark layout.
+        l.text = "Run code to see output"
+        l.textColor = UIColor(red: 0x5e/255.0, green: 0x5e/255.0, blue: 0x72/255.0, alpha: 1.0)
         l.font = .systemFont(ofSize: 13, weight: .medium)
-        l.textAlignment = .center
+        l.textAlignment = .left
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }()
@@ -518,6 +672,15 @@ final class CodeEditorViewController: UIViewController {
     private let terminalStatusLabel = UILabel()
     private let terminalSpinner = UIActivityIndicatorView(style: .medium)
     private let terminalClearButton = UIButton(type: .system)
+    // Claude Design slim-strip terminal title components. Replace the
+    // legacy Mac-Terminal traffic lights + centered title with a single
+    // 26pt informational row: [● dot] interpreter-lab · zsh · 80×24 · 1 session  …  [path] [⌄]
+    private let termWorkspaceDot       = UIView()
+    private let termWorkspaceNameLabel = UILabel()
+    private let termMetaLabel          = UILabel()
+    private let termSessionsLabel      = UILabel()
+    private let termPathPill           = UILabel()
+    private let termCollapseChevron    = UIButton(type: .system)
     /// Real xterm emulator from the SwiftTerm SPM package. Python's
     /// stdin/stdout/stderr are dup2'd onto a PTY (via PTYBridge.setupIfNeeded)
     /// so every print, every rich.Console, every pip progress bar shows
@@ -590,6 +753,17 @@ final class CodeEditorViewController: UIViewController {
     private let topStack = UIStackView()
     private let mainStack = UIStackView()
     private var outputPanelWidthConstraint: NSLayoutConstraint!
+    /// Invisible 6pt-wide grab handle overlapping the editor↔output
+    /// divider. User can pan it to resize the output panel; on iPad
+    /// the system cursor turns into a horizontal-resize chevron when
+    /// hovering over it.
+    private let outputDragHandle = UIView()
+    /// Width pin captured at the start of a drag so each delta is
+    /// computed against the panel's pre-drag size, not the moving
+    /// target.
+    private var outputPanelDragStartWidth: CGFloat = 521
+    /// UserDefaults key for the persisted custom output-panel width.
+    private static let kOutputPanelWidthKey = "CodeBench.outputPanelWidth"
 
     // MARK: - Lifecycle
 
@@ -869,6 +1043,8 @@ final class CodeEditorViewController: UIViewController {
             return Array(Self.cppKeywords) + Self.cppBuiltins
         case .fortran:
             return Array(Self.fortranKeywords) + Self.fortranBuiltins
+        case .swift:
+            return Array(Self.swiftKeywords) + Self.swiftBuiltins
         case .latex:
             // No autocomplete dictionary for LaTeX yet — Monaco's
             // built-in tokenizer handles syntax highlighting; symbol
@@ -1190,29 +1366,35 @@ final class CodeEditorViewController: UIViewController {
         languageControl.selectedSegmentIndex = 0
         languageControl.isHidden = true
 
-        var runConfig = UIButton.Configuration.filled()
+        // Run button — emerald GRADIENT capsule per the Claude Design
+        // source (styles/editor.css → .ed-btn.run). Specifics ported
+        // 1:1 from the design CSS so the on-device look matches the
+        // mockup the user reviewed:
+        //   background  linear-gradient(180deg, #3ee0a8 0%, #22c08a 100%)
+        //   color       #052016 (dark forest green, NOT white)
+        //   shadow      0 0 0 1px rgba(52,211,153,0.18) (outline)
+        //              + 0 6px 16px -4px rgba(52,211,153,0.35) (drop)
+        //              + 0 1px 0 rgba(255,255,255,0.35) inset (highlight)
+        var runConfig = UIButton.Configuration.plain()
         runConfig.image = UIImage(systemName: "play.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold))
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))
         var runTitleAttr = AttributeContainer()
-        runTitleAttr.font = UIFont.systemFont(ofSize: 14, weight: .semibold).rounded
+        runTitleAttr.font = UIFont.systemFont(ofSize: 13, weight: .semibold).rounded
         runConfig.attributedTitle = AttributedString("Run", attributes: runTitleAttr)
-        runConfig.imagePadding = 7
-        runConfig.baseBackgroundColor = UIColor(red: 0.14, green: 0.78, blue: 0.45, alpha: 1.0)
-        runConfig.baseForegroundColor = .white
+        runConfig.imagePadding = 6
+        runConfig.baseForegroundColor = UIColor(red: 0x05/255.0, green: 0x20/255.0, blue: 0x16/255.0, alpha: 1.0)
         runConfig.cornerStyle = .capsule
-        runConfig.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 18)
+        runConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 14)
+        runConfig.background.backgroundColor = .clear
         runButton.configuration = runConfig
         runButton.addTarget(self, action: #selector(runTapped), for: .touchUpInside)
         runButton.translatesAutoresizingMaskIntoConstraints = false
-        // Subtle drop-shadow under Run so it floats above the toolbar
-        // bg without being heavy. Same idiom Apple uses for the
-        // "Done" button in iOS 17 navigation bars.
-        runButton.layer.shadowColor = UIColor(red: 0.14, green: 0.78, blue: 0.45, alpha: 1.0).cgColor
-        runButton.layer.shadowOpacity = 0.35
-        runButton.layer.shadowOffset = CGSize(width: 0, height: 2)
-        runButton.layer.shadowRadius = 6
-        // Pointer + haptic for trackpad / Magic Keyboard users.
         runButton.isPointerInteractionEnabled = true
+        // Apply the emerald gradient + triple shadow via layer hooks.
+        // CAGradientLayer is added in viewDidLayoutSubviews so we have
+        // a sized frame; do an initial pass here with a zero frame so
+        // the layer exists for hit-testing.
+        applyRunButtonStyle()
 
         // Secondary toolbar buttons share a consistent style:
         //   • Tinted (subtle filled background) instead of plain
@@ -1220,23 +1402,29 @@ final class CodeEditorViewController: UIViewController {
         //   • Same vertical inset → same height as Run
         // Plus pointer interaction for trackpad users.
         func styleSecondary(_ button: UIButton, title: String?, icon: String, color: UIColor) {
-            var cfg = UIButton.Configuration.tinted()
+            // Ghost-style: no background, just icon + label in a
+            // muted-but-readable tint. The Claude Design merge demoted
+            // these so Run pops as the only filled-capsule on the
+            // toolbar; previously every button competed for attention.
+            var cfg = UIButton.Configuration.plain()
             cfg.image = UIImage(systemName: icon,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
             if let t = title {
                 var attr = AttributeContainer()
-                attr.font = UIFont.systemFont(ofSize: 13, weight: .medium).rounded
+                attr.font = UIFont.systemFont(ofSize: 12, weight: .medium).rounded
                 cfg.attributedTitle = AttributedString(t, attributes: attr)
                 cfg.imagePadding = 5
             }
-            cfg.baseForegroundColor = color
-            cfg.baseBackgroundColor = color
+            // Demote saturation — the call-site colour is the *role*,
+            // not the on-screen tint. 78% opacity reads "muted ghost"
+            // rather than "tinted call-to-action".
+            cfg.baseForegroundColor = color.withAlphaComponent(0.78)
             cfg.cornerStyle = .capsule
             cfg.contentInsets = NSDirectionalEdgeInsets(
-                top: 10,
-                leading: title == nil ? 12 : 14,
-                bottom: 10,
-                trailing: title == nil ? 12 : 14)
+                top: 6,
+                leading: title == nil ? 8 : 10,
+                bottom: 6,
+                trailing: title == nil ? 8 : 10)
             button.configuration = cfg
             button.translatesAutoresizingMaskIntoConstraints = false
             button.isPointerInteractionEnabled = true
@@ -1246,6 +1434,28 @@ final class CodeEditorViewController: UIViewController {
         // overflow with five labeled buttons. Icons stay; the SF Symbol
         // is enough to read what each button does.
         let compact = isCompactWidth
+        // Files-panel toggle — collapses/expands the embedded file
+        // browser on the left of the editor. Uses `sidebar.left`
+        // (iOS 14+) for both states; the only state difference is
+        // the foreground colour — bright accent when panel is open,
+        // muted grey when collapsed. (`sidebar.left.fill` was added
+        // in iOS 18 and returns nil on the iOS 17 deployment target,
+        // which is why the button rendered as an empty black box
+        // before this fix.)
+        //
+        // Pinned with required compression resistance + minimum width
+        // so the toolbar never squeezes this button to invisibility
+        // when the editor pane narrows (AI chat opens, iPhone portrait,
+        // rotation).
+        styleSecondary(filesToggleButton,
+                       title: nil,
+                       icon: "sidebar.left",
+                       color: EditorTheme.accent)
+        filesToggleButton.addTarget(self, action: #selector(toggleEditorFilesPanel),
+                                    for: .touchUpInside)
+        filesToggleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
+        filesToggleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        filesToggleButton.setContentHuggingPriority(.required, for: .horizontal)
         styleSecondary(openFileButton, title: compact ? nil : "Open", icon: "folder.badge.plus",
                        color: EditorTheme.accent)
         openFileButton.addTarget(self, action: #selector(openFileTapped), for: .touchUpInside)
@@ -1291,19 +1501,114 @@ final class CodeEditorViewController: UIViewController {
         refreshPreloadButton(preloadButton)
         self.preloadToggleButton = preloadButton
 
-        let toolbarStack = UIStackView(arrangedSubviews: [runButton, openFileButton, clearButton, spacer, preloadButton, latexTestButton, settingsButton])
+        // Toolbar groups: [Run] · [file actions: Open · Clear] · spacer ·
+        // [right-side utilities: Preload · LaTeX · Manim] · [status tail:
+        // Ln Col · UTF-8 · ● Ready]. The Claude Design pass folded the
+        // legacy 22pt status strip into the toolbar tail so the editor
+        // body gets that vertical space back. Hairline dividers
+        // separate logical groups (Mail.app / Maps.app idiom).
+        // iPhone toolbar: drop the status tail (Ln · Col · UTF-8 · Ready)
+        // since the toolbar physically can't fit the secondaries +
+        // status info on a 390pt phone screen. Cursor info still
+        // updates the underlying labels — they just aren't mounted in
+        // the toolbar. On iPad we keep the full status tail.
+        // RAM sparkline — pinned in the toolbar between the spacer
+        // and the preload button so it sits in the right-hand status
+        // group. 140×26 matches the same widget on the home screen.
+        editorMemoryGraph.translatesAutoresizingMaskIntoConstraints = false
+        editorMemoryGraph.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        editorMemoryGraph.heightAnchor.constraint(equalToConstant: 26).isActive = true
+
+        var toolbarItems: [UIView] = [
+            runButton,
+            toolbarDivider(),
+            filesToggleButton, openFileButton, clearButton,
+            spacer,
+            editorMemoryGraph,
+            toolbarDivider(),
+            preloadButton,
+            toolbarDivider(),
+            latexTestButton, settingsButton,
+        ]
+        if !compact {
+            toolbarItems.append(toolbarDivider())
+            toolbarItems.append(statusCursorLabel)
+            toolbarItems.append(statusEncodingLabel)
+            toolbarItems.append(statusStateDot)
+            toolbarItems.append(statusStateLabel)
+        }
+        let toolbarStack = UIStackView(arrangedSubviews: toolbarItems)
         toolbarStack.axis = .horizontal
-        toolbarStack.spacing = 12
+        toolbarStack.spacing = 10
         toolbarStack.alignment = .center
         toolbarStack.translatesAutoresizingMaskIntoConstraints = false
+        // The status-tail labels should never grow / shrink against
+        // their content; keep them hugging tightly so the secondary
+        // buttons hug too and the spacer claims the slack.
+        statusCursorLabel.setContentHuggingPriority(.required, for: .horizontal)
+        statusEncodingLabel.setContentHuggingPriority(.required, for: .horizontal)
+        statusStateLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         toolbar.addSubview(toolbarStack)
         NSLayoutConstraint.activate([
-            toolbarStack.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 8),
+            toolbarStack.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 6),
             toolbarStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12),
             toolbarStack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -12),
-            toolbarStack.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -8)
+            toolbarStack.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -6)
         ])
+    }
+
+    /// One-time configuration of the status-tail labels (cursor /
+    /// encoding / state dot + label) that the Claude Design merge
+    /// moved from the bottom status bar into the toolbar's right side.
+    /// The labels are property-level UIViews so other code paths that
+    /// poke their `.text` (loadFile, monacoView.onCursorChanged,
+    /// updateEditorStatusState…) keep working without changes.
+    private func configureToolbarStatusTail() {
+        let monoFont = UIFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+
+        statusStateDot.backgroundColor = TerminalStatus.ready.color
+        statusStateDot.layer.cornerRadius = 3
+        statusStateDot.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            statusStateDot.widthAnchor.constraint(equalToConstant: 6),
+            statusStateDot.heightAnchor.constraint(equalToConstant: 6),
+        ])
+
+        statusStateLabel.font = monoFont
+        statusStateLabel.textColor = UIColor(white: 0.65, alpha: 1)
+        statusStateLabel.text = "Ready"
+        statusStateLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        statusCursorLabel.font = monoFont
+        statusCursorLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        statusCursorLabel.text = "Ln 1, Col 1"
+        statusCursorLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        statusEncodingLabel.font = monoFont
+        statusEncodingLabel.textColor = UIColor(white: 0.45, alpha: 1)
+        statusEncodingLabel.text = "UTF-8"
+        statusEncodingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // The legacy status-bar property + buildEditorStatusBar() are
+        // still referenced from setupEditor-adjacent code paths (e.g.
+        // updateEditorStatusBar) — they continue to work because they
+        // only mutate .text on the same labels that now live in the
+        // toolbar. statusFileLabel and statusLanguageLabel stay
+        // unmounted (the editor header pill covers their info).
+    }
+
+    /// 0.5pt × 18pt vertical hairline separating toolbar groups.
+    /// Mirrors `separatorView()` in the status bar but tuned for the
+    /// toolbar's larger button height. UIStackView treats it like any
+    /// other arranged subview — no extra constraints needed.
+    private func toolbarDivider() -> UIView {
+        let v = UIView()
+        v.backgroundColor = UIColor(white: 0.28, alpha: 1)
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.widthAnchor.constraint(equalToConstant: 0.5).isActive = true
+        v.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        return v
     }
 
     // MARK: - Setup Editor
@@ -1314,37 +1619,80 @@ final class CodeEditorViewController: UIViewController {
         editorContainer.layer.cornerRadius = 0
         editorContainer.clipsToBounds = true
 
-        // ── Editor header: VS Code/ManimStudio–style tab bar ──
+        // ── Editor header: VS Code-style tab bar ──
+        //
+        // Layout, left → right:
+        //   [active tab pill]            [language pill]   [AI toggle (hidden)]
+        //
+        // The active tab pill is a single-file tab today (no multi-file
+        // tabbing yet — the file browser handles file switching). The
+        // pill itself carries an SF Symbol icon (per-language), the
+        // filename, a modified-state dot, and a top accent bar so it
+        // reads as the active tab. A bottom hairline separates the
+        // header bar from Monaco below.
         editorHeaderBar.translatesAutoresizingMaskIntoConstraints = false
         editorHeaderBar.backgroundColor = EditorTheme.gutterBg
-        // bottom border (subtle accent glow)
         let headerBorder = UIView()
         headerBorder.translatesAutoresizingMaskIntoConstraints = false
         headerBorder.backgroundColor = EditorTheme.borderSub
         editorHeaderBar.addSubview(headerBorder)
 
-        // File tab pill: violet code icon + filename
+        // File tab pill: SF Symbol icon + filename + modified dot.
         let fileTabPill = UIView()
         fileTabPill.translatesAutoresizingMaskIntoConstraints = false
-        fileTabPill.backgroundColor = EditorTheme.background
-        fileTabPill.layer.cornerRadius = 6
+        // Design CSS .ed-tab specifies bg #1a1a24 (slightly lighter than
+        // the pane bg), border --border-soft (rgba 255,255,255,0.06),
+        // radius 8. The top accent sits 1pt ABOVE the pill so clipping
+        // is intentionally off; the rounded corners still apply because
+        // we use a layer cornerRadius.
+        fileTabPill.backgroundColor = UIColor(red: 0x1a/255.0, green: 0x1a/255.0, blue: 0x24/255.0, alpha: 1.0)
+        fileTabPill.layer.cornerRadius = 8
         fileTabPill.layer.cornerCurve = .continuous
-        fileTabPill.layer.borderColor = EditorTheme.borderSub.cgColor
+        fileTabPill.layer.borderColor = UIColor.white.withAlphaComponent(0.06).cgColor
         fileTabPill.layer.borderWidth = 1
+        fileTabPill.clipsToBounds = false
 
-        let fileIconLabel = UILabel()
-        fileIconLabel.translatesAutoresizingMaskIntoConstraints = false
-        fileIconLabel.text = "</>"
-        fileIconLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
-        fileIconLabel.textColor = EditorTheme.accentViolet
+        // Top accent bar — 1.5pt strip pinned to the pill's top edge.
+        tabTopAccent.translatesAutoresizingMaskIntoConstraints = false
+        tabTopAccent.backgroundColor = EditorTheme.accentViolet
+        fileTabPill.addSubview(tabTopAccent)
+
+        fileIconView.translatesAutoresizingMaskIntoConstraints = false
+        fileIconView.contentMode = .scaleAspectFit
+        fileIconView.tintColor = EditorTheme.accentViolet
+        fileIconView.image = UIImage(
+            systemName: "chevron.left.forward.slash.chevron.right",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
 
         editorFileNameLabel.translatesAutoresizingMaskIntoConstraints = false
         editorFileNameLabel.text = "main.py"
         editorFileNameLabel.font = .systemFont(ofSize: 12, weight: .medium)
         editorFileNameLabel.textColor = EditorTheme.foreground
+        editorFileNameLabel.lineBreakMode = .byTruncatingMiddle
+        editorFileNameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        fileTabPill.addSubview(fileIconLabel)
+        // Modified-state dot — hidden when the buffer matches disk.
+        modifiedDot.translatesAutoresizingMaskIntoConstraints = false
+        modifiedDot.backgroundColor = EditorTheme.string  // amber — same as Xcode
+        modifiedDot.layer.cornerRadius = 3
+        modifiedDot.isHidden = true
+
+        fileTabPill.addSubview(fileIconView)
         fileTabPill.addSubview(editorFileNameLabel)
+        fileTabPill.addSubview(modifiedDot)
+
+        // Right-side language pill — capsule showing current language.
+        langPill.translatesAutoresizingMaskIntoConstraints = false
+        langPill.text = "  Python  "
+        langPill.font = .systemFont(ofSize: 10, weight: .semibold)
+        langPill.textColor = EditorTheme.accent
+        langPill.textAlignment = .center
+        langPill.backgroundColor = EditorTheme.accent.withAlphaComponent(0.12)
+        langPill.layer.cornerRadius = 5
+        langPill.layer.cornerCurve = .continuous
+        langPill.layer.borderColor = EditorTheme.accent.withAlphaComponent(0.30).cgColor
+        langPill.layer.borderWidth = 0.5
+        langPill.clipsToBounds = true
 
         // AI Assist toggle — HIDDEN. The inline chat panel is deprecated
         // in favour of the `ai` shell command which offers a much richer
@@ -1371,7 +1719,38 @@ final class CodeEditorViewController: UIViewController {
         aiToggleButton.isUserInteractionEnabled = false
         applyAIToggleStyle()
 
+        // Right-side header content — breadcrumb + AI Assist chip.
+        // Defers to lineBreakMode .byTruncatingHead so a deep path
+        // (`.../workspaces/some-long-name/sub/sub/file.py`) elides
+        // from the left, keeping the file's parent dir visible.
+        breadcrumbLabel.translatesAutoresizingMaskIntoConstraints = false
+        breadcrumbLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        breadcrumbLabel.textColor = UIColor(white: 0.42, alpha: 1)
+        breadcrumbLabel.lineBreakMode = .byTruncatingHead
+        breadcrumbLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        aiAssistChip.translatesAutoresizingMaskIntoConstraints = false
+        var aiCfg = UIButton.Configuration.plain()
+        aiCfg.image = UIImage(systemName: "plus",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))
+        var aiAttr = AttributeContainer()
+        aiAttr.font = UIFont.systemFont(ofSize: 10, weight: .semibold).rounded
+        aiCfg.attributedTitle = AttributedString("AI Assist", attributes: aiAttr)
+        aiCfg.imagePadding = 4
+        aiCfg.baseForegroundColor = EditorTheme.accentViolet
+        aiCfg.cornerStyle = .capsule
+        aiCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 10)
+        aiCfg.background.backgroundColor = EditorTheme.accentViolet.withAlphaComponent(0.12)
+        aiCfg.background.strokeColor = EditorTheme.accentViolet.withAlphaComponent(0.30)
+        aiCfg.background.strokeWidth = 0.5
+        aiAssistChip.configuration = aiCfg
+        aiAssistChip.isPointerInteractionEnabled = true
+        aiAssistChip.addTarget(self, action: #selector(toggleAIChat), for: .touchUpInside)
+
         editorHeaderBar.addSubview(fileTabPill)
+        editorHeaderBar.addSubview(langPill)
+        editorHeaderBar.addSubview(breadcrumbLabel)
+        editorHeaderBar.addSubview(aiAssistChip)
         editorHeaderBar.addSubview(aiToggleButton)
 
         // Monaco editor
@@ -1383,6 +1762,8 @@ final class CodeEditorViewController: UIViewController {
             // edits live only in Monaco's WebView buffer and vanish
             // on app relaunch ("I edit a.tex and re-open it, it's 0B").
             self?.scheduleAutoSave(text: text)
+            // Toggle the modified-state dot in the tab header.
+            self?.updateModifiedDot(currentText: text)
         }
         // Live cursor position → status bar
         monacoView.onCursorChanged = { [weak self] line, col in
@@ -1391,21 +1772,19 @@ final class CodeEditorViewController: UIViewController {
 
         editorContainer.addSubview(editorHeaderBar)
         editorContainer.addSubview(monacoView)
-        buildEditorStatusBar()
-        editorContainer.addSubview(editorStatusBar)
+        // The legacy 22pt status strip below Monaco is gone — its state
+        // dot, cursor pos, and encoding labels now live in the toolbar
+        // tail (see configureToolbarStatusTail) so the editor pane
+        // gains 22pt of code height back. The status-bar property and
+        // its update-poking call sites are kept so unrelated code still
+        // compiles; the labels are just no longer mounted.
+        configureToolbarStatusTail()
 
         NSLayoutConstraint.activate([
             editorHeaderBar.topAnchor.constraint(equalTo: editorContainer.topAnchor),
             editorHeaderBar.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             editorHeaderBar.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            editorHeaderBar.heightAnchor.constraint(equalToConstant: 34),
-
-            // Bottom status bar — pinned to the editorContainer bottom,
-            // monacoView's bottom is rerouted to its top below.
-            editorStatusBar.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
-            editorStatusBar.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            editorStatusBar.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
-            editorStatusBar.heightAnchor.constraint(equalToConstant: 22),
+            editorHeaderBar.heightAnchor.constraint(equalToConstant: 36),
 
             headerBorder.bottomAnchor.constraint(equalTo: editorHeaderBar.bottomAnchor),
             headerBorder.leadingAnchor.constraint(equalTo: editorHeaderBar.leadingAnchor),
@@ -1414,24 +1793,73 @@ final class CodeEditorViewController: UIViewController {
 
             fileTabPill.leadingAnchor.constraint(equalTo: editorHeaderBar.leadingAnchor, constant: 10),
             fileTabPill.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
-            fileTabPill.heightAnchor.constraint(equalToConstant: 24),
+            fileTabPill.heightAnchor.constraint(equalToConstant: 26),
+            fileTabPill.trailingAnchor.constraint(lessThanOrEqualTo: langPill.leadingAnchor, constant: -8),
 
-            fileIconLabel.leadingAnchor.constraint(equalTo: fileTabPill.leadingAnchor, constant: 8),
-            fileIconLabel.centerYAnchor.constraint(equalTo: fileTabPill.centerYAnchor),
+            // Top accent bar — INSET 8pt from each side and sitting
+            // 1pt above the pill's top edge (per design CSS:
+            // `.ed-tab::before { left:8px; right:8px; top:-1px }`).
+            // Height 1.5pt, glow added in applyLanguageTabStyle.
+            tabTopAccent.topAnchor.constraint(equalTo: fileTabPill.topAnchor, constant: -1),
+            tabTopAccent.leadingAnchor.constraint(equalTo: fileTabPill.leadingAnchor, constant: 8),
+            tabTopAccent.trailingAnchor.constraint(equalTo: fileTabPill.trailingAnchor, constant: -8),
+            tabTopAccent.heightAnchor.constraint(equalToConstant: 1.5),
 
-            editorFileNameLabel.leadingAnchor.constraint(equalTo: fileIconLabel.trailingAnchor, constant: 6),
-            editorFileNameLabel.trailingAnchor.constraint(equalTo: fileTabPill.trailingAnchor, constant: -8),
+            fileIconView.leadingAnchor.constraint(equalTo: fileTabPill.leadingAnchor, constant: 9),
+            fileIconView.centerYAnchor.constraint(equalTo: fileTabPill.centerYAnchor),
+            fileIconView.widthAnchor.constraint(equalToConstant: 14),
+            fileIconView.heightAnchor.constraint(equalToConstant: 14),
+
+            editorFileNameLabel.leadingAnchor.constraint(equalTo: fileIconView.trailingAnchor, constant: 7),
             editorFileNameLabel.centerYAnchor.constraint(equalTo: fileTabPill.centerYAnchor),
+
+            modifiedDot.leadingAnchor.constraint(equalTo: editorFileNameLabel.trailingAnchor, constant: 6),
+            modifiedDot.trailingAnchor.constraint(equalTo: fileTabPill.trailingAnchor, constant: -9),
+            modifiedDot.centerYAnchor.constraint(equalTo: fileTabPill.centerYAnchor),
+            modifiedDot.widthAnchor.constraint(equalToConstant: 6),
+            modifiedDot.heightAnchor.constraint(equalToConstant: 6),
+
+            // Language pill — sits immediately to the right of the file
+            // tab pill (Xcode-style). The right side of the header is
+            // now occupied by the breadcrumb + AI Assist chip per the
+            // Claude Design merge, so the header is balanced.
+            langPill.leadingAnchor.constraint(equalTo: fileTabPill.trailingAnchor, constant: 8),
+            langPill.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
+            langPill.heightAnchor.constraint(equalToConstant: 18),
+            langPill.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+
+            // AI Assist chip — trailing edge, violet capsule.
+            aiAssistChip.trailingAnchor.constraint(equalTo: editorHeaderBar.trailingAnchor, constant: -12),
+            aiAssistChip.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
+            aiAssistChip.heightAnchor.constraint(equalToConstant: 22),
+
+            // Breadcrumb — sits between langPill and the AI Assist chip.
+            breadcrumbLabel.leadingAnchor.constraint(greaterThanOrEqualTo: langPill.trailingAnchor, constant: 12),
+            breadcrumbLabel.trailingAnchor.constraint(equalTo: aiAssistChip.leadingAnchor, constant: -10),
+            breadcrumbLabel.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
 
             aiToggleButton.trailingAnchor.constraint(equalTo: editorHeaderBar.trailingAnchor, constant: -10),
             aiToggleButton.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
             aiToggleButton.heightAnchor.constraint(equalToConstant: 26),
+            // Hidden AI toggle — zero-width so it doesn't claim layout
+            // space. Kept in the hierarchy because removeFromSuperview
+            // would break the trailing/centerY/height constraints above
+            // ("no common ancestor"), and other code still pokes its
+            // isHidden / tappable state.
+            aiToggleButton.widthAnchor.constraint(equalToConstant: 0),
 
             monacoView.topAnchor.constraint(equalTo: editorHeaderBar.bottomAnchor),
             monacoView.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
             monacoView.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            monacoView.bottomAnchor.constraint(equalTo: editorStatusBar.topAnchor),
+            monacoView.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
         ])
+
+        // Initial tab styling — currentLanguage defaults to .python in
+        // the property declaration, so this paints the Python icon and
+        // pill colour on first show. Subsequent calls (loadFile,
+        // insertCode, languageChanged) re-paint when the language flips.
+        applyLanguageTabStyle()
+        updateBreadcrumb()
     }
 
     // MARK: - Editor Status Bar
@@ -1451,6 +1879,11 @@ final class CodeEditorViewController: UIViewController {
             topBorder.heightAnchor.constraint(equalToConstant: 0.5),
         ])
 
+        // Status bar is intentionally minimal — the editor header
+        // already shows filename + language + modified state, so the
+        // bottom strip focuses on transient session info: run state
+        // (left), cursor position + encoding (right). Removing the
+        // duplicates cuts the visual noise the user flagged as messy.
         let monoFont = UIFont.monospacedSystemFont(ofSize: 10, weight: .medium)
 
         // ── State dot — colored circle reflecting "ready" / "running"
@@ -1473,26 +1906,6 @@ final class CodeEditorViewController: UIViewController {
         stateGroup.axis = .horizontal; stateGroup.spacing = 6; stateGroup.alignment = .center
         stateGroup.translatesAutoresizingMaskIntoConstraints = false
 
-        // ── File name — left side, with a small file icon prefix
-        let fileIcon = UIImageView(image: UIImage(systemName: "doc.text",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .medium)))
-        fileIcon.tintColor = EditorTheme.accentViolet
-        fileIcon.translatesAutoresizingMaskIntoConstraints = false
-
-        statusFileLabel.font = monoFont
-        statusFileLabel.textColor = UIColor(white: 0.85, alpha: 1)
-        statusFileLabel.text = "main.py"
-        statusFileLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let fileGroup = UIStackView(arrangedSubviews: [fileIcon, statusFileLabel])
-        fileGroup.axis = .horizontal; fileGroup.spacing = 5; fileGroup.alignment = .center
-        fileGroup.translatesAutoresizingMaskIntoConstraints = false
-
-        // ── Language pill
-        statusLanguageLabel.font = monoFont
-        statusLanguageLabel.textColor = EditorTheme.accent
-        statusLanguageLabel.text = "Python"
-
         // ── Cursor position
         statusCursorLabel.font = monoFont
         statusCursorLabel.textColor = UIColor(white: 0.55, alpha: 1)
@@ -1503,24 +1916,23 @@ final class CodeEditorViewController: UIViewController {
         statusEncodingLabel.textColor = UIColor(white: 0.45, alpha: 1)
         statusEncodingLabel.text = "UTF-8"
 
-        // Layout: left = state · file, right = lang · cursor · encoding
-        let leftStack = UIStackView(arrangedSubviews: [stateGroup, separatorView(), fileGroup])
-        leftStack.axis = .horizontal; leftStack.spacing = 12; leftStack.alignment = .center
-        leftStack.translatesAutoresizingMaskIntoConstraints = false
+        // statusFileLabel and statusLanguageLabel are still allocated
+        // (the rest of the codebase pokes their .text in
+        // updateEditorStatusBar / load paths) but they're no longer
+        // mounted in the status bar — the header is the source of truth.
 
         let rightStack = UIStackView(arrangedSubviews: [
-            statusLanguageLabel, separatorView(),
             statusCursorLabel, separatorView(),
             statusEncodingLabel
         ])
         rightStack.axis = .horizontal; rightStack.spacing = 12; rightStack.alignment = .center
         rightStack.translatesAutoresizingMaskIntoConstraints = false
 
-        editorStatusBar.addSubview(leftStack)
+        editorStatusBar.addSubview(stateGroup)
         editorStatusBar.addSubview(rightStack)
         NSLayoutConstraint.activate([
-            leftStack.leadingAnchor.constraint(equalTo: editorStatusBar.leadingAnchor, constant: 12),
-            leftStack.centerYAnchor.constraint(equalTo: editorStatusBar.centerYAnchor),
+            stateGroup.leadingAnchor.constraint(equalTo: editorStatusBar.leadingAnchor, constant: 12),
+            stateGroup.centerYAnchor.constraint(equalTo: editorStatusBar.centerYAnchor),
 
             rightStack.trailingAnchor.constraint(equalTo: editorStatusBar.trailingAnchor, constant: -12),
             rightStack.centerYAnchor.constraint(equalTo: editorStatusBar.centerYAnchor),
@@ -1548,6 +1960,98 @@ final class CodeEditorViewController: UIViewController {
     private func updateEditorStatusState(_ state: TerminalStatus) {
         statusStateDot.backgroundColor = state.color
         statusStateLabel.text = state.title
+    }
+
+    // MARK: - Tab Styling
+
+    /// Re-apply the language-themed icon, accent colour, and right-side
+    /// pill to the editor's single tab. Called whenever currentLanguage
+    /// changes (loadFile, insertCode, the hidden segmented control, the
+    /// clear-after-delete path).
+    private func applyLanguageTabStyle() {
+        let (symbol, tint) = iconSymbolAndTint(for: currentLanguage)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        fileIconView.image = UIImage(systemName: symbol, withConfiguration: cfg)
+        fileIconView.tintColor = tint
+        // Top accent — language colour + 8pt glow shadow per design CSS
+        // (`box-shadow: 0 0 8px rgba(247,103,55,0.55)` for Swift).
+        tabTopAccent.backgroundColor = tint
+        tabTopAccent.layer.cornerRadius = 0.75
+        tabTopAccent.layer.shadowColor = tint.cgColor
+        tabTopAccent.layer.shadowOpacity = 0.55
+        tabTopAccent.layer.shadowOffset = .zero
+        tabTopAccent.layer.shadowRadius = 4
+        tabTopAccent.layer.masksToBounds = false
+        // Language pill on the right of the header — design CSS:
+        //   color    --swift   bg rgba(247,103,55,0.10)  border 0.28  font 10.5 mono 0.12em letter-spacing
+        // We use the variable-tint version per current language.
+        langPill.text = currentLanguage.title.uppercased()
+        langPill.font = .monospacedSystemFont(ofSize: 10.5, weight: .semibold)
+        langPill.textColor = tint
+        langPill.backgroundColor = tint.withAlphaComponent(0.10)
+        langPill.layer.cornerRadius = 5
+        langPill.layer.borderColor = tint.withAlphaComponent(0.28).cgColor
+        langPill.layer.borderWidth = 1
+    }
+
+    /// Per-language SF Symbol + colour. Falls back to a generic
+    /// code-bracket symbol for anything we haven't given an explicit
+    /// glyph yet (Monaco still highlights the buffer correctly — this
+    /// only changes the tab decoration).
+    private func iconSymbolAndTint(for lang: Language) -> (String, UIColor) {
+        switch lang {
+        case .python:
+            return ("chevron.left.forward.slash.chevron.right",
+                    UIColor(red: 0.20, green: 0.60, blue: 0.86, alpha: 1.0))   // py blue
+        case .c:
+            return ("c.square",
+                    UIColor(red: 0.34, green: 0.51, blue: 0.74, alpha: 1.0))   // C blue
+        case .cpp:
+            return ("c.circle",
+                    UIColor(red: 0.39, green: 0.36, blue: 0.79, alpha: 1.0))   // C++ violet
+        case .fortran:
+            return ("f.square",
+                    UIColor(red: 0.40, green: 0.66, blue: 0.34, alpha: 1.0))   // Fortran green
+        case .swift:
+            return ("swift",
+                    UIColor(red: 1.0,  green: 0.404, blue: 0.227, alpha: 1.0)) // #f76737
+        case .latex:
+            return ("function",
+                    UIColor(red: 0.00, green: 0.55, blue: 0.55, alpha: 1.0))   // TeX teal
+        }
+    }
+
+    /// Reveal / hide the modified-state dot in the tab header. Called
+    /// from Monaco's onTextChanged debounce. We compare against
+    /// lastSavedText because that's the authoritative "what's on disk"
+    /// reference — pendingSaveText is only valid mid-debounce.
+    private func updateModifiedDot(currentText: String) {
+        let dirty = currentText != lastSavedText
+        if modifiedDot.isHidden == dirty {
+            modifiedDot.isHidden = !dirty
+        }
+    }
+
+    /// Rebuild the path breadcrumb that sits on the editor header's
+    /// right side ("Workspace / interpreter-lab / src"). Shows up to
+    /// the last 3 path components of the file's parent directory; the
+    /// label's `.byTruncatingHead` mode elides the start if the path
+    /// is too long for the available space. Hidden when no file is
+    /// loaded so the empty-state header doesn't have a stray "/".
+    private func updateBreadcrumb() {
+        guard let url = currentFileURL else {
+            breadcrumbLabel.text = ""
+            breadcrumbLabel.isHidden = true
+            return
+        }
+        breadcrumbLabel.isHidden = false
+        let parentComponents = url.deletingLastPathComponent().pathComponents
+        // Strip the leading "/" component on absolute paths so the
+        // breadcrumb reads "workspaces / interpreter-lab / src" not
+        // "/ workspaces / interpreter-lab / src".
+        let useful = parentComponents.filter { $0 != "/" }
+        let tail = useful.suffix(3)
+        breadcrumbLabel.text = tail.joined(separator: " / ")
     }
 
     // MARK: - Setup AI Chat
@@ -1687,27 +2191,192 @@ final class CodeEditorViewController: UIViewController {
         outputPanel.backgroundColor = EditorTheme.background  // Same as editor, not pure black
         outputPanel.layer.cornerRadius = 0
         outputPanel.clipsToBounds = true
-        // Left border
+        // Leading splitter — design CSS .ed-splitter:
+        //   background    rgba(99,102,241,0.28)
+        //   box-shadow    0 0 12px rgba(99,102,241,0.18) (indigo glow)
+        // 1pt vertical with a soft halo so the editor + output read as
+        // a single surface bisected by the splitter, not two pasted blocks.
         let outBorder = UIView()
-        outBorder.backgroundColor = UIColor(white: 0.20, alpha: 0.6)
+        outBorder.backgroundColor = EditorTheme.accent.withAlphaComponent(0.28)
+        outBorder.layer.shadowColor = EditorTheme.accent.cgColor
+        outBorder.layer.shadowOpacity = 0.18
+        outBorder.layer.shadowOffset = .zero
+        outBorder.layer.shadowRadius = 6
+        outBorder.layer.masksToBounds = false
         outBorder.translatesAutoresizingMaskIntoConstraints = false
         outputPanel.addSubview(outBorder)
         NSLayoutConstraint.activate([
             outBorder.topAnchor.constraint(equalTo: outputPanel.topAnchor),
             outBorder.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor),
             outBorder.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor),
-            outBorder.widthAnchor.constraint(equalToConstant: 0.5),
+            outBorder.widthAnchor.constraint(equalToConstant: 1),
         ])
 
-        // Register JS→Swift message handlers for video controls
+        // Output panel header — matches editor header's 36pt baseline.
+        // Design CSS .ed-output-header:
+        //   bg     linear-gradient(180deg, #0e0e15 0%, var(--bg) 100%)
+        //   border bottom 1px var(--border-sub)
+        //   layout: [OUTPUT label] ……… [Console][Preview][Plots]
+        outputHeaderBar.translatesAutoresizingMaskIntoConstraints = false
+        outputHeaderBar.backgroundColor = .clear
+        let outputHeaderGradient = CAGradientLayer()
+        outputHeaderGradient.name = "cb.output.headerBg"
+        outputHeaderGradient.colors = [
+            UIColor(red: 0x0e/255.0, green: 0x0e/255.0, blue: 0x15/255.0, alpha: 1.0).cgColor,
+            EditorTheme.background.cgColor,
+        ]
+        outputHeaderGradient.startPoint = CGPoint(x: 0.5, y: 0)
+        outputHeaderGradient.endPoint = CGPoint(x: 0.5, y: 1)
+        outputHeaderBar.layer.insertSublayer(outputHeaderGradient, at: 0)
+
+        let outputHeaderBorder = UIView()
+        outputHeaderBorder.translatesAutoresizingMaskIntoConstraints = false
+        outputHeaderBorder.backgroundColor = EditorTheme.borderSub
+        outputHeaderBar.addSubview(outputHeaderBorder)
+
+        outputTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        outputTitleLabel.text = "OUTPUT"
+        outputTitleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        outputTitleLabel.textColor = UIColor(red: 0x7e/255.0, green: 0x7e/255.0, blue: 0x92/255.0, alpha: 1.0)
+        // CSS letter-spacing: 0.14em ≈ 1.5pt at 11pt font.
+        outputTitleLabel.attributedText = NSAttributedString(
+            string: "OUTPUT",
+            attributes: [.kern: 1.5,
+                         .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+                         .foregroundColor: UIColor(red: 0x7e/255.0, green: 0x7e/255.0, blue: 0x92/255.0, alpha: 1.0)])
+
+        // Custom pill toggle (matches design .ed-seg). Three child buttons,
+        // outer container chrome-2 bg + soft border + 7pt radius + 2pt
+        // padding. Active button: indigo-tint bg + 1pt inset indigo border.
+        outputTabsContainer.translatesAutoresizingMaskIntoConstraints = false
+        outputTabsContainer.backgroundColor = UIColor(red: 0x15/255.0, green: 0x15/255.0, blue: 0x1f/255.0, alpha: 1.0)
+        outputTabsContainer.layer.cornerRadius = 7
+        outputTabsContainer.layer.cornerCurve = .continuous
+        outputTabsContainer.layer.borderColor = UIColor.white.withAlphaComponent(0.06).cgColor
+        outputTabsContainer.layer.borderWidth = 1
+
+        func configureOutputTab(_ button: UIButton, _ title: String, tag: Int) {
+            var cfg = UIButton.Configuration.plain()
+            var attr = AttributeContainer()
+            attr.font = UIFont.systemFont(ofSize: 11, weight: .medium)
+            cfg.attributedTitle = AttributedString(title, attributes: attr)
+            cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9)
+            cfg.baseForegroundColor = UIColor(red: 0x8e/255.0, green: 0x8e/255.0, blue: 0xa2/255.0, alpha: 1.0)
+            button.configuration = cfg
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.tag = tag
+            button.layer.cornerRadius = 5
+            button.layer.cornerCurve = .continuous
+            button.layer.borderWidth = 1
+            button.layer.borderColor = UIColor.clear.cgColor
+            button.addTarget(self, action: #selector(outputTabTapped(_:)),
+                             for: .touchUpInside)
+        }
+        configureOutputTab(outputTabConsole, "Console", tag: 0)
+        configureOutputTab(outputTabPreview, "Preview", tag: 1)
+        configureOutputTab(outputTabPlots,   "Plots",   tag: 2)
+
+        let outputTabsRow = UIStackView(arrangedSubviews: [outputTabConsole, outputTabPreview, outputTabPlots])
+        outputTabsRow.translatesAutoresizingMaskIntoConstraints = false
+        outputTabsRow.axis = .horizontal
+        outputTabsRow.spacing = 2
+        outputTabsRow.alignment = .center
+        outputTabsContainer.addSubview(outputTabsRow)
+        NSLayoutConstraint.activate([
+            outputTabsRow.topAnchor.constraint(equalTo: outputTabsContainer.topAnchor, constant: 2),
+            outputTabsRow.bottomAnchor.constraint(equalTo: outputTabsContainer.bottomAnchor, constant: -2),
+            outputTabsRow.leadingAnchor.constraint(equalTo: outputTabsContainer.leadingAnchor, constant: 2),
+            outputTabsRow.trailingAnchor.constraint(equalTo: outputTabsContainer.trailingAnchor, constant: -2),
+            outputTabConsole.heightAnchor.constraint(equalToConstant: 20),
+            outputTabPreview.heightAnchor.constraint(equalToConstant: 20),
+            outputTabPlots.heightAnchor.constraint(equalToConstant: 20),
+        ])
+        applyOutputTabsSelection()
+
+        outputHeaderBar.addSubview(outputTitleLabel)
+        outputHeaderBar.addSubview(outputTabsContainer)
+        outputPanel.addSubview(outputHeaderBar)
+
+        // Reflow the gradient once the header has size; piggyback on the
+        // viewDidLayoutSubviews update path by storing a reference.
+        outputHeaderBar.layoutIfNeeded()
+
+        // Register JS→Swift message handlers for video controls + the
+        // clipboard bridge (copy buttons in the preview pane route
+        // through navigator.clipboard.writeText / execCommand('copy'),
+        // both polyfilled to post-message us; we write to UIPasteboard).
         outputWebView.configuration.userContentController.add(self, name: "saveVideo")
         outputWebView.configuration.userContentController.add(self, name: "shareVideo")
+        outputWebView.configuration.userContentController.add(self, name: "clipboard")
+
+        // Subtle indigo grid (32×32) behind the empty state. Design CSS:
+        //   linear-gradient(to right,  rgba(99,102,241,0.035) 1px, transparent 1px),
+        //   linear-gradient(to bottom, rgba(99,102,241,0.035) 1px, transparent 1px);
+        //   background-size: 32px 32px;
+        //   mask-image: radial-gradient(ellipse at center, black 35%, transparent 75%);
+        // CALayer + pattern image gives us the same effect.
+        let gridLayer = CALayer()
+        gridLayer.name = "cb.output.grid"
+        gridLayer.frame = outputPanel.bounds
+        if let pattern = Self.makeOutputGridPattern() {
+            gridLayer.backgroundColor = UIColor(patternImage: pattern).cgColor
+        }
+        // Radial mask — black @ 35%, transparent @ 75%. Use a CAGradientLayer
+        // as the mask (radial via .radial type, iOS 14+).
+        let mask = CAGradientLayer()
+        mask.type = .radial
+        mask.colors = [
+            UIColor.black.cgColor,
+            UIColor.black.cgColor,
+            UIColor.black.withAlphaComponent(0).cgColor,
+        ]
+        mask.locations = [0.0, 0.35, 0.75]
+        mask.startPoint = CGPoint(x: 0.5, y: 0.5)
+        mask.endPoint = CGPoint(x: 1.0, y: 1.0)
+        mask.frame = outputPanel.bounds
+        gridLayer.mask = mask
+        outputPanel.layer.insertSublayer(gridLayer, at: 0)
+        outputPlaceholderGridLayer = gridLayer
 
         outputPanel.addSubview(outputPlaceholderLabel)
         outputPanel.addSubview(outputWebView)
         outputPanel.addSubview(outputImageView)
         outputPanel.addSubview(outputPDFView)
         outputPanel.addSubview(outputExpandButton)
+
+        // Empty-state play-circle + bottom meta. Design CSS:
+        //   .ed-playmark  28×28 round, 1pt indigo (rgba 99,102,241,0.35) border,
+        //                 rgba(99,102,241,0.06) bg, indigo play icon
+        //   .ed-output-meta  bottom-left mono 10.5pt color #4a4a5c
+        outputPlaymark.translatesAutoresizingMaskIntoConstraints = false
+        outputPlaymark.layer.cornerRadius = 14
+        outputPlaymark.layer.cornerCurve = .continuous
+        outputPlaymark.layer.borderColor = EditorTheme.accent.withAlphaComponent(0.35).cgColor
+        outputPlaymark.layer.borderWidth = 1
+        outputPlaymark.backgroundColor = EditorTheme.accent.withAlphaComponent(0.06)
+
+        outputPlaymarkIcon.translatesAutoresizingMaskIntoConstraints = false
+        outputPlaymarkIcon.image = UIImage(systemName: "play.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        outputPlaymarkIcon.tintColor = EditorTheme.accent
+        outputPlaymark.addSubview(outputPlaymarkIcon)
+
+        outputPanel.addSubview(outputPlaymark)
+
+        outputMetaLabel.translatesAutoresizingMaskIntoConstraints = false
+        outputMetaLabel.numberOfLines = 0
+        outputMetaLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        // Match design — uppercase keys ("TARGET ▸ swift 5.10 · debug")
+        // in #6e6e84, body in #4a4a5c.
+        let metaKey = UIColor(red: 0x6e/255.0, green: 0x6e/255.0, blue: 0x84/255.0, alpha: 1.0)
+        let metaTxt = UIColor(red: 0x4a/255.0, green: 0x4a/255.0, blue: 0x5c/255.0, alpha: 1.0)
+        let metaMS = NSMutableAttributedString()
+        metaMS.append(NSAttributedString(string: "target", attributes: [.foregroundColor: metaKey]))
+        metaMS.append(NSAttributedString(string: " ▸ swift 5.10 · debug    ", attributes: [.foregroundColor: metaTxt]))
+        metaMS.append(NSAttributedString(string: "device", attributes: [.foregroundColor: metaKey]))
+        metaMS.append(NSAttributedString(string: " ▸ iPad simulator", attributes: [.foregroundColor: metaTxt]))
+        outputMetaLabel.attributedText = metaMS
+        outputPanel.addSubview(outputMetaLabel)
 
         // Initially hide everything except placeholder
         outputWebView.isHidden = true
@@ -1718,29 +2387,156 @@ final class CodeEditorViewController: UIViewController {
                                      for: .touchUpInside)
 
         NSLayoutConstraint.activate([
-            outputWebView.topAnchor.constraint(equalTo: outputPanel.topAnchor),
-            outputWebView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor),
+            // Output header bar — 36pt mirrors editorHeaderBar so the
+            // editor + output baselines line up across the splitter.
+            outputHeaderBar.topAnchor.constraint(equalTo: outputPanel.topAnchor),
+            outputHeaderBar.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 1),
+            outputHeaderBar.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor),
+            outputHeaderBar.heightAnchor.constraint(equalToConstant: 36),
+
+            outputHeaderBorder.leadingAnchor.constraint(equalTo: outputHeaderBar.leadingAnchor),
+            outputHeaderBorder.trailingAnchor.constraint(equalTo: outputHeaderBar.trailingAnchor),
+            outputHeaderBorder.bottomAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor),
+            outputHeaderBorder.heightAnchor.constraint(equalToConstant: 0.5),
+
+            outputTitleLabel.leadingAnchor.constraint(equalTo: outputHeaderBar.leadingAnchor, constant: 14),
+            outputTitleLabel.centerYAnchor.constraint(equalTo: outputHeaderBar.centerYAnchor),
+
+            outputTabsContainer.trailingAnchor.constraint(equalTo: outputHeaderBar.trailingAnchor, constant: -12),
+            outputTabsContainer.centerYAnchor.constraint(equalTo: outputHeaderBar.centerYAnchor),
+            outputTabsContainer.heightAnchor.constraint(equalToConstant: 24),
+
+            // Output body — anchored below the new header. All content
+            // surfaces (webview / image / PDF / placeholder) share this
+            // anchor so they slot into the right spot under the tabs.
+            outputWebView.topAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor),
+            outputWebView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 1),
             outputWebView.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor),
             outputWebView.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor),
 
-            outputImageView.topAnchor.constraint(equalTo: outputPanel.topAnchor, constant: 4),
-            outputImageView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 4),
+            outputImageView.topAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor, constant: 4),
+            outputImageView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 5),
             outputImageView.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor, constant: -4),
             outputImageView.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor, constant: -4),
 
-            outputPDFView.topAnchor.constraint(equalTo: outputPanel.topAnchor, constant: 4),
-            outputPDFView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 4),
+            outputPDFView.topAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor, constant: 4),
+            outputPDFView.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 5),
             outputPDFView.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor, constant: -4),
             outputPDFView.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor, constant: -4),
 
-            outputPlaceholderLabel.centerXAnchor.constraint(equalTo: outputPanel.centerXAnchor),
+            // Play-circle sits LEFT of the placeholder text, both
+            // co-centered on the panel (.ed-empty layout).
+            outputPlaymark.centerYAnchor.constraint(equalTo: outputPanel.centerYAnchor),
+            outputPlaymark.widthAnchor.constraint(equalToConstant: 28),
+            outputPlaymark.heightAnchor.constraint(equalToConstant: 28),
+            outputPlaymarkIcon.centerXAnchor.constraint(equalTo: outputPlaymark.centerXAnchor),
+            outputPlaymarkIcon.centerYAnchor.constraint(equalTo: outputPlaymark.centerYAnchor),
+            outputPlaymarkIcon.widthAnchor.constraint(equalToConstant: 10),
+            outputPlaymarkIcon.heightAnchor.constraint(equalToConstant: 10),
+
+            outputPlaceholderLabel.leadingAnchor.constraint(equalTo: outputPlaymark.trailingAnchor, constant: 10),
             outputPlaceholderLabel.centerYAnchor.constraint(equalTo: outputPanel.centerYAnchor),
 
-            outputExpandButton.topAnchor.constraint(equalTo: outputPanel.topAnchor, constant: 8),
+            // The play circle's centerX is laid out so the whole row
+            // (mark + label) is visually centered in the panel.
+            outputPlaymark.trailingAnchor.constraint(equalTo: outputPanel.centerXAnchor, constant: -4),
+
+            // Bottom-left runtime meta — matches design .ed-output-meta.
+            outputMetaLabel.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 14),
+            outputMetaLabel.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor, constant: -12),
+
+            outputExpandButton.topAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor, constant: 8),
             outputExpandButton.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor, constant: -8),
             outputExpandButton.widthAnchor.constraint(equalToConstant: 28),
             outputExpandButton.heightAnchor.constraint(equalToConstant: 28),
         ])
+    }
+
+    /// Generates a 32×32 indigo line-pattern image for the output panel
+    /// empty state. Matches `background-image: linear-gradient(to right
+    /// ...), linear-gradient(to bottom ...)` from design CSS — a 1pt
+    /// vertical line on the right edge + 1pt horizontal line on the
+    /// bottom edge, both at rgba(99,102,241,0.035).
+    private static func makeOutputGridPattern() -> UIImage? {
+        let size = CGSize(width: 32, height: 32)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { ctx in
+            let cg = ctx.cgContext
+            cg.setFillColor(UIColor.clear.cgColor)
+            cg.fill(CGRect(origin: .zero, size: size))
+            cg.setStrokeColor(UIColor(red: 0x63/255.0, green: 0x66/255.0, blue: 0xf1/255.0, alpha: 0.035).cgColor)
+            cg.setLineWidth(1)
+            // Right edge
+            cg.move(to: CGPoint(x: 31.5, y: 0))
+            cg.addLine(to: CGPoint(x: 31.5, y: 32))
+            // Bottom edge
+            cg.move(to: CGPoint(x: 0, y: 31.5))
+            cg.addLine(to: CGPoint(x: 32, y: 31.5))
+            cg.strokePath()
+        }
+    }
+
+    /// Output panel tab switcher. Today the tabs are visual chrome —
+    /// the runner still routes to whichever surface (webView / image /
+    /// PDF / placeholder) the run produced, regardless of which tab the
+    /// user picked. Wiring this to actual content switches is a follow-
+    /// up (Console = stdout log, Preview = webview, Plots = image grid).
+    @objc private func outputTabTapped(_ sender: UIButton) {
+        outputTabsSelectedIndex = sender.tag
+        applyOutputTabsSelection()
+    }
+
+    /// Collapse / expand the editor's embedded files panel. Animates
+    /// the width constant between 0 and 220pt and updates the toolbar
+    /// icon to reflect the current state.
+    @objc private func toggleEditorFilesPanel() {
+        editorFilesPanelVisible.toggle()
+        editorFilesWidthConstraint.constant = editorFilesPanelVisible ? 220 : 0
+        // Flip the icon tint to signal state: bright accent when the
+        // files panel is open, muted grey when collapsed. We keep the
+        // same `sidebar.left` SF Symbol for both states (no `.fill`
+        // variant exists on the iOS-17 deployment target).
+        if var cfg = filesToggleButton.configuration {
+            cfg.baseForegroundColor = editorFilesPanelVisible
+                ? EditorTheme.accent
+                : UIColor(white: 0.55, alpha: 1)
+            filesToggleButton.configuration = cfg
+        }
+        UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut]) {
+            self.editorFilesPanel.alpha = self.editorFilesPanelVisible ? 1 : 0
+            self.view.layoutIfNeeded()
+        }
+    }
+
+    /// Toggle the entire empty-state group (placeholder text + play
+    /// circle + grid overlay + bottom meta line) in lockstep. Called
+    /// in place of the legacy `outputPlaceholderLabel.isHidden = …`
+    /// since the Claude Design merge added sibling components that
+    /// should appear/disappear together.
+    private func setOutputEmptyStateHidden(_ hidden: Bool) {
+        outputPlaceholderLabel.isHidden = hidden
+        outputPlaymark.isHidden = hidden
+        outputMetaLabel.isHidden = hidden
+        outputPlaceholderGridLayer?.isHidden = hidden
+    }
+
+    /// Repaint the active pill in the output panel's tab toggle.
+    /// Active button gets indigo bg (rgba 99,102,241,0.16) + 1pt indigo
+    /// border (0.28 alpha) + color #c7c9ff. Inactive: transparent bg,
+    /// muted color #8e8ea2.
+    private func applyOutputTabsSelection() {
+        let activeBg     = EditorTheme.accent.withAlphaComponent(0.16)
+        let activeBorder = EditorTheme.accent.withAlphaComponent(0.28).cgColor
+        let activeFg     = UIColor(red: 0xc7/255.0, green: 0xc9/255.0, blue: 0xff/255.0, alpha: 1.0)
+        let mutedFg      = UIColor(red: 0x8e/255.0, green: 0x8e/255.0, blue: 0xa2/255.0, alpha: 1.0)
+        for (i, button) in [outputTabConsole, outputTabPreview, outputTabPlots].enumerated() {
+            let isOn = (i == outputTabsSelectedIndex)
+            button.backgroundColor = isOn ? activeBg : .clear
+            button.layer.borderColor = isOn ? activeBorder : UIColor.clear.cgColor
+            var cfg = button.configuration ?? UIButton.Configuration.plain()
+            cfg.baseForegroundColor = isOn ? activeFg : mutedFg
+            button.configuration = cfg
+        }
     }
 
     @objc private func presentFullscreenPreview() {
@@ -1769,9 +2565,12 @@ final class CodeEditorViewController: UIViewController {
         terminalDragHandle.backgroundColor = EditorTheme.gutterText.withAlphaComponent(0.3)
         terminalDragHandle.layer.cornerRadius = 2
 
-        // Title bar — Mac-style with FUNCTIONAL traffic lights + controls
+        // Title bar — Claude Design slim 22pt strip. Design CSS .ed-term-head:
+        //   bg     #0c0c13 (a touch darker than gutterBg so it reads as
+        //          a separator from the editor body above)
+        //   border bottom 1px rgba(255,255,255,0.03)
         terminalTitleBar.translatesAutoresizingMaskIntoConstraints = false
-        terminalTitleBar.backgroundColor = EditorTheme.gutterBg
+        terminalTitleBar.backgroundColor = UIColor(red: 0x0c/255.0, green: 0x0c/255.0, blue: 0x13/255.0, alpha: 1.0)
 
         // Functional traffic lights. Close hides the terminal pane entirely,
         // Minimize shrinks it to just the title bar, Maximize expands to
@@ -1903,18 +2702,89 @@ final class CodeEditorViewController: UIViewController {
         statusCluster.spacing = 5
         statusCluster.alignment = .center
 
-        // Simplified Mac-Terminal look: traffic lights (left), centered
-        // title showing the current process/cwd, and a small three-icon
-        // toolbar (interrupt, menu, font). The status cluster + full
-        // control row from before was too busy — real Terminal.app has
-        // none of that visible, just lights + title.
-        terminalTitleBar.addSubview(terminalDragHandle)
-        terminalTitleBar.addSubview(trafficLights)
-        terminalTitleBar.addSubview(terminalTitleLabel)
-        terminalTitleBar.addSubview(rightControls)
-        // statusCluster still exists for future use (e.g. pip progress),
-        // but no longer pinned into the bar. Keep it as a floating view.
+        // Claude Design slim-strip terminal title — replaces the
+        // Mac-Terminal "traffic lights + centered title" look. The new
+        // strip reads as one informational line:
+        //   [● workspace] [interpreter-lab] [· zsh · 80×24] [· 2 sessions] ... [~/src] [⌄]  [stop][copy][clear]
+        // The legacy traffic-light buttons (terminalTrafficMin/Max) and
+        // the giant terminalTitleLabel stay allocated so any other code
+        // that pokes them keeps compiling, but they're no longer mounted
+        // in the bar — the slim row owns the layout.
+        trafficLights.isHidden = true
+        terminalTitleLabel.isHidden = true
         statusCluster.isHidden = true
+
+        // Workspace swatch — design CSS .ed-ws .swatch:
+        //   8×8 with linear-gradient(135deg, var(--indigo), var(--violet))
+        //   border-radius 2 (square-with-soft-corners, NOT a round dot)
+        termWorkspaceDot.translatesAutoresizingMaskIntoConstraints = false
+        termWorkspaceDot.backgroundColor = .clear
+        termWorkspaceDot.layer.cornerRadius = 2
+        termWorkspaceDot.layer.cornerCurve = .continuous
+        let swatchGradient = CAGradientLayer()
+        swatchGradient.name = "cb.term.swatch"
+        swatchGradient.colors = [EditorTheme.accent.cgColor, EditorTheme.accentViolet.cgColor]
+        swatchGradient.startPoint = CGPoint(x: 0, y: 0)
+        swatchGradient.endPoint = CGPoint(x: 1, y: 1)
+        swatchGradient.cornerRadius = 2
+        swatchGradient.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
+        termWorkspaceDot.layer.insertSublayer(swatchGradient, at: 0)
+
+        termWorkspaceNameLabel.translatesAutoresizingMaskIntoConstraints = false
+        termWorkspaceNameLabel.text = "interpreter-lab"
+        termWorkspaceNameLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        termWorkspaceNameLabel.textColor = UIColor(white: 0.88, alpha: 1)
+
+        termMetaLabel.translatesAutoresizingMaskIntoConstraints = false
+        termMetaLabel.text = "· zsh · 80×24"
+        termMetaLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        termMetaLabel.textColor = UIColor(white: 0.52, alpha: 1)
+
+        termSessionsLabel.translatesAutoresizingMaskIntoConstraints = false
+        termSessionsLabel.text = "· 1 session"
+        termSessionsLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        termSessionsLabel.textColor = UIColor(white: 0.42, alpha: 1)
+
+        termPathPill.translatesAutoresizingMaskIntoConstraints = false
+        termPathPill.text = "  ~  "
+        termPathPill.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        termPathPill.textColor = EditorTheme.accent
+        termPathPill.backgroundColor = EditorTheme.accent.withAlphaComponent(0.10)
+        termPathPill.layer.cornerRadius = 4
+        termPathPill.layer.cornerCurve = .continuous
+        termPathPill.layer.borderColor = EditorTheme.accent.withAlphaComponent(0.25).cgColor
+        termPathPill.layer.borderWidth = 0.5
+        termPathPill.clipsToBounds = true
+
+        // Collapse chevron — functionally the same as the old yellow
+        // minimize traffic light, but as a quiet glyph in the strip.
+        var collapseCfg = UIButton.Configuration.plain()
+        collapseCfg.image = UIImage(systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        collapseCfg.baseForegroundColor = UIColor(white: 0.55, alpha: 1)
+        collapseCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+        termCollapseChevron.configuration = collapseCfg
+        termCollapseChevron.translatesAutoresizingMaskIntoConstraints = false
+        termCollapseChevron.addTarget(self, action: #selector(terminalMinimize), for: .touchUpInside)
+        termCollapseChevron.isPointerInteractionEnabled = true
+
+        // Left cluster — fixed-position metadata.
+        let leftSlim = UIStackView(arrangedSubviews: [
+            termWorkspaceDot,
+            termWorkspaceNameLabel,
+            termMetaLabel,
+            termSessionsLabel,
+        ])
+        leftSlim.translatesAutoresizingMaskIntoConstraints = false
+        leftSlim.axis = .horizontal
+        leftSlim.spacing = 6
+        leftSlim.alignment = .center
+
+        terminalTitleBar.addSubview(terminalDragHandle)
+        terminalTitleBar.addSubview(leftSlim)
+        terminalTitleBar.addSubview(termPathPill)
+        terminalTitleBar.addSubview(termCollapseChevron)
+        terminalTitleBar.addSubview(rightControls)
 
         // Terminal output — SwiftTerm xterm emulator backed by the shared PTY.
         // Use SF Mono explicitly and a slightly larger default (14pt) since
@@ -1958,6 +2828,12 @@ final class CodeEditorViewController: UIViewController {
                         offsetBy: self.terminalLogBuffer.count / 2)
                     self.terminalLogBuffer = String(self.terminalLogBuffer[cut...])
                 }
+                // Watch for "[plot saved] <path>" lines from scripts
+                // launched in the terminal (e.g. `python 3d.py`). The
+                // Run-button path reads __codebench_plot_path from
+                // Python globals; the terminal path doesn't, so we
+                // surface the chart by scanning stdout instead.
+                self.scanTerminalChunkForPlot(s)
             }
         }
         // Open the PTY master/slave pair eagerly, the moment the
@@ -1968,6 +2844,13 @@ final class CodeEditorViewController: UIViewController {
         // live file descriptor and keystrokes flow into Python's stdin
         // the instant the REPL thread starts reading.
         PTYBridge.shared.setupIfNeeded()
+        // Safety net for terminal-launched scripts: watch ToolOutputs/
+        // for new chart files. The PTY scanner catches the
+        // [plot saved] stdout line for most runs, but if the script
+        // dies right after print (no trailing newline reaches us, or
+        // stdout is buffered elsewhere) the dir-watch fallback still
+        // brings the chart into the preview WebView.
+        startToolOutputDirectoryWatcher()
         // Eagerly boot Python + start the REPL thread in the background
         // so that when the user types `ls` + Enter into the terminal
         // BEFORE tapping Run, there's a reader on the other side of
@@ -2067,29 +2950,39 @@ final class CodeEditorViewController: UIViewController {
             terminalTitleBar.topAnchor.constraint(equalTo: terminalContainer.topAnchor),
             terminalTitleBar.leadingAnchor.constraint(equalTo: terminalContainer.leadingAnchor),
             terminalTitleBar.trailingAnchor.constraint(equalTo: terminalContainer.trailingAnchor),
-            terminalTitleBar.heightAnchor.constraint(equalToConstant: 32),
+            terminalTitleBar.heightAnchor.constraint(equalToConstant: 22),
 
+            // Drag handle becomes a near-invisible 1pt strip at the top
+            // of the 22pt strip so the bar reads as a single slim line.
             terminalDragHandle.centerXAnchor.constraint(equalTo: terminalTitleBar.centerXAnchor),
-            terminalDragHandle.topAnchor.constraint(equalTo: terminalTitleBar.topAnchor, constant: 4),
+            terminalDragHandle.topAnchor.constraint(equalTo: terminalTitleBar.topAnchor),
             terminalDragHandle.widthAnchor.constraint(equalToConstant: 36),
-            terminalDragHandle.heightAnchor.constraint(equalToConstant: 3),
+            terminalDragHandle.heightAnchor.constraint(equalToConstant: 2),
 
-            trafficLights.leadingAnchor.constraint(equalTo: terminalTitleBar.leadingAnchor, constant: 12),
-            trafficLights.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
-
-            // Fixed-size status dot to keep its aspect when it does get shown
+            // Fixed-size legacy status dot — kept allocated for any code
+            // that pokes its color/visibility, but it's not in the bar.
             terminalStatusDot.widthAnchor.constraint(equalToConstant: 8),
             terminalStatusDot.heightAnchor.constraint(equalToConstant: 8),
 
-            // Center title — floats between traffic lights and right-side controls
-            terminalTitleLabel.centerXAnchor.constraint(equalTo: terminalTitleBar.centerXAnchor),
-            terminalTitleLabel.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
-            terminalTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: trafficLights.trailingAnchor, constant: 12),
-            terminalTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rightControls.leadingAnchor, constant: -12),
+            // ── Slim Claude Design strip ──
+            termWorkspaceDot.widthAnchor.constraint(equalToConstant: 7),
+            termWorkspaceDot.heightAnchor.constraint(equalToConstant: 7),
 
-            rightControls.trailingAnchor.constraint(equalTo: terminalTitleBar.trailingAnchor, constant: -4),
+            leftSlim.leadingAnchor.constraint(equalTo: terminalTitleBar.leadingAnchor, constant: 12),
+            leftSlim.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
+
+            termPathPill.trailingAnchor.constraint(equalTo: termCollapseChevron.leadingAnchor, constant: -8),
+            termPathPill.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
+            termPathPill.heightAnchor.constraint(equalToConstant: 16),
+
+            termCollapseChevron.trailingAnchor.constraint(equalTo: rightControls.leadingAnchor, constant: -4),
+            termCollapseChevron.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
+            termCollapseChevron.widthAnchor.constraint(equalToConstant: 26),
+            termCollapseChevron.heightAnchor.constraint(equalToConstant: 22),
+
+            rightControls.trailingAnchor.constraint(equalTo: terminalTitleBar.trailingAnchor, constant: -6),
             rightControls.centerYAnchor.constraint(equalTo: terminalTitleBar.centerYAnchor),
-            rightControls.heightAnchor.constraint(equalToConstant: 28),
+            rightControls.heightAnchor.constraint(equalToConstant: 22),
 
             // SwiftTerm fills the whole pane below the title bar — no
             // separate input row. Tap into it and the keyboard pops up;
@@ -2408,10 +3301,47 @@ except Exception:
         //   Right = output/preview panel
         //   Bottom = terminal (full width)
 
-        // Left panel: editor fills it, AI chat overlays the right edge
+        // Left panel layout (left → right):
+        //   [files panel 220pt] [editorContainer fills] [aiChatContainer 0pt by default]
+        // The files panel was previously mounted in the app's main
+        // sidebar. We moved it into the editor here so it travels with
+        // the editor pane (and the slim 64pt app sidebar stays slim).
         leftPanel.translatesAutoresizingMaskIntoConstraints = false
+        leftPanel.addSubview(editorFilesPanel)
         leftPanel.addSubview(editorContainer)
         leftPanel.addSubview(aiChatContainer)
+
+        // Files panel chrome — same `chrome bg` + 1pt indigo trailing
+        // splitter as the app sidebar, so it reads as a peer surface.
+        editorFilesPanel.translatesAutoresizingMaskIntoConstraints = false
+        editorFilesPanel.backgroundColor = UIColor(red: 0x12/255.0, green: 0x12/255.0, blue: 0x1a/255.0, alpha: 1.0)
+        editorFilesPanel.clipsToBounds = true
+        let filesPanelSplitter = UIView()
+        filesPanelSplitter.translatesAutoresizingMaskIntoConstraints = false
+        filesPanelSplitter.backgroundColor = UIColor(red: 0x63/255.0, green: 0x66/255.0, blue: 0xf1/255.0, alpha: 0.15)
+        editorFilesPanel.addSubview(filesPanelSplitter)
+
+        // Embed the FilesBrowserViewController as a child of self,
+        // pinned inside editorFilesPanel. Same delegate (self) so the
+        // existing didSelectCodeFile / didRequestLoadModel routing
+        // continues to drive loadFile() / model presentation.
+        let fb = FilesBrowserViewController()
+        fb.delegate = self
+        addChild(fb)
+        fb.view.translatesAutoresizingMaskIntoConstraints = false
+        editorFilesPanel.addSubview(fb.view)
+        fb.didMove(toParent: self)
+        editorFilesBrowserController = fb
+
+        // iPhone-friendly default: files panel collapsed at launch on
+        // compact width since 220pt eats most of a 390pt iPhone screen.
+        // User can still toggle it open via the toolbar's sidebar icon.
+        let startCollapsed = isCompactWidth
+        editorFilesPanelVisible = !startCollapsed
+        editorFilesWidthConstraint = editorFilesPanel.widthAnchor.constraint(
+            equalToConstant: startCollapsed ? 0 : 220)
+        editorFilesWidthConstraint.isActive = true
+        if startCollapsed { editorFilesPanel.alpha = 0 }
 
         // AI chat width: ~240pt fixed, overlays the right side of the editor
         // Start collapsed to match `isAIChatVisible = false` — user opens it
@@ -2420,9 +3350,24 @@ except Exception:
         aiChatContainer.alpha = 0
 
         NSLayoutConstraint.activate([
-            // Editor fills the full left panel (behind the chat overlay)
+            // Files panel — leading edge of the left panel.
+            editorFilesPanel.topAnchor.constraint(equalTo: leftPanel.topAnchor),
+            editorFilesPanel.leadingAnchor.constraint(equalTo: leftPanel.leadingAnchor),
+            editorFilesPanel.bottomAnchor.constraint(equalTo: leftPanel.bottomAnchor),
+
+            filesPanelSplitter.topAnchor.constraint(equalTo: editorFilesPanel.topAnchor),
+            filesPanelSplitter.trailingAnchor.constraint(equalTo: editorFilesPanel.trailingAnchor),
+            filesPanelSplitter.bottomAnchor.constraint(equalTo: editorFilesPanel.bottomAnchor),
+            filesPanelSplitter.widthAnchor.constraint(equalToConstant: 1),
+
+            fb.view.topAnchor.constraint(equalTo: editorFilesPanel.topAnchor),
+            fb.view.leadingAnchor.constraint(equalTo: editorFilesPanel.leadingAnchor),
+            fb.view.trailingAnchor.constraint(equalTo: filesPanelSplitter.leadingAnchor),
+            fb.view.bottomAnchor.constraint(equalTo: editorFilesPanel.bottomAnchor),
+
+            // Editor — starts where files panel ends.
             editorContainer.topAnchor.constraint(equalTo: leftPanel.topAnchor),
-            editorContainer.leadingAnchor.constraint(equalTo: leftPanel.leadingAnchor),
+            editorContainer.leadingAnchor.constraint(equalTo: editorFilesPanel.trailingAnchor),
             // Editor's right edge butts against the chat panel's left edge, so
             // the AI Assist button (which sits at the trailing end of the
             // editor header) stays visible & tappable when chat is open.
@@ -2436,16 +3381,47 @@ except Exception:
             aiChatWidthConstraint,
         ])
 
-        // 2-column: editor (with chat overlay) | output/preview
+        // 2-column: editor (with chat overlay) | output/preview.
+        // spacing=0 so the panels share an edge — the outputPanel's
+        // own 1pt leading border serves as the visible splitter
+        // (single line, not a hair + a gap).
         topStack.translatesAutoresizingMaskIntoConstraints = false
         topStack.axis = .horizontal
-        topStack.spacing = 2
+        topStack.spacing = 0
         topStack.distribution = .fill
         topStack.addArrangedSubview(leftPanel)
         topStack.addArrangedSubview(outputPanel)
 
-        outputPanelWidthConstraint = outputPanel.widthAnchor.constraint(equalTo: topStack.widthAnchor, multiplier: 0.40)
+        // Design CSS .ed-middle: `grid-template-columns: 1fr 521px` —
+        // the output column starts at 521pt but the user can now drag
+        // the editor↔output divider to widen/narrow the preview pane.
+        // The chosen width is persisted in UserDefaults so it survives
+        // relaunches. On iPhone (any orientation) we ZERO this so the
+        // editor takes the full width; the user reaches the output
+        // preview via the fullscreen-expand affordance instead. On
+        // iPad we keep 521pt but cap at 50% of total so split-view
+        // stays sane.
+        let compactOutput = isCompactWidth
+        let persisted = CGFloat(
+            UserDefaults.standard.double(forKey: Self.kOutputPanelWidthKey))
+        let initialWidth: CGFloat = {
+            if compactOutput { return 0 }
+            // 240pt is the smallest width that still shows a useful
+            // preview; below that the chart is more annoying than
+            // helpful. Cap at 900pt because anything larger means the
+            // editor pane is too small to type in.
+            if persisted >= 240, persisted <= 900 { return persisted }
+            return 521
+        }()
+        outputPanelWidthConstraint = outputPanel.widthAnchor.constraint(
+            equalToConstant: initialWidth)
+        outputPanelWidthConstraint.priority = .init(900)
         outputPanelWidthConstraint.isActive = true
+        if compactOutput { outputPanel.isHidden = true }
+        let outputMaxFraction = outputPanel.widthAnchor.constraint(
+            lessThanOrEqualTo: topStack.widthAnchor, multiplier: 0.5)
+        outputMaxFraction.priority = .required
+        outputMaxFraction.isActive = true
 
         // Main vertical stack: toolbar + topStack + terminal
         mainStack.translatesAutoresizingMaskIntoConstraints = false
@@ -2456,6 +3432,33 @@ except Exception:
         mainStack.addArrangedSubview(terminalContainer)
 
         view.addSubview(mainStack)
+
+        // Resize handle: invisible 10pt-wide strip overlapping the
+        // editor↔output edge. Must be installed AFTER the main stack
+        // is in the view hierarchy — its constraints reference
+        // ``outputPanel`` anchors, and the auto-layout engine refuses
+        // to activate cross-tree constraints (the panel is reachable
+        // via mainStack → topStack only once mainStack is a subview
+        // of ``view``).
+        if !compactOutput {
+            outputDragHandle.translatesAutoresizingMaskIntoConstraints = false
+            outputDragHandle.backgroundColor = .clear
+            view.addSubview(outputDragHandle)
+            NSLayoutConstraint.activate([
+                outputDragHandle.widthAnchor.constraint(equalToConstant: 10),
+                outputDragHandle.topAnchor.constraint(equalTo: outputPanel.topAnchor),
+                outputDragHandle.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor),
+                outputDragHandle.centerXAnchor.constraint(equalTo: outputPanel.leadingAnchor),
+            ])
+            let drag = UIPanGestureRecognizer(
+                target: self, action: #selector(handleOutputResize(_:)))
+            outputDragHandle.addGestureRecognizer(drag)
+            // iPad cursor: change to horizontal-resize chevron when
+            // hovering over the handle.
+            if #available(iOS 13.4, *) {
+                outputDragHandle.addInteraction(UIPointerInteraction(delegate: self))
+            }
+        }
 
         // Taller default: title bar (32) + textview + input bar (36). 200 gives
         // ~132 pt of visible scrollback on iPhone which is comfortable.
@@ -2468,7 +3471,7 @@ except Exception:
             mainStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             mainStack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            toolbar.heightAnchor.constraint(equalToConstant: 48),
+            toolbar.heightAnchor.constraint(equalToConstant: 42),
             terminalHeightConstraint,
         ])
     }
@@ -2507,7 +3510,10 @@ except Exception:
         pendingSaveText = nil
         lastSavedText = nil
         currentFileURL = nil
-        editorFileNameLabel.text = "</> (untitled)"
+        editorFileNameLabel.text = "(untitled)"
+        applyLanguageTabStyle()
+        modifiedDot.isHidden = true
+        updateBreadcrumb()
         UserDefaults.standard.removeObject(forKey: "editor.lastFilePath")
         publishCurrentEditorFile(nil)
         appendToTerminal("$ \(deleted.lastPathComponent) deleted — editor buffer kept, save target cleared.\n",
@@ -2569,6 +3575,7 @@ except Exception:
         // put; if they switched languages and the old code happens to
         // be invalid for the new one, that's their call.
         monacoView.setLanguage(currentLanguage.monacoName)
+        applyLanguageTabStyle()
     }
 
     @objc private func runTapped() {
@@ -2781,6 +3788,19 @@ except Exception:
                     hasError = true
                 }
 
+            case .swift:
+                // Pure-Swift tree-walking interpreter (App Store safe — no JIT).
+                // Covers tier-2 Swift: literals, control flow, functions,
+                // closures, optionals, arrays/dicts/tuples, ranges.
+                // See SwiftInterpreter.swift for full feature matrix.
+                let result = SwiftRuntime.shared.execute(code)
+                if result.success {
+                    output = result.output.isEmpty ? "(no output)" : result.output
+                } else {
+                    output = "Error: \(result.error ?? "unknown")\n\(result.output)"
+                    hasError = true
+                }
+
             case .latex:
                 // Drive the existing offlinai_latex.compile_doc() flow:
                 // write the editor's text to a .tex file, ask the
@@ -2809,7 +3829,23 @@ except Exception:
                 }
 
                 self.runButton.isEnabled = true
-                self.showImageOutput(path: resultImagePath)
+                // Mark this chart as the freshly-shown one so the
+                // dir-watch fallback doesn't immediately re-fire on
+                // the same file we just loaded via the Run button.
+                if let p = resultImagePath {
+                    self.lastShownChartPath = p
+                    self.lastShownChartTime = Date()
+                    self.showImageOutput(path: p)
+                }
+                // If the script produced NO chart path itself, leave the
+                // preview pane alone — it may already be showing content
+                // from a mid-script signal (pywebview's preview_request,
+                // a load_html(), a load_url()). Earlier behaviour called
+                // showImageOutput(nil) unconditionally, which hid the
+                // pywebview WKWebView and wiped its DOM with a blank
+                // HTML string — so `webview.create_window(...)` worked
+                // for ~100 ms then vanished the instant the script
+                // returned.
 
                 if didStream {
                     // Output was already streamed to terminal — only show errors & timing
@@ -2849,7 +3885,7 @@ except Exception:
         outputImageView.isHidden = true
         outputImageView.image = nil
         outputWebView.isHidden = true
-        outputPlaceholderLabel.isHidden = false
+        setOutputEmptyStateHidden(false)
 
         terminalHeightConstraint.constant = 200
         view.layoutIfNeeded()
@@ -3241,6 +4277,35 @@ except Exception:
         cfg.buttonSize = .small
         sender.configuration = cfg
         sender.isEnabled = false
+    }
+
+    // MARK: - Output Panel Resize
+    //
+    // Pan the editor↔output divider to widen / narrow the preview
+    // pane. The width is clamped so neither side disappears entirely
+    // and persisted in UserDefaults so the next launch starts at the
+    // user's preferred size.
+
+    @objc private func handleOutputResize(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            outputPanelDragStartWidth = outputPanelWidthConstraint.constant
+        case .changed:
+            let translation = gesture.translation(in: view)
+            // Right edge of editor is the LEFT edge of output panel.
+            // Drag handle moves left → output gets WIDER (negative tx),
+            // drag right → output gets NARROWER (positive tx).
+            let proposed = outputPanelDragStartWidth - translation.x
+            let maxWidth = max(240, topStack.bounds.width - 320)  // keep ≥320pt for the editor
+            let clamped = max(240, min(proposed, maxWidth))
+            outputPanelWidthConstraint.constant = clamped
+        case .ended, .cancelled:
+            UserDefaults.standard.set(
+                Double(outputPanelWidthConstraint.constant),
+                forKey: Self.kOutputPanelWidthKey)
+        default:
+            break
+        }
     }
 
     // MARK: - Terminal Resize
@@ -3709,6 +4774,68 @@ except Exception:
             didEmitInitialBanner = true
             setTerminalInitialBanner()
         }
+        // Resize the Run button's emerald gradient + output grid
+        // overlay frames each time the parent bounds change.
+        if let layers = runButton.layer.sublayers {
+            for l in layers where l.name == "cb.run.gradient" {
+                l.frame = runButton.bounds
+            }
+        }
+        if let layers = outputPlaceholderGridLayer?.superlayer?.sublayers {
+            for l in layers where l.name == "cb.output.grid" {
+                l.frame = l.superlayer?.bounds ?? .zero
+            }
+        }
+    }
+
+    /// Apply the emerald gradient + triple shadow to the Run button.
+    /// Idempotent — running it multiple times only refreshes the
+    /// existing gradient sublayer rather than stacking new ones.
+    private func applyRunButtonStyle() {
+        let top    = UIColor(red: 0x3e/255.0, green: 0xe0/255.0, blue: 0xa8/255.0, alpha: 1.0)
+        let bottom = UIColor(red: 0x22/255.0, green: 0xc0/255.0, blue: 0x8a/255.0, alpha: 1.0)
+        let layerName = "cb.run.gradient"
+        let existing = runButton.layer.sublayers?.first(where: { $0.name == layerName })
+            as? CAGradientLayer
+        let gradient = existing ?? CAGradientLayer()
+        gradient.name = layerName
+        gradient.colors = [top.cgColor, bottom.cgColor]
+        gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        gradient.cornerRadius = 14   // capsule on 28pt height
+        gradient.cornerCurve = .continuous
+        if existing == nil {
+            runButton.layer.insertSublayer(gradient, at: 0)
+        }
+        // Triple shadow per the design CSS (.ed-btn.run): outline ring,
+        // drop shadow, and a 1pt inner top-highlight (the inset white
+        // line). UIKit doesn't natively do inset shadows; the inset
+        // highlight is faked with a thin top-aligned sublayer.
+        runButton.layer.shadowColor = UIColor(red: 0x34/255.0, green: 0xd3/255.0, blue: 0x99/255.0, alpha: 1.0).cgColor
+        runButton.layer.shadowOpacity = 0.35
+        runButton.layer.shadowOffset = CGSize(width: 0, height: 6)
+        runButton.layer.shadowRadius = 8
+        runButton.layer.masksToBounds = false
+    }
+
+    /// Re-apply iPhone-friendly defaults on size-class transitions:
+    /// • compact (iPhone, slim Slide Over) → files panel + output panel collapsed
+    /// • regular (iPad, Split View) → restore both at design widths
+    /// This is what keeps the editor usable when the user rotates,
+    /// resizes the Slide Over slot, or hands the file off to an iPhone.
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard traitCollection.horizontalSizeClass != previousTraitCollection?.horizontalSizeClass
+        else { return }
+        let compact = isCompactWidth
+        editorFilesPanelVisible = !compact
+        editorFilesWidthConstraint?.constant = compact ? 0 : 220
+        editorFilesPanel.alpha = compact ? 0 : 1
+        outputPanelWidthConstraint?.constant = compact ? 0 : 521
+        outputPanel.isHidden = compact
+        UIView.animate(withDuration: 0.2) {
+            self.view.layoutIfNeeded()
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -3768,16 +4895,8 @@ except Exception:
     // interrupts it via PTYBridge's 0x03 handler.
     override var keyCommands: [UIKeyCommand]? {
         let base = super.keyCommands ?? []
-        // Set up the Konami code reward exactly once. ↑↑↓↓←→←→ B A
-        // unlocks the Developer Panel sheet — useful while building
-        // out features and a fun easter egg for users who notice.
-        KonamiTracker.shared.onSuccess = { [weak self] in
-            guard let self else { return }
-            let vc = DeveloperPanelViewController()
-            let nav = UINavigationController(rootViewController: vc)
-            nav.modalPresentationStyle = .pageSheet
-            self.present(nav, animated: true)
-        }
+        // KonamiTracker was removed — Developer Panel is reachable
+        // by other paths if reintroduced.
 
         // ⌘/ — show the keyboard-shortcuts sheet from anywhere.
         // Always available (not gated on terminal first-responder).
@@ -3823,18 +4942,25 @@ except Exception:
     }
 
     // ─── Secret features wiring ──────────────────────────────────
-    // All four editor-side secrets are installed here:
-    //   • 7-tap on Run button     → toggle PerformanceHUD
-    //   • 10× rapid Stop tap      → "I give up" defeated toast
-    //   • 3-finger swipe-down     → cycle SecretTheme on terminal
-    //   • Long-press terminal bar → retro amber CRT mode
+    // Surviving editor-side secrets (the rest were pruned per user
+    // request; Hidden Games moved to a tap on the BC badge in the
+    // app sidebar):
+    //   • 7-tap on Run button → toggle PerformanceHUD
+    //   • 10× rapid Stop tap  → "I give up" defeated toast
+    //   • Long-press Stop 1 s → force-kill escalation
+    //
+    // Removed:
+    //   • 3-finger swipe-DOWN theme cycler
+    //   • 3-finger swipe-UP Hidden Games launcher
+    //   • Long-press 3 s terminal title bar (retro amber CRT)
+    //   • December snowfall
+    //   • Konami code (up-up-down-down) → Developer panel
+    //   The Konami forwarding from pressesBegan is gone with it.
 
     private var stopRapidCount = 0
     private var stopRapidResetWork: DispatchWorkItem?
     private var runHudCount = 0
     private var runHudResetWork: DispatchWorkItem?
-    private var snowfallView: SnowfallView?
-    private var scanlinesView: CRTScanlinesView?
 
     private func installSecretGestures() {
         // 7-tap on Run button — must be a SEPARATE recognizer
@@ -3857,62 +4983,6 @@ except Exception:
                                                   action: #selector(forceKillStop(_:)))
         lpStop.minimumPressDuration = 1.0
         terminalInterruptButton.addGestureRecognizer(lpStop)
-
-        // 3-finger swipe-down anywhere on the root view → cycle theme.
-        let swipe = UISwipeGestureRecognizer(target: self,
-                                             action: #selector(secretCycleTheme))
-        swipe.direction = .down
-        swipe.numberOfTouchesRequired = 3
-        view.addGestureRecognizer(swipe)
-
-        // 3-finger swipe-UP → open the hidden games launcher.
-        // Symmetric counterpart to the swipe-down theme cycler,
-        // so the gesture pair is easy to remember once discovered.
-        let swipeUp = UISwipeGestureRecognizer(target: self,
-                                               action: #selector(secretOpenGames))
-        swipeUp.direction = .up
-        swipeUp.numberOfTouchesRequired = 3
-        view.addGestureRecognizer(swipeUp)
-
-        // Long-press 3 s on terminal title bar → retro amber.
-        terminalTitleBar.isUserInteractionEnabled = true
-        let lp = UILongPressGestureRecognizer(target: self,
-                                              action: #selector(secretRetroToggle))
-        lp.minimumPressDuration = 3.0
-        terminalTitleBar.addGestureRecognizer(lp)
-
-        // Listen for theme changes from anywhere and re-apply.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(applySecretTheme),
-            name: SecretThemeManager.didChange, object: nil)
-
-        // Snowfall — only in December.
-        if SnowfallView.isDecember {
-            let sf = SnowfallView(frame: view.bounds)
-            sf.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(sf)
-            NSLayoutConstraint.activate([
-                sf.topAnchor.constraint(equalTo: view.topAnchor),
-                sf.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                sf.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                sf.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-            view.layoutIfNeeded()
-            sf.start()
-            snowfallView = sf
-        }
-    }
-
-    /// Forward every physical-keyboard press to the Konami tracker.
-    /// The tracker silently absorbs taps that don't match; users
-    /// without an external keyboard never trigger it accidentally.
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for p in presses {
-            if let code = p.key?.keyCode {
-                KonamiTracker.shared.consume(code)
-            }
-        }
-        super.pressesBegan(presses, with: event)
     }
 
     @objc private func secretRunCount() {
@@ -3939,9 +5009,9 @@ except Exception:
         }
     }
 
-    @objc private func secretCycleTheme() {
-        SecretThemeManager.shared.cycle()
-    }
+    // secretCycleTheme + the 3-finger swipe-down recognizer it was
+    // wired to were removed per user request. SecretThemeManager
+    // still exists but is no longer driven from the editor.
 
     // ─── Auto-preload toggle (top toolbar) ──────────────────────
     // Visual state:
@@ -4377,43 +5447,10 @@ except Exception:
         try? data.write(to: mountRespURL, options: .atomic)
     }
 
-    @objc private func secretOpenGames() {
-        let launcher = HiddenGamesLauncher()
-        let nav = UINavigationController(rootViewController: launcher)
-        nav.modalPresentationStyle = .fullScreen
-        nav.navigationBar.barStyle = .black
-        nav.navigationBar.tintColor = .systemBlue
-        present(nav, animated: true)
-    }
-
-    @objc private func secretRetroToggle() {
-        SecretThemeManager.shared.apply(.amber)
-        SecretToast.custom(on: view, lines: ["🟧", "amber CRT mode"])
-    }
-
-    @objc private func applySecretTheme() {
-        let t = SecretThemeManager.shared.current
-        swiftTermView.backgroundColor = t.bg
-        terminalContainer.backgroundColor = t.bg
-        // Toggle CRT scanlines for amber/matrix.
-        if t == .amber || t == .matrix {
-            if scanlinesView == nil {
-                let s = CRTScanlinesView(frame: swiftTermView.bounds)
-                s.translatesAutoresizingMaskIntoConstraints = false
-                swiftTermView.addSubview(s)
-                NSLayoutConstraint.activate([
-                    s.topAnchor.constraint(equalTo: swiftTermView.topAnchor),
-                    s.leadingAnchor.constraint(equalTo: swiftTermView.leadingAnchor),
-                    s.trailingAnchor.constraint(equalTo: swiftTermView.trailingAnchor),
-                    s.bottomAnchor.constraint(equalTo: swiftTermView.bottomAnchor),
-                ])
-                scanlinesView = s
-            }
-        } else {
-            scanlinesView?.removeFromSuperview()
-            scanlinesView = nil
-        }
-    }
+    // secretOpenGames / secretRetroToggle / applySecretTheme +
+    // the gestures that triggered them (3-finger swipe-up, terminal
+    // title-bar long-press) were removed per user request. Hidden
+    // Games is now launched from the BC badge in the app sidebar.
 
     /// Select all visible terminal text + scrollback. Mirrors SwiftTerm's
     /// own `selectAll(_:)` override (UIResponderStandardEditActions).
@@ -4863,6 +5900,285 @@ except Exception:
     /// NSLog instead of the terminal. Use for output streamed from
     /// the Python runtime — keeps the user-visible terminal focused
     /// on what their script actually printed.
+    /// Carry-over for partial lines between PTY chunks. PTY reads can
+    /// arrive on any byte boundary, so a "[plot saved] /path/foo.html\n"
+    /// line might split across two onOutputBytes callbacks. We append
+    /// each chunk's tail to this buffer and only consume bytes up to
+    /// the last newline.
+    private var ptyPlotScanBuffer: String = ""
+    private var toolOutputDirWatcher: DispatchSourceFileSystemObject?
+    private var toolOutputDirFD: Int32 = -1
+    private var lastShownChartTime: Date = .distantPast
+    private var lastShownChartPath: String = ""
+    /// Paths currently being polled for write-completion. The dir-watch
+    /// fs-event fires when a file's inode is created (size 0), but does
+    /// NOT re-fire when its content is later written — DispatchSource's
+    /// .write event on a directory only tracks add/remove/rename, not
+    /// content growth of existing entries. So when the size-guard
+    /// rejects a file as mid-write, we add it here and poll until it's
+    /// fully written. Lets slow writes (e.g. heavy plotly HTML that
+    /// takes ~80s to serialize) still surface in the preview pane.
+    private var pollingChartPaths: Set<String> = []
+
+    /// Scan a PTY output chunk for `[plot saved] <path>` lines and
+    /// route them to the preview pane. Run on whatever thread the PTY
+    /// reader calls us from; we hop to main before touching UIKit.
+    ///
+    /// PTYs translate "\n" to "\r\n" by default (onlcr), so each line
+    /// arrives as "…\r\n". We trim with `.whitespacesAndNewlines` (not
+    /// `.whitespaces` — that doesn't strip "\r") to keep the extracted
+    /// path from having a trailing carriage return that breaks
+    /// FileManager.fileExists.
+    private func scanTerminalChunkForPlot(_ chunk: String) {
+        ptyPlotScanBuffer.append(chunk)
+        // Process complete lines only; keep any trailing partial line
+        // in the buffer for the next chunk.
+        let lastNL = ptyPlotScanBuffer.lastIndex(of: "\n")
+        guard let lastNL else {
+            // No newline yet — wait for more bytes. Bound the buffer
+            // so a stuck partial line can't grow without limit.
+            if ptyPlotScanBuffer.count > 8192 {
+                ptyPlotScanBuffer.removeFirst(ptyPlotScanBuffer.count - 4096)
+            }
+            return
+        }
+        let processable = ptyPlotScanBuffer[..<lastNL]
+        ptyPlotScanBuffer = String(ptyPlotScanBuffer[ptyPlotScanBuffer.index(after: lastNL)...])
+
+        // Markers we route to the preview pane. Both come from
+        // sitecustomize.py / PythonRuntime.swift's _show_hook variants.
+        // [plot saved] — matplotlib/plotly figures
+        // [manim rendered] — manim Scene.render output
+        let markers = ["[plot saved] ", "[manim rendered] "]
+        for lineSub in processable.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            // Strip ANSI escape codes (CSI sequences like \x1b[2K
+            // clear-line, color codes, etc.) BEFORE the prefix check.
+            // PTY output frequently has prompt-redraw escapes
+            // prefixing user output lines; without stripping them,
+            // `[plot saved]` arrives as `\x1b[2K[plot saved] /…` and
+            // hasPrefix returns false even though the marker is there.
+            let lineStr = String(lineSub)
+            let stripped = Self.stripAnsiEscapes(lineStr)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            for marker in markers {
+                guard stripped.hasPrefix(marker) else { continue }
+                let path = String(stripped.dropFirst(marker.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard path.hasPrefix("/"),
+                      FileManager.default.fileExists(atPath: path) else { continue }
+                NSLog("[chart-watch] (pty) parsed marker=%@ path=%@",
+                      marker.trimmingCharacters(in: .whitespaces), path)
+                DispatchQueue.main.async { [weak self] in
+                    self?.tryShowChart(path: path, source: "pty")
+                }
+                break  // matched one marker; next line
+            }
+        }
+    }
+
+    /// Remove ANSI escape sequences (CSI/SGR/OSC) from a string. Used
+    /// before parsing tagged marker lines out of PTY output where
+    /// prompt-redraw and color codes can prefix the literal text.
+    /// Handles the two common shapes:
+    ///   • CSI:  ESC '[' <params> <letter>           — e.g. \x1b[2K, \x1b[31m
+    ///   • OSC:  ESC ']' <text> ESC '\' (or BEL)    — e.g. \x1b]0;title\x07
+    /// Anything else with ESC is left intact (vt100 charset selects etc.).
+    private static func stripAnsiEscapes(_ s: String) -> String {
+        guard s.contains("\u{1B}") else { return s }
+        var out = ""
+        out.reserveCapacity(s.count)
+        let chars = Array(s)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\u{1B}", i + 1 < chars.count {
+                let nxt = chars[i + 1]
+                if nxt == "[" {
+                    // CSI — skip until a letter (final byte in 0x40–0x7E)
+                    i += 2
+                    while i < chars.count {
+                        let cc = chars[i]
+                        i += 1
+                        if let v = cc.asciiValue, v >= 0x40 && v <= 0x7E { break }
+                    }
+                    continue
+                } else if nxt == "]" {
+                    // OSC — skip until BEL (0x07) or ESC '\'
+                    i += 2
+                    while i < chars.count {
+                        let cc = chars[i]
+                        if cc == "\u{07}" { i += 1; break }
+                        if cc == "\u{1B}", i + 1 < chars.count, chars[i + 1] == "\\" {
+                            i += 2; break
+                        }
+                        i += 1
+                    }
+                    continue
+                }
+            }
+            out.append(c)
+            i += 1
+        }
+        return out
+    }
+
+    /// Idempotent — opens a DispatchSource on the ToolOutputs dir
+    /// and watches for chart files appearing. Each new chart appearing
+    /// in the directory is loaded into the preview pane, even if the
+    /// PTY scanner missed the `[plot saved]` line (e.g. when the script
+    /// crashes mid-print, or when stdout is captured by something other
+    /// than the PTY). This is the safety net for the terminal preview.
+    private func startToolOutputDirectoryWatcher() {
+        guard toolOutputDirWatcher == nil else { return }
+        guard let documents = FileManager.default.urls(
+                for: .documentDirectory, in: .userDomainMask).first else { return }
+        let toolDir = documents.appendingPathComponent("ToolOutputs", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: toolDir, withIntermediateDirectories: true)
+        let fd = open(toolDir.path, O_EVTONLY)
+        guard fd >= 0 else {
+            NSLog("[chart-watch] open(%@) failed: %d", toolDir.path, errno)
+            return
+        }
+        toolOutputDirFD = fd
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: .write, queue: .global(qos: .utility))
+        src.setEventHandler { [weak self] in
+            self?.onToolOutputDirectoryChanged()
+        }
+        src.setCancelHandler { [weak self] in
+            if let f = self?.toolOutputDirFD, f >= 0 { close(f) }
+            self?.toolOutputDirFD = -1
+        }
+        src.resume()
+        toolOutputDirWatcher = src
+        // Seed the lastShownChartTime to "now" so pre-existing files
+        // from previous sessions don't immediately surface as a fresh
+        // chart on app start.
+        lastShownChartTime = Date()
+    }
+
+    /// Called from the dir-watch DispatchSource when ToolOutputs/
+    /// changes. Walks for a chart-like file modified more recently
+    /// than our last-shown timestamp and loads it.
+    private func onToolOutputDirectoryChanged() {
+        guard let documents = FileManager.default.urls(
+                for: .documentDirectory, in: .userDomainMask).first else { return }
+        let toolDir = documents.appendingPathComponent("ToolOutputs", isDirectory: true)
+        // Diagnostic: log every fs-event firing so we can tell (in
+        // Xcode console) whether the watcher itself triggered. If the
+        // user reports "preview didn't update" and this log is absent,
+        // the DispatchSource didn't fire at all (likely a closed fd
+        // or watcher cancellation) — investigate ``startToolOutputDirectoryWatcher``.
+        // If this log fires but no ``[chart-watch] (dir-watch) loading``
+        // follows, the file was filtered out (size guard, cutoff
+        // mismatch, wrong extension, partial_movie_files path).
+        NSLog("[chart-watch] dir-event fired, scanning %@", toolDir.path)
+        let mediaExts: Set<String> = ["html", "png", "jpg", "jpeg", "gif", "pdf",
+                                      "mp4", "mov", "webm", "m4v"]
+        let enumerator = FileManager.default.enumerator(
+            at: toolDir,
+            includingPropertiesForKeys: [.contentModificationDateKey,
+                                         .isRegularFileKey,
+                                         .fileSizeKey],
+            options: [.skipsHiddenFiles])
+        var best: (path: String, modDate: Date)?
+        let cutoff = lastShownChartTime
+        while let url = enumerator?.nextObject() as? URL {
+            guard let vals = try? url.resourceValues(forKeys: [
+                .contentModificationDateKey, .isRegularFileKey, .fileSizeKey]),
+                  vals.isRegularFile == true,
+                  let modDate = vals.contentModificationDate,
+                  modDate > cutoff,
+                  mediaExts.contains(url.pathExtension.lowercased())
+            else { continue }
+            // Skip partial-frame manim renders.
+            if url.path.contains("/partial_movie_files/") { continue }
+            // Skip files that are too small to be a real chart yet.
+            // The fs-event fires the instant the inode is created, but
+            // plotly's write_html does ``open(); f.write(huge_str);
+            // f.close()`` — the watcher can wake up between open and
+            // the first big write. Reading at that moment yields a
+            // tiny / empty file. Plotly HTML with ``include_plotlyjs
+            // =True`` is reliably > 200 KB; a 4 KB threshold gives a
+            // wide safety margin. Only skip when we POSITIVELY know
+            // the file is too small — if ``vals.fileSize`` is ``nil``
+            // (size key not cached), do NOT skip, because nil means
+            // "size unknown" and we'd otherwise drop legitimate files.
+            if url.pathExtension.lowercased() == "html",
+               let size = vals.fileSize,
+               size < 4096 {
+                let pathStr = url.path
+                if !pollingChartPaths.contains(pathStr) {
+                    NSLog("[chart-watch] mid-write %@ (size=%d), starting poll",
+                          url.lastPathComponent, size)
+                    pollingChartPaths.insert(pathStr)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pollForChartCompletion(path: pathStr, attempt: 0)
+                    }
+                }
+                continue
+            }
+            if let (_, prev) = best, prev >= modDate { continue }
+            best = (url.path, modDate)
+        }
+        guard let pick = best else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.tryShowChart(path: pick.path, source: "dir-watch")
+        }
+    }
+
+    /// Single entry point — both the PTY scanner and the dir watcher
+    /// route through here so we don't re-load the same chart twice
+    /// when both signals fire.
+    private func tryShowChart(path: String, source: String) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        if path == lastShownChartPath {
+            // Already showing this exact file — ignore duplicate.
+            return
+        }
+        lastShownChartPath = path
+        lastShownChartTime = Date()
+        NSLog("[chart-watch] (%@) loading %@", source, path)
+        showImageOutput(path: path)
+    }
+
+    /// Poll a partially-written chart file until it's complete (size
+    /// ≥ 4 KB) or the budget expires, then load it via tryShowChart.
+    /// Necessary because the dir-watch fs-event only fires on inode
+    /// create — not on subsequent writes into an existing inode —
+    /// so a file that's still being written when the watcher first
+    /// sees it has no follow-up signal that says "now I'm done".
+    /// Budget: 120 s total at 0.5 s intervals. Heavy plotly HTML
+    /// (huge surface plots) can take a full minute to serialize on
+    /// iOS Python.
+    private func pollForChartCompletion(path: String, attempt: Int) {
+        let maxAttempts = 240   // 120 s @ 0.5 s
+        guard attempt < maxAttempts else {
+            NSLog("[chart-watch] poll gave up on %@ after %d attempts",
+                  (path as NSString).lastPathComponent, attempt)
+            pollingChartPaths.remove(path)
+            return
+        }
+        // File may have been deleted (run cleanup) — stop polling.
+        guard FileManager.default.fileExists(atPath: path) else {
+            pollingChartPaths.remove(path)
+            return
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? Int) ?? 0
+        if size >= 4096 {
+            NSLog("[chart-watch] poll completed %@ (size=%d, attempts=%d)",
+                  (path as NSString).lastPathComponent, size, attempt)
+            pollingChartPaths.remove(path)
+            tryShowChart(path: path, source: "dir-poll")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.pollForChartCompletion(path: path, attempt: attempt + 1)
+        }
+    }
+
     private func appendToTerminalFiltered(_ text: String, isError: Bool) {
         // Fast path: if the chunk contains nothing that looks like a
         // tagged debug line, just forward it straight through.
@@ -5077,6 +6393,10 @@ except Exception:
         case .fortran:
             keywords = Self.fortranKeywords
             commentPrefix = "!"
+            hasPreprocessor = false
+        case .swift:
+            keywords = Self.swiftKeywords
+            commentPrefix = "//"
             hasPreprocessor = false
         case .latex:
             // We don't run the legacy in-house highlighter for LaTeX —
@@ -5412,6 +6732,9 @@ except Exception:
         case "f90", "f95", "f", "for":
             currentLanguage = .fortran
             monacoLang = "fortran"
+        case "swift":
+            currentLanguage = .swift
+            monacoLang = "swift"
         case "log", "txt", "out", "err":
             currentLanguage = .python      // closest enum fallback
             monacoLang = "plaintext"        // Monaco built-in, no highlighting
@@ -5457,7 +6780,10 @@ except Exception:
         monacoView.setCode(contents, language: monacoLang)
         currentFileURL = url
         lastSavedText = contents
-        editorFileNameLabel.text = "</> \(url.lastPathComponent)"
+        editorFileNameLabel.text = url.lastPathComponent
+        applyLanguageTabStyle()
+        modifiedDot.isHidden = true
+        updateBreadcrumb()
         updateEditorStatusBar()
         // Persist this as the "last opened file" so the next launch
         // restores it (loadInitialFile in viewDidLoad reads this key).
@@ -5498,12 +6824,16 @@ except Exception:
         case "c": currentLanguage = .c
         case "cpp", "c++": currentLanguage = .cpp
         case "fortran", "f90": currentLanguage = .fortran
+        case "swift": currentLanguage = .swift
         default: currentLanguage = .python
         }
         codeTextView.text = code  // mirror
         monacoView.setCode(code, language: currentLanguage.monacoName)
         currentFileURL = nil
         lastSavedText = nil
+        applyLanguageTabStyle()
+        modifiedDot.isHidden = true
+        updateBreadcrumb()
         publishCurrentEditorFile(nil)
     }
 
@@ -5659,19 +6989,28 @@ except Exception:
         outputImageView.isHidden = true
         outputImageView.image = nil
         outputWebView.isHidden = true
-        // Stop any in-flight load and drop the previous DOM. Without
-        // this, a manim _video_player.html from the prior run kept
-        // playing in the (hidden) WebView and would briefly flash
-        // through whenever the WebView was unhidden for the next page
-        // — the new content's loadFileURL is async, so the old DOM
-        // had time to render before the swap.
         outputWebView.stopLoading()
-        outputWebView.loadHTMLString(
-            "<!doctype html><body style='background:#0a0a0f;margin:0'></body>",
-            baseURL: nil)
+        // The blank-HTML preload that used to sit here was meant to
+        // drop the previous DOM so a manim ``_video_player.html``
+        // wouldn't keep playing through the hidden transition. But
+        // when the NEW content is also HTML (e.g. a plotly chart
+        // from ``python foo.py``), loading blank-then-real produces
+        // back-to-back async loads — the blank gets cancelled with
+        // ``NSURLErrorCancelled (-999)`` and the chart load
+        // intermittently inherits the cancelled state, leaving the
+        // preview blank. So we only blank-preload when the next
+        // content is NOT html; for html→html, ``stopLoading`` plus
+        // the upcoming ``loadHTMLString`` is enough — the chart's
+        // DOM replaces the previous one atomically.
+        let nextIsHTML = (path?.lowercased().hasSuffix(".html") ?? false)
+        if !nextIsHTML {
+            outputWebView.loadHTMLString(
+                "<!doctype html><body style='background:#0a0a0f;margin:0'></body>",
+                baseURL: nil)
+        }
         outputPDFView.isHidden = true
         outputPDFView.document = nil
-        outputPlaceholderLabel.isHidden = false
+        setOutputEmptyStateHidden(false)
         outputExpandButton.isHidden = true
         currentOutputPath = path
 
@@ -5689,7 +7028,7 @@ except Exception:
         if path.hasPrefix("http://") || path.hasPrefix("https://"),
            let urlForLoad = URL(string: path) {
             appendToTerminal("$ [output] loading URL \(path)\n", isError: false)
-            outputPlaceholderLabel.isHidden = true
+            setOutputEmptyStateHidden(true)
             outputWebView.isHidden = false
             outputExpandButton.isHidden = false
             // Bind the pywebview JS↔Python bridge to this WebView so
@@ -5709,19 +7048,36 @@ except Exception:
         let ext = url.pathExtension.lowercased()
 
         if ext == "html" {
-            outputPlaceholderLabel.isHidden = true
+            setOutputEmptyStateHidden(true)
             outputWebView.isHidden = false
             // Bind the pywebview bridge so evaluate_js / js_api work
             // against this page too (load_html signal lands here).
             PywebviewBridge.shared.bind(outputWebView)
-            outputWebView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            // Prefer in-memory load via loadHTMLString. On macOS
+            // Catalyst / Designed-for-iPad, loadFileURL(allowingReadAccessTo:)
+            // intermittently fails because the WebContent process's
+            // sandbox access grant races with the actual load —
+            // logged as "WebProcessProxy::hasAssumedReadAccessToURL:
+            // no access" and the chart never renders. Reading the
+            // HTML into memory and passing baseURL for relative-URL
+            // resolution sidesteps the sandbox check entirely.
+            // For huge HTML (>20 MB), fall back to loadFileURL to
+            // avoid copying into a Swift String unnecessarily.
+            let parentDir = url.deletingLastPathComponent()
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
+               let html = try? String(contentsOf: url, encoding: .utf8) {
+                outputWebView.loadHTMLString(html, baseURL: parentDir)
+            } else {
+                outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
+            }
         } else if ext == "pdf" {
             // PDFKit's PDFView — native multi-page continuous scroll,
             // pinch-zoom, text-select. WKWebView's embedded PDF
             // rendering ignored our scrollView settings because the
             // injected viewport CSS (`overflow:hidden !important`)
             // clamped it to one page.
-            outputPlaceholderLabel.isHidden = true
+            setOutputEmptyStateHidden(true)
             outputPDFView.isHidden = false
             if let doc = PDFDocument(url: url) {
                 outputPDFView.document = doc
@@ -5731,7 +7087,7 @@ except Exception:
             }
         } else if ext == "gif" {
             // Animated GIF (manim) — display in WKWebView for animation support
-            outputPlaceholderLabel.isHidden = true
+            setOutputEmptyStateHidden(true)
             outputWebView.isHidden = false
             let gifHTML = """
             <!DOCTYPE html>
@@ -5745,7 +7101,7 @@ except Exception:
             outputWebView.loadFileURL(htmlURL, allowingReadAccessTo: url.deletingLastPathComponent())
         } else if ["mp4", "mov", "webm", "m4v"].contains(ext) {
             // Video output — play in WKWebView with HTML5 video
-            outputPlaceholderLabel.isHidden = true
+            setOutputEmptyStateHidden(true)
             outputWebView.isHidden = false
             let videoHTML = """
             <!DOCTYPE html>
@@ -5840,7 +7196,7 @@ except Exception:
             outputWebView.loadFileURL(htmlURL, allowingReadAccessTo: url.deletingLastPathComponent())
         } else if ["png", "jpg", "jpeg"].contains(ext) {
             if let image = UIImage(contentsOfFile: path) {
-                outputPlaceholderLabel.isHidden = true
+                setOutputEmptyStateHidden(true)
                 outputImageView.image = image
                 outputImageView.isHidden = false
             }
@@ -6197,6 +7553,27 @@ extension CodeEditorViewController: UIDocumentPickerDelegate {
     }
 }
 
+// MARK: - FilesBrowserDelegate — the embedded file panel forwards
+// file taps and model-load requests up to the editor host.
+
+extension CodeEditorViewController: FilesBrowserDelegate {
+    func filesBrowser(_ controller: FilesBrowserViewController, didSelectCodeFile url: URL) {
+        // Same routing the sidebar-mounted version used to do:
+        // tapping a code file loads it into Monaco + flips
+        // currentFileURL / lastSavedText accordingly.
+        loadFile(url: url)
+    }
+
+    func filesBrowser(_ controller: FilesBrowserViewController, didRequestLoadModel url: URL) {
+        // Surface a terminal note. The model-management UI lives in
+        // GameViewController; the editor itself just acknowledges the
+        // tap. A future refinement could post a notification picked up
+        // by ModelsManagerViewController.
+        appendToTerminal("$ Model load requested: \(url.lastPathComponent) — open Models tab to mount.\n",
+                         isError: false)
+    }
+}
+
 // MARK: - UIGestureRecognizerDelegate — let SwiftTerm's long-press
 // selection gestures coexist with our tap-to-focus gesture.
 
@@ -6230,6 +7607,11 @@ extension CodeEditorViewController: UIGestureRecognizerDelegate {
 extension CodeEditorViewController: UIPointerInteractionDelegate {
     func pointerInteraction(_ interaction: UIPointerInteraction,
                             styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        // The editor↔output resize handle: show a horizontal beam so
+        // the cursor visually signals "drag me sideways".
+        if interaction.view === outputDragHandle {
+            return UIPointerStyle(shape: .horizontalBeam(length: 24))
+        }
         // Text-editable region — I-beam. Everything else falls through
         // to the default system pointer.
         return UIPointerStyle(shape: .verticalBeam(length: 20))
@@ -6262,6 +7644,25 @@ extension CodeEditorViewController: WKScriptMessageHandler {
             saveVideoToPhotos()
         case "shareVideo":
             shareCurrentOutput()
+        case "clipboard":
+            // Page asked to copy text via the navigator.clipboard /
+            // execCommand polyfill. message.body is the string to copy.
+            let text: String
+            if let s = message.body as? String {
+                text = s
+            } else if let dict = message.body as? [String: Any],
+                      let s = dict["text"] as? String {
+                text = s
+            } else {
+                text = String(describing: message.body)
+            }
+            UIPasteboard.general.string = text
+            // Brief feedback in the terminal so the user sees it worked
+            // even though there's no visual change in the preview pane.
+            let preview = text.prefix(40).replacingOccurrences(of: "\n", with: " ")
+            let suffix = text.count > 40 ? "…" : ""
+            appendToTerminal("$ [clipboard] copied \(text.count) char(s): \"\(preview)\(suffix)\"\n",
+                              isError: false)
         default:
             break
         }

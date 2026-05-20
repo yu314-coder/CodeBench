@@ -26,6 +26,17 @@ private typealias PySsizeT = Int
 @_silgen_name("PyErr_SetInterrupt") private func PyErr_SetInterrupt()
 @_silgen_name("PyGILState_Check") private func PyGILState_Check() -> Int32
 
+// Direct-call C API (used by the JS-API fast path: cached function
+// pointer + PyObject_CallObject per request, no PyRun_SimpleString).
+@_silgen_name("PyImport_ImportModule") private func PyImport_ImportModule(_ name: UnsafePointer<CChar>) -> PyObjectPointer?
+@_silgen_name("PyObject_GetAttrString") private func PyObject_GetAttrString(_ obj: PyObjectPointer?, _ name: UnsafePointer<CChar>) -> PyObjectPointer?
+@_silgen_name("PyObject_CallObject") private func PyObject_CallObject(_ callable: PyObjectPointer?, _ args: PyObjectPointer?) -> PyObjectPointer?
+@_silgen_name("PyTuple_New") private func PyTuple_New(_ size: PySsizeT) -> PyObjectPointer?
+@_silgen_name("PyTuple_SetItem") private func PyTuple_SetItem(_ tuple: PyObjectPointer?, _ pos: PySsizeT, _ item: PyObjectPointer?) -> Int32
+@_silgen_name("Py_IncRef") private func Py_IncRef(_ obj: PyObjectPointer?)
+@_silgen_name("PyErr_Print") private func PyErr_Print()
+@_silgen_name("PyErr_Clear") private func PyErr_Clear()
+
 final class PythonRuntime {
     static let shared = PythonRuntime()
 
@@ -207,6 +218,193 @@ final class PythonRuntime {
         PyErr_SetInterrupt()
     }
 
+    /// Dispatch a JS API call to Python's `webview` module IN-PROCESS,
+    /// bypassing the file-IPC + dispatcher-poll path entirely.
+    ///
+    /// Returns (resultJSON, errorMessage). Exactly one is non-nil.
+    /// `resultJSON` is a JSON-encoded string (callers JSON.parse it
+    /// JS-side). `errorMessage` is a plain string suitable to reject
+    /// the JS Promise with.
+    ///
+    /// Runs synchronously: acquires the GIL, executes the Python
+    /// snippet, reads back the result. Caller MUST be on a background
+    /// queue — if Python is busy running user code, the GIL acquire
+    /// blocks until it's released. Typical latency when Python is
+    /// idle: ~1 ms. When user code is running tight loops (no GIL
+    /// release): up to one bytecode-tick (~10ms by default).
+    ///
+    /// Eliminates ALL file-IPC + polling for the hot JS-API path.
+    /// Was: ~13 ms per call (Swift poll 10ms / 2 + Python poll 10ms / 2
+    /// + IPC overhead). Now: ~1-2 ms when Python is idle.
+    /// Cached `webview._dispatch_inline` PyObject. Resolved on first
+    /// call (after Py_Initialize and `import webview`), reused on
+    /// every subsequent dispatch. `PyObject_CallObject(_dispatchFn,
+    /// argsTuple)` is the entire hot path — no PyRun_SimpleString,
+    /// no module/global lookups. Roughly 10-50× faster per call than
+    /// the previous string-based dispatch (matches upstream pywebview
+    /// which does direct `function(*args)` invocation in util.py).
+    private var _dispatchInlineFn: PyObjectPointer?
+    private let _dispatchLock = NSLock()
+
+    func dispatchJsApiInline(method: String,
+                              argsJson: String) -> (String?, String?) {
+        guard Py_IsInitialized() != 0 else {
+            return (nil, "Python not initialized")
+        }
+        let gil = PyGILState_Ensure()
+        defer { PyGILState_Release(gil) }
+
+        // Lazy-resolve the cached `webview._dispatch_inline` callable.
+        // Imported once, ref'd forever — Python keeps it alive for
+        // the process lifetime.
+        if _dispatchInlineFn == nil {
+            _dispatchLock.lock()
+            defer { _dispatchLock.unlock() }
+            if _dispatchInlineFn == nil {
+                guard let mod = "webview".withCString({ PyImport_ImportModule($0) }) else {
+                    PyErr_Clear()
+                    return (nil, "cannot import webview")
+                }
+                guard let fn = "_dispatch_inline".withCString({
+                    PyObject_GetAttrString(mod, $0)
+                }) else {
+                    Py_DecRef(mod)
+                    PyErr_Clear()
+                    return (nil, "webview._dispatch_inline not found")
+                }
+                Py_DecRef(mod)        // we don't need the module ref
+                _dispatchInlineFn = fn // keeps the function alive
+            }
+        }
+
+        // Build the args tuple: (method_name, args_json). PyTuple_SetItem
+        // STEALS the reference, which is why we use PyUnicode_FromString
+        // freshly here and don't decref afterwards.
+        guard let argsTuple = PyTuple_New(2) else {
+            return (nil, "PyTuple_New failed")
+        }
+        defer { Py_DecRef(argsTuple) }
+
+        let pyMethod = method.withCString { PyUnicode_FromString($0) }
+        guard pyMethod != nil else {
+            return (nil, "PyUnicode_FromString(method) failed")
+        }
+        if PyTuple_SetItem(argsTuple, 0, pyMethod) != 0 {
+            // SetItem stole pyMethod's ref even on failure; don't decref.
+            return (nil, "PyTuple_SetItem(0) failed")
+        }
+
+        let pyArgs = argsJson.withCString { PyUnicode_FromString($0) }
+        guard pyArgs != nil else {
+            return (nil, "PyUnicode_FromString(args) failed")
+        }
+        if PyTuple_SetItem(argsTuple, 1, pyArgs) != 0 {
+            return (nil, "PyTuple_SetItem(1) failed")
+        }
+
+        // The actual call — single PyObject_CallObject. This is what
+        // makes the bridge feel native: no source parsing, no global
+        // dict walk, just a direct C-level call into the cached
+        // Python function.
+        guard let result = PyObject_CallObject(_dispatchInlineFn, argsTuple) else {
+            // Python raised. Pull the exception, format, return.
+            let err = pyExceptionString() ?? "Python call raised (no message)"
+            return (nil, err)
+        }
+        defer { Py_DecRef(result) }
+
+        // _dispatch_inline returns a JSON string; convert to Swift.
+        guard let json = pyObjectToString(result) else {
+            return (nil, "result not stringifiable")
+        }
+        return (json, nil)
+    }
+
+    /// Pull the current Python exception (if any) into a Swift
+    /// string and clear it. Returns nil if no exception is set.
+    private func pyExceptionString() -> String? {
+        var pType: PyObjectPointer? = nil
+        var pValue: PyObjectPointer? = nil
+        var pTraceback: PyObjectPointer? = nil
+        PyErr_Fetch(&pType, &pValue, &pTraceback)
+        defer {
+            if pType != nil { Py_DecRef(pType) }
+            if pValue != nil { Py_DecRef(pValue) }
+            if pTraceback != nil { Py_DecRef(pTraceback) }
+        }
+        guard let value = pValue else { return nil }
+        PyErr_NormalizeException(&pType, &pValue, &pTraceback)
+        return pyObjectToString(value)
+    }
+
+    /// Convert a Python object to its UTF-8 string representation.
+    /// Returns nil if the object can't be converted (rare).
+    private func pyObjectToString(_ obj: PyObjectPointer) -> String? {
+        // PyObject_Str gives us a Python str (calls __str__).
+        guard let strObj = PyObject_Str(obj) else { return nil }
+        defer { Py_DecRef(strObj) }
+        var size: PySsizeT = 0
+        guard let cStr = PyUnicode_AsUTF8AndSize(strObj, &size) else { return nil }
+        return String(cString: cStr)
+    }
+
+    /// Hard stop the running task — what the user expects when they
+    /// hit Stop or Ctrl+C in the terminal.
+    ///
+    /// Two paths, each covers a state the REPL can be in:
+    ///   1. PyErr_SetInterrupt() — sets the bytecode-loop flag.
+    ///      Catches `while True:` and any tight Python loop. Also
+    ///      makes time.sleep() return immediately with KeyboardInterrupt.
+    ///   2. Inject 0x03 into the PTY pipe — caller does this via
+    ///      LineBuffer/PTYBridge (Stop button & keyboard Ctrl+C both
+    ///      route through here). The byte arrives in stdin; blocked
+    ///      input() / os.read() in the REPL or sub-REPL (js/node)
+    ///      sees it. Our patched builtins.input recognizes 0x03 as
+    ///      KeyboardInterrupt; the REPL's own read loop already does.
+    ///
+    /// Note: pthread_kill of an arbitrary thread doesn't reliably
+    /// interrupt blocking syscalls on Darwin — the kernel routes the
+    /// signal back to the main thread regardless of the requested
+    /// target. The byte-injection path in (2) is what actually unblocks
+    /// the JS REPL / pywebview poll / shell.run_line in practice.
+    /// SOFT interrupt — what Ctrl+C should always be. Sets the
+    /// bytecode-loop signal flag so tight Python loops bail with
+    /// KeyboardInterrupt; the 0x03 byte injection (wired in callers)
+    /// unblocks read()/input(). Does NOT touch modules or thread
+    /// state — the REPL keeps running, the user can keep typing.
+    func hardStopRunningTask() {
+        if Py_IsInitialized() != 0 {
+            PyErr_SetInterrupt()
+        }
+        // Path 2 (byte injection) is wired in the callers:
+        //   • LineBuffer.handle case 0x03 ─── keyboard ^C
+        //   • CodeEditorViewController.terminalInterrupt ─── Stop button
+    }
+
+    /// HARD kill — for when a soft interrupt didn't take (stuck in
+    /// a long C call holding the GIL, hardware encoder thread,
+    /// etc.). Writes the kill-signal file that the offlinai_shell
+    /// daemon polls; the daemon then injects SystemExit into every
+    /// non-main thread, force-closes PyAV / encoder / IOSurface
+    /// state, drops manim modules, and forces a malloc page release.
+    ///
+    /// This DOES tear down running tasks aggressively and can leave
+    /// the REPL in a degraded state until the next interpreter
+    /// cycle. Only call when the soft interrupt has already had a
+    /// chance to land — e.g. long-press on the Stop button after
+    /// a regular tap didn't work.
+    func forceKillRunningTask() {
+        // Still set the interrupt flag so Python's main thread
+        // bails the moment it returns from C land.
+        if Py_IsInitialized() != 0 {
+            PyErr_SetInterrupt()
+        }
+        let tmp = NSTemporaryDirectory()
+        let signalPath = (tmp as NSString)
+            .appendingPathComponent("codebench_kill.signal")
+        try? Data().write(to: URL(fileURLWithPath: signalPath))
+    }
+
     /// Eagerly boot Python (Py_Initialize + stdio redirect) and start
     /// the REPL thread. Call this from CodeEditorViewController when
     /// the terminal view appears, so the user can type commands
@@ -311,12 +509,69 @@ final class PythonRuntime {
             except Exception as _fh_err:
                 sys.stderr.write(f"[shell-bootstrap] faulthandler init failed: {_fh_err}\\n")
             def _codebench_start_repl():
+                # Retry loop because the FIRST import attempt can race with
+                # a Run-button wrapper that was scheduled at the same time:
+                # the wrapper holds the GIL during its 4-5 s busytex prep,
+                # then if the user hits Stop a stray PyErr_SetInterrupt flag
+                # may still be pending when the bootstrap thread next gets
+                # the GIL. That fires KeyboardInterrupt during our `import
+                # offlinai_shell`, which used to silently kill this thread
+                # because we only caught `Exception` (not BaseException).
+                # Result: REPL thread dead, terminal totally unresponsive,
+                # zero diagnostic output. Now we catch BaseException, log
+                # to BOTH __stderr__ (Xcode console) AND a breadcrumb file
+                # (so we can confirm survival from outside Python), and
+                # retry up to 3 times for KeyboardInterrupt — anything
+                # else is a real bug we want surfaced once.
+                import os as _os, time as _time
+                # ~/Documents is visible in the Files app on iOS so the
+                # user can pull this off-device for diagnosis. TMPDIR
+                # is sandboxed and unreachable.
+                _bc_path = _os.path.expanduser("~/Documents/shell_bootstrap.txt")
                 try:
-                    import offlinai_shell  # module name kept (renaming would cascade-break dist-info + all `import` sites)
-                    offlinai_shell.repl()
-                except Exception:
-                    traceback.print_exc()
-                    sys.stderr.flush()
+                    _os.makedirs(_os.path.dirname(_bc_path), exist_ok=True)
+                except Exception: pass
+                def _bc(msg):
+                    try:
+                        sys.__stderr__.write(f"[shell-bootstrap] {msg}\\n")
+                        sys.__stderr__.flush()
+                    except Exception: pass
+                    try:
+                        with open(_bc_path, "a") as _f:
+                            _f.write(f"{_time.time():.3f} {msg}\\n")
+                    except Exception: pass
+
+                _bc("entering forever-loop")
+                # Infinite outer loop: if repl() ever RETURNS or
+                # raises any exception other than KeyboardInterrupt,
+                # we restart it. User-reported symptom: "terminal
+                # stops responding, Run button kicks it back to life"
+                # — root cause was an unhandled exception in a deep
+                # builtin escaping the REPL's per-line handlers,
+                # ending the thread. Without this outer loop the
+                # whole shell goes silent and nothing short of
+                # invoking Python via the Run button (which uses a
+                # different code path) revives it.
+                while True:
+                    try:
+                        import offlinai_shell
+                        offlinai_shell.repl()
+                        _bc("repl() returned — restarting in 200 ms")
+                        _time.sleep(0.2)
+                    except KeyboardInterrupt:
+                        _bc("REPL KeyboardInterrupt — restarting")
+                        _time.sleep(0.2)
+                    except BaseException as _be:
+                        _bc(f"REPL died with {type(_be).__name__}: {_be}; restarting in 500 ms")
+                        try:
+                            traceback.print_exc(file=sys.__stderr__)
+                            sys.__stderr__.flush()
+                        except Exception: pass
+                        try:
+                            with open(_bc_path, "a") as _f:
+                                _f.write(traceback.format_exc())
+                        except Exception: pass
+                        _time.sleep(0.5)
             _t = threading.Thread(target=_codebench_start_repl, name='codebench-repl', daemon=True)
             _t.start()
             # (the REPL thread will print its own banner to the user;
@@ -793,16 +1048,18 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
     /// when the Python wrapper's `__codebench_plot_path` global doesn't
     /// reach us through `getGlobalString`.
     private static func scanForLatestRenderedPath(in text: String) -> String {
-        let marker = "[manim rendered] "
+        let markers = ["[manim rendered] ", "[plot saved] "]
         let lines = text.components(separatedBy: "\n")
         for line in lines.reversed() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix(marker) else { continue }
-            let candidate = String(trimmed.dropFirst(marker.count))
-                .trimmingCharacters(in: .whitespaces)
-            guard candidate.hasPrefix("/"),
-                  FileManager.default.fileExists(atPath: candidate) else { continue }
-            return candidate
+            for marker in markers {
+                guard trimmed.hasPrefix(marker) else { continue }
+                let candidate = String(trimmed.dropFirst(marker.count))
+                    .trimmingCharacters(in: .whitespaces)
+                guard candidate.hasPrefix("/"),
+                      FileManager.default.fileExists(atPath: candidate) else { continue }
+                return candidate
+            }
         }
         return ""
     }
@@ -814,7 +1071,7 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
     /// pdf) to avoid picking up source files or unrelated artifacts.
     private static func mostRecentMediaFile(under dir: String,
                                             modifiedSince: Date) -> String? {
-        let extensions: Set<String> = ["mp4", "mov", "webm", "m4v", "gif", "png", "jpg", "jpeg", "pdf"]
+        let extensions: Set<String> = ["mp4", "mov", "webm", "m4v", "gif", "png", "jpg", "jpeg", "pdf", "html"]
         let dirURL = URL(fileURLWithPath: dir)
         guard let enumerator = FileManager.default.enumerator(
             at: dirURL,
@@ -903,9 +1160,13 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
             try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
         }
 
+        // Same pandas-on-path logic as in configureEnvironmentBeforeInitialize —
+        // necessary on the runtime-init path too because Py_Initialize
+        // may have already happened before the env var was read.
+        let pandasDir = bundleURL.appendingPathComponent("pandas_ios/pandas-2.2.3", isDirectory: true).path
         let script = """
 import os, sys
-for _p in [\(pythonQuoted(versionPath)), \(pythonQuoted(dynloadPath)), \(pythonQuoted(sitePackagesPath)), \(pythonQuoted(userSitePath))]:
+for _p in [\(pythonQuoted(versionPath)), \(pythonQuoted(dynloadPath)), \(pythonQuoted(sitePackagesPath)), \(pythonQuoted(pandasDir)), \(pythonQuoted(userSitePath))]:
     if _p and _p not in sys.path:
         sys.path.insert(0, _p)
 os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
@@ -936,13 +1197,20 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
 
         let dynloadPath = URL(fileURLWithPath: versionPath).appendingPathComponent("lib-dynload", isDirectory: true).path
         let sitePackagesPath = bundleURL.appendingPathComponent("app_packages/site-packages", isDirectory: true).path
+        // pandas is bundled separately under pandas_ios/pandas-X.Y.Z/
+        // because the wheel has a hyphenated version dir name that
+        // isn't importable. Add the parent dir of `pandas/` to
+        // sys.path so `import pandas` works. The pandas dir lives
+        // INSIDE `pandas_ios/pandas-2.2.3/` → that's the path on PATH.
+        let pandasDir = bundleURL
+            .appendingPathComponent("pandas_ios/pandas-2.2.3", isDirectory: true).path
         // User-installable site-packages in Documents (writable on iOS)
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         let userSitePath = documentsURL?.appendingPathComponent("site-packages", isDirectory: true).path ?? ""
         if !userSitePath.isEmpty {
             try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
         }
-        let pythonPath = [versionPath, dynloadPath, sitePackagesPath, userSitePath]
+        let pythonPath = [versionPath, dynloadPath, sitePackagesPath, pandasDir, userSitePath]
             .filter { !$0.isEmpty }
             .joined(separator: ":")
         let toolDir = try ensureToolOutputDirectory().path
@@ -950,7 +1218,21 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
         setenv("PYTHONHOME", pythonRoot, 1)
         setenv("PYTHONPATH", pythonPath, 1)
         setenv("PYTHONNOUSERSITE", "1", 1)
-        setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
+        // PYTHONDONTWRITEBYTECODE=0 + PYTHONPYCACHEPREFIX=<writable dir>
+        // lets Python compile .py → .pyc and cache the result in
+        // ~/Documents/.pycache/ (PEP 3147). The bundle's site-packages
+        // is read-only so writing __pycache__ next to source files
+        // fails silently; redirecting via PYTHONPYCACHEPREFIX moves
+        // every cache entry to a single writable tree. Big win:
+        // second-launch `import manim` drops from ~3 s to ~800 ms.
+        setenv("PYTHONDONTWRITEBYTECODE", "0", 1)
+        if let docs = FileManager.default.urls(for: .documentDirectory,
+                                               in: .userDomainMask).first {
+            let pycPrefix = docs.appendingPathComponent(".pycache", isDirectory: true).path
+            try? FileManager.default.createDirectory(atPath: pycPrefix,
+                                                     withIntermediateDirectories: true)
+            setenv("PYTHONPYCACHEPREFIX", pycPrefix, 1)
+        }
         setenv("MPLCONFIGDIR", toolDir, 1)
 
         // CRITICAL: force Python to use the system malloc for ALL
@@ -1442,7 +1724,7 @@ try:
                 __codebench_save_plotly_html(_real_fig, _path)
                 __codebench_plot_path = _path
                 _log(f"chart saved: {_path}")
-                print(f"[plot saved] {_path}")
+                print(f"[plot saved] {_path}", flush=True)
             else:
                 _log("show() called but no plotly figure available")
         _plt._show_hook = _offlinai_mpl_show
@@ -1480,7 +1762,7 @@ try:
                 __codebench_save_plotly_html(self, _path)
                 __codebench_plot_path = _path
                 _log(f"plotly chart saved: {_path}")
-                print(f"[plot saved] {_path}")
+                print(f"[plot saved] {_path}", flush=True)
             _Figure.show = _offlinai_plotly_show
     except (ImportError, AttributeError) as _plotly_hook_err:
         _log(f"plotly hook skipped: {type(_plotly_hook_err).__name__}: {_plotly_hook_err}")
@@ -1743,12 +2025,166 @@ try:
             def _offlinai_manim_render(self, *args, **kwargs):
                 global __codebench_plot_path
                 import manim as _m
+                # ── Pre-flight memory check ──────────────────────
+                # The user reported renders at high quality crashing
+                # the app via OOM jetsam EVEN AFTER our shell-builtin
+                # pre-flight, because they invoke `scene.render()`
+                # directly in Python — bypassing the `manim` builtin.
+                # This monkey-patch IS the entry point for every
+                # render path (auto-render and direct), so the check
+                # belongs here.
+                try:
+                    import ctypes as _ct
+                    _libsys = _ct.CDLL(None)
+                    _avail_fn = getattr(_libsys, "os_proc_available_memory", None)
+                    if _avail_fn is not None:
+                        _avail_fn.restype = _ct.c_size_t
+                        _avail = int(_avail_fn())
+                        # Tier table (matches offlinai_shell.py's _manim_cmd):
+                        #   480p   → 380 MB
+                        #   720p   → 1 GB
+                        #   1080p  → 2 GB (24/30) or 3 GB (60)
+                        #   4K     → 4 GB (refused outright)
+                        _h = int(getattr(_m.config, "pixel_height", 480) or 480)
+                        _fps = int(getattr(_m.config, "frame_rate", 15) or 15)
+                        if _h >= 2000:
+                            _need = 4 * 1024 * 1024 * 1024
+                        elif _h >= 1000:
+                            _need = 3 * 1024 * 1024 * 1024 if _fps >= 30 else 2 * 1024 * 1024 * 1024
+                        elif _h >= 700:
+                            _need = 1024 * 1024 * 1024
+                        elif _h >= 400:
+                            _need = 384 * 1024 * 1024
+                        else:
+                            _need = 200 * 1024 * 1024
+                        # 4K: hard refuse regardless of available.
+                        if _h >= 2000:
+                            print(f"[manim] 4K rendering is not supported on iOS — "
+                                  f"the per-frame working set exceeds the jetsam "
+                                  f"ceiling. Use 1080p or lower.", flush=True)
+                            return
+                        if _avail and _need * 1.25 > _avail:
+                            print(f"[manim] refusing to render: estimated "
+                                  f"{_need // (1024*1024)} MB peak but only "
+                                  f"{_avail // (1024*1024)} MB available before "
+                                  f"iOS would terminate the app. Lower the "
+                                  f"manim quality in Settings.",
+                                  flush=True)
+                            return
+                except Exception:
+                    pass
                 _m.config.renderer = "cairo"
                 _m.config.format = "mp4"
                 _m.config.write_to_movie = True
                 _m.config.save_last_frame = False
                 _m.config.preview = False
                 _m.config.disable_caching = True
+
+                # ── Memory watchdog with FORCE-KILL ──────────────
+                # When iOS-available memory drops below 150 MB,
+                # the watchdog terminates the render workload
+                # outright: inject SystemExit into every render/
+                # encoder thread, force-close PyAV containers
+                # (releases the videotoolbox IOSurface pool that
+                # gc.collect cannot touch), drop manim modules,
+                # and call malloc_zone_pressure_relief. The user
+                # explicitly asked for "kill that process" when
+                # memory is exceeded — this IS that kill.
+                import threading as _wd_thr, time as _wd_time
+                _wd_stop = _wd_thr.Event()
+                _wd_killed = [False]
+                def _hard_kill_render():
+                    if _wd_killed[0]: return
+                    _wd_killed[0] = True
+                    try:
+                        print(f"\\n[manim] memory watchdog FORCE-KILLING the "
+                              f"render — terminating encoder threads and "
+                              f"releasing IOSurface buffers.", flush=True)
+                    except Exception: pass
+                    import ctypes as _ck, gc as _gck, threading as _kth
+                    # 1) Force-close PyAV / encoder / writer objects.
+                    try:
+                        _killers = ("close", "kill", "terminate",
+                                    "release", "_close", "shutdown",
+                                    "stop")
+                        for _obj in _gck.get_objects():
+                            _cls = type(_obj).__name__
+                            if _cls in ("OutputContainer", "InputContainer",
+                                        "VideoStream", "AudioStream",
+                                        "CodecContext", "VideoCodecContext",
+                                        "Stream", "SceneFileWriter",
+                                        "Popen") or "Writer" in _cls:
+                                for _m2 in _killers:
+                                    _fn = getattr(_obj, _m2, None)
+                                    if callable(_fn):
+                                        try: _fn()
+                                        except Exception: pass
+                    except Exception: pass
+                    # 2) SystemExit into every non-main, non-self thread.
+                    try:
+                        _api = _ck.pythonapi.PyThreadState_SetAsyncExc
+                        _api.argtypes = [_ck.c_ulong, _ck.py_object]
+                        _api.restype = _ck.c_int
+                        _self_id = _kth.get_ident()
+                        _main_id = _kth.main_thread().ident
+                        for _t in _kth.enumerate():
+                            if _t.ident in (_self_id, _main_id, None):
+                                continue
+                            if not _t.is_alive(): continue
+                            for _ in range(2):
+                                try: _api(_ck.c_ulong(_t.ident),
+                                          _ck.py_object(SystemExit))
+                                except Exception: pass
+                    except Exception: pass
+                    # 3) interrupt_main repeatedly.
+                    try:
+                        import _thread as _tt
+                        for _ in range(5):
+                            try: _tt.interrupt_main()
+                            except Exception: pass
+                    except Exception: pass
+                    # 4) Drop modules + flush Cairo/Pango + malloc relief.
+                    try:
+                        _drop = ("manim", "manimlib", "manimpango",
+                                 "moderngl", "av", "av.container",
+                                 "av.codec", "av.stream", "av.video")
+                        for _k in list(sys.modules):
+                            if _k in _drop or any(_k.startswith(p + ".") for p in _drop):
+                                sys.modules.pop(_k, None)
+                        _gck.collect(); _gck.collect(); _gck.collect()
+                        try:
+                            _libc = _ck.CDLL(None)
+                            _libc.malloc_zone_pressure_relief.argtypes = [_ck.c_void_p, _ck.c_size_t]
+                            _libc.malloc_zone_pressure_relief.restype = _ck.c_size_t
+                            _libc.malloc_zone_pressure_relief(None, 0)
+                        except Exception: pass
+                    except Exception: pass
+
+                def _wd_loop():
+                    import ctypes as _wc
+                    try:
+                        _libsys = _wc.CDLL(None)
+                        _avail = getattr(_libsys, "os_proc_available_memory", None)
+                        if _avail is None: return
+                        _avail.restype = _wc.c_size_t
+                    except Exception: return
+                    _soft_at = 0.0
+                    while not _wd_stop.wait(0.2):
+                        try: _left = int(_avail())
+                        except Exception: continue
+                        if not _left: continue
+                        _now = _wd_time.monotonic()
+                        if _left < 250 * 1024 * 1024:
+                            if not _soft_at:
+                                _soft_at = _now
+                                import _thread as _tt
+                                try: _tt.interrupt_main()
+                                except Exception: pass
+                            if _left < 150 * 1024 * 1024 or _now - _soft_at > 1.0:
+                                _hard_kill_render()
+                                return
+                _wd = _wd_thr.Thread(target=_wd_loop, daemon=True)
+                _wd.start()
                 # Log Pango status. `_pango_available` is set by our shim's
                 # __init__.py; stock manimpango doesn't expose it, so default
                 # to True (stock => always native).
@@ -1847,19 +2283,141 @@ try:
                 _qmap = {0: 'low_quality', 1: 'medium_quality', 2: 'high_quality'}
                 _m.config.quality = _qmap.get(_q, 'low_quality')
                 _collected_frames.clear()
-                _orig_render(self, *args, **kwargs)
-                print(f"[manim-debug] frames_written={len(_collected_frames)} skip={getattr(self.renderer, 'skip_animations', '?')} sections_skip={getattr(self.renderer.file_writer.sections[-1], 'skip_animations', '?') if hasattr(self.renderer, 'file_writer') and self.renderer.file_writer.sections else '?'}")
+                # ── Render with guaranteed teardown ─────────────────
+                # The user-reported symptom: when a render is killed
+                # mid-way (MemoryError, KeyboardInterrupt from the
+                # watchdog, encoder crash), the PyAV/videotoolbox
+                # encoder's IOSurface buffers stay alive AND a
+                # background frame-producer thread keeps churning
+                # because Scene.render() raised before reaching its
+                # own cleanup. The user sees: "RAM stays high until
+                # the next process finishes."
+                #
+                # Force-close everything that holds GPU/IOSurface
+                # state in a finally block — this runs no matter
+                # what happens inside _orig_render, so a half-
+                # finished render can't leave threads/buffers alive.
+                # Capture the output-path info BEFORE the finally
+                # clears self.renderer (the result-discovery block
+                # below needs movie_file_path / image_file_path off
+                # the file_writer, and once we tear down to free
+                # IOSurface buffers those refs are gone).
+                _captured_movie_path = None
+                _captured_image_path = None
                 try:
-                    fw = self.renderer.file_writer
-                    _log(f"fw attrs: movie={hasattr(fw,'movie_file_path')}, image={hasattr(fw,'image_file_path')}")
-                    if hasattr(fw, 'movie_file_path'):
-                        _log(f"movie_file_path={fw.movie_file_path}")
+                    _orig_render(self, *args, **kwargs)
+                    try:
+                        _fwc = self.renderer.file_writer
+                        _captured_movie_path = str(getattr(_fwc, "movie_file_path", "") or "") or None
+                        _captured_image_path = str(getattr(_fwc, "image_file_path", "") or "") or None
+                    except Exception: pass
+                finally:
+                    # Stop the watchdog FIRST so it can't fire
+                    # interrupt_main into the next builtin / user
+                    # script after this render returns.
+                    try:
+                        _wd_stop.set()
+                        _wd.join(timeout=0.5)
+                    except Exception: pass
+                    try:
+                        _renderer = getattr(self, "renderer", None)
+                        _fw = getattr(_renderer, "file_writer", None) if _renderer else None
+                        if _fw is not None:
+                            # 1) Stop / drain the encoder. Manim's
+                            # SceneFileWriter exposes finish() which
+                            # flushes + closes the PyAV streams. Call
+                            # it even if Scene.render already did, it's
+                            # idempotent on a closed writer.
+                            for _meth in ("close_partial_movie_stream",
+                                          "finish_last_animation",
+                                          "finish"):
+                                _fn = getattr(_fw, _meth, None)
+                                if callable(_fn):
+                                    try: _fn()
+                                    except Exception: pass
+                            # 2) Drop direct refs to PyAV
+                            # OutputContainer / VideoStream / encoder
+                            # — these own the videotoolbox IOSurface
+                            # pool. If we don't release them
+                            # explicitly, gc has to wait for a cycle
+                            # break that never comes (PyAV objects
+                            # back-reference each other).
+                            for _attr in (
+                                "output_container", "video_stream",
+                                "_output_container", "_video_stream",
+                                "encoder", "writing_process",
+                                "partial_movie_writer",
+                                "current_writer",
+                            ):
+                                _obj = getattr(_fw, _attr, None)
+                                if _obj is not None:
+                                    for _close in ("close", "kill",
+                                                   "terminate"):
+                                        _cf = getattr(_obj, _close, None)
+                                        if callable(_cf):
+                                            try: _cf()
+                                            except Exception: pass
+                                    try: setattr(_fw, _attr, None)
+                                    except Exception: pass
+                        # 3) Drop renderer + camera which hold Cairo
+                        # surfaces and the per-frame numpy buffer.
+                        for _attr in ("camera", "renderer",
+                                      "moving_mobjects", "mobjects"):
+                            try:
+                                _val = getattr(self, _attr, None)
+                                if isinstance(_val, list):
+                                    _val.clear()
+                                else:
+                                    setattr(self, _attr, None)
+                            except Exception: pass
+                    except Exception:
+                        pass
+                    # 4) Force GC + libmalloc page release so the
+                    # Xcode memory graph drops NOW, not on the next
+                    # script's exit. This is the same sequence run
+                    # in the shell-builtin's finally; doing it here
+                    # too means it lands no matter how the render
+                    # was kicked off (auto-render, direct call, or
+                    # CLI builtin).
+                    try:
+                        import gc as _gc, ctypes as _ct, ctypes.util as _cu
+                        _gc.collect(); _gc.collect()
+                        # Cairo / Pango global caches.
+                        for _libname in ("libpangocairo-1.0.0.dylib",
+                                         "libpangocairo-1.0.dylib"):
+                            try:
+                                _lpc = _ct.CDLL(_libname)
+                                _lpc.pango_cairo_font_map_set_default(None)
+                                break
+                            except Exception: continue
+                        for _libname in (_cu.find_library("cairo") or "libcairo.2.dylib",
+                                         "libcairo.2.dylib"):
+                            try:
+                                _lc = _ct.CDLL(_libname)
+                                _lc.cairo_debug_reset_static_data()
+                                break
+                            except Exception: continue
+                        # Per-zone pressure relief — manimpango/numpy
+                        # have their own zones in some builds.
+                        _libc = _ct.CDLL(None)
+                        try:
+                            _libc.malloc_zone_pressure_relief.argtypes = [_ct.c_void_p, _ct.c_size_t]
+                            _libc.malloc_zone_pressure_relief.restype = _ct.c_size_t
+                            _libc.malloc_zone_pressure_relief(None, 0)
+                        except Exception: pass
+                    except Exception: pass
+                print(f"[manim-debug] frames_written={len(_collected_frames)} skip={getattr(self.renderer, 'skip_animations', '?') if getattr(self, 'renderer', None) else '?'} sections_skip={getattr(self.renderer.file_writer.sections[-1], 'skip_animations', '?') if getattr(self, 'renderer', None) and hasattr(self.renderer, 'file_writer') and self.renderer.file_writer.sections else '?'}")
+                try:
+                    # Result discovery uses the paths captured BEFORE
+                    # the teardown (self.renderer was cleared in the
+                    # finally above to release IOSurface buffers).
+                    _log(f"fw paths: movie={_captured_movie_path}, image={_captured_image_path}")
                     # 1. Check for mp4 video (PyAV + ffmpeg)
-                    movie_path = str(fw.movie_file_path) if hasattr(fw, 'movie_file_path') and fw.movie_file_path else None
+                    movie_path = _captured_movie_path
                     if movie_path and os.path.exists(movie_path) and os.path.getsize(movie_path) > 500:
                         __codebench_plot_path = movie_path
                         _log(f"manim MP4: {movie_path} ({os.path.getsize(movie_path)} bytes)")
-                        print(f"[manim rendered] {movie_path}")
+                        print(f"[manim rendered] {movie_path}", flush=True)
                         _collected_frames.clear()
                         return
                     # 2. Fallback: assemble GIF from captured frames
@@ -1881,15 +2439,15 @@ try:
                         if os.path.exists(gif_path) and os.path.getsize(gif_path) > 100:
                             __codebench_plot_path = gif_path
                             _log(f"manim GIF: {gif_path} ({len(frames)} frames)")
-                            print(f"[manim rendered] {gif_path}")
+                            print(f"[manim rendered] {gif_path}", flush=True)
                             _collected_frames.clear()
                             return
                     # 3. Fallback: static PNG
-                    img_path = str(fw.image_file_path) if hasattr(fw, 'image_file_path') and fw.image_file_path else None
+                    img_path = _captured_image_path
                     if img_path and os.path.exists(img_path):
                         __codebench_plot_path = img_path
                         _log(f"manim PNG: {img_path}")
-                        print(f"[manim rendered] {img_path}")
+                        print(f"[manim rendered] {img_path}", flush=True)
                     else:
                         latest = None
                         latest_t = 0
@@ -1904,7 +2462,7 @@ try:
                         if latest:
                             __codebench_plot_path = latest
                             _log(f"manim found: {latest}")
-                            print(f"[manim rendered] {latest}")
+                            print(f"[manim rendered] {latest}", flush=True)
                 except Exception as e:
                     _log(f"manim output error: {e}")
                 _collected_frames.clear()
@@ -3299,5 +3857,54 @@ except Exception as _de:
         _diag_sys.__stderr__.flush()
     except OSError:
         pass
+
+# ── post-run memory cleanup ──────────────────────────────────────
+# iOS Python is a long-lived process — each Run-button invocation
+# accumulates objects (matplotlib figures, torch tensors, plotly
+# layouts, tqdm bars). Without a fork(), nothing reaps them between
+# runs and the app's RSS climbs monotonically. Release what we can.
+try:
+    import gc as _cb_gc
+    # matplotlib: close all figures
+    try:
+        _cb_plt = sys.modules.get('matplotlib.pyplot')
+        if _cb_plt is not None and hasattr(_cb_plt, 'close'):
+            _cb_plt.close('all')
+            for _n in ('_current_fig', '_axes_cache'):
+                if hasattr(_cb_plt, _n): setattr(_cb_plt, _n, None)
+            for _n in ('_layout_updates', '_annotations', '_shapes'):
+                _a = getattr(_cb_plt, _n, None)
+                if hasattr(_a, 'clear'):
+                    try: _a.clear()
+                    except Exception: pass
+    except Exception: pass
+    # torch: release cached allocator pages
+    try:
+        _cb_torch = sys.modules.get('torch')
+        if _cb_torch is not None:
+            if hasattr(_cb_torch, 'cuda') and hasattr(_cb_torch.cuda, 'empty_cache'):
+                try: _cb_torch.cuda.empty_cache()
+                except Exception: pass
+            if hasattr(_cb_torch, 'mps') and hasattr(_cb_torch.mps, 'empty_cache'):
+                try: _cb_torch.mps.empty_cache()
+                except Exception: pass
+    except Exception: pass
+    # tqdm: close orphaned progress bars
+    try:
+        _cb_tqdm_mod = sys.modules.get('tqdm')
+        if _cb_tqdm_mod is not None:
+            _cb_tqdm_cls = getattr(_cb_tqdm_mod, 'tqdm', None)
+            if _cb_tqdm_cls is not None and hasattr(_cb_tqdm_cls, '_instances'):
+                for _b in list(getattr(_cb_tqdm_cls, '_instances', ())):
+                    try: _b.close()
+                    except Exception: pass
+    except Exception: pass
+    # Two GC passes — second catches cycles found in first.
+    try:
+        _cb_gc.collect(2)
+        _cb_gc.collect(2)
+    except Exception: pass
+except Exception:
+    pass
 """
 }

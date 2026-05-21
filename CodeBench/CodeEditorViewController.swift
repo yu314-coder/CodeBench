@@ -6268,17 +6268,33 @@ except Exception:
     /// calls for the same file (e.g. dir-watch + PTY scanner both
     /// firing) don't dismiss-then-re-present and cause flicker.
     private func presentOrUpdatePreviewSheet(path: String) {
+        NSLog("[preview-sheet] presentOrUpdatePreviewSheet path=%@ existing=%@ presented=%@",
+              path,
+              presentedPreviewSheet == nil ? "nil" : "set",
+              presentedViewController == nil ? "nil" : String(describing: type(of: presentedViewController!)))
         // Already showing this exact path? Nothing to do.
         if let current = presentedPreviewSheet, current.currentPath == path {
+            NSLog("[preview-sheet] already showing same path — skip")
             return
         }
         // Different path while a sheet is up — load the new content
         // in-place so the user keeps the same sheet they were viewing.
         if let current = presentedPreviewSheet {
+            NSLog("[preview-sheet] updating existing sheet to new path")
             current.load(path: path)
             return
         }
+        // If some OTHER VC is presented (e.g. a settings sheet, the
+        // file browser), iOS will silently ignore present() because
+        // a VC can only present one thing at a time. Log so we can
+        // see this case in the wild.
+        if let other = presentedViewController {
+            NSLog("[preview-sheet] CANNOT present — %@ is already presented",
+                  String(describing: type(of: other)))
+            return
+        }
         // No sheet up — create + present.
+        NSLog("[preview-sheet] creating + presenting new sheet")
         let vc = PreviewSheetViewController(path: path)
         if let sheet = vc.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
@@ -6286,7 +6302,9 @@ except Exception:
             sheet.preferredCornerRadius = 16
             sheet.largestUndimmedDetentIdentifier = .medium
         }
-        present(vc, animated: true)
+        present(vc, animated: true) {
+            NSLog("[preview-sheet] presented animated complete")
+        }
         presentedPreviewSheet = vc
     }
 
@@ -7182,19 +7200,13 @@ except Exception:
         }
 
         // iPhone (compact width): surface the chart as a half-sheet
-        // because the inline outputPanel is hidden. BUT only auto-
-        // present for actual chart renders — not for the many other
-        // ``showImageOutput`` callers (HTML file open, file-save
-        // refresh, asset → index.html dev-server shim, restored
-        // ``currentOutputPath`` on launch, etc.). Otherwise the
-        // sheet pops up uninvited every time the user just opens
-        // an HTML file in the editor and they have to dismiss it.
-        //
-        // Chart files written by sitecustomize.py / PythonRuntime
-        // .swift's _show_hook variants land in ToolOutputs/. User
-        // HTML lives elsewhere in the workspace. The path-prefix
-        // check separates the two cleanly.
-        if isCompactWidth, isChartOutputPath(path) {
+        // because the inline outputPanel is hidden.
+        let compact = isCompactWidth
+        let isChart = isChartOutputPath(path)
+        NSLog("[preview-gate] path=%@ compact=%d isChart=%d",
+              path, compact ? 1 : 0, isChart ? 1 : 0)
+        if compact && isChart {
+            NSLog("[preview-gate] dispatching presentOrUpdatePreviewSheet")
             presentOrUpdatePreviewSheet(path: path)
         }
 

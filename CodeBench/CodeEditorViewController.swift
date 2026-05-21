@@ -6254,28 +6254,49 @@ except Exception:
         showImageOutput(path: path)
     }
 
-    /// True if ``path`` lives under any ``ToolOutputs/`` directory —
-    /// the canonical write target for matplotlib's ``_show_hook`` /
-    /// plotly's patched ``Figure.show`` / manim renders. Used to gate
-    /// the iPhone auto-present sheet so it ONLY fires for actual
-    /// script-produced charts, not for the many other
-    /// ``showImageOutput`` callers (editor HTML preview, file-save
-    /// refresh, asset→index.html dev-server shim, etc.).
+    /// True if ``path`` is something a script wants the user to SEE
+    /// — auto-presents in the iPhone half-sheet. Used to gate
+    /// ``showImageOutput`` on compact width so the sheet ONLY fires
+    /// for actual script-produced visual output, not for editor-side
+    /// callers (HTML file open, file-save refresh, asset→index.html
+    /// dev-server shim, etc.). Covers:
     ///
-    /// Implementation note: a substring check is intentional. iOS
-    /// symlinks ``/var`` → ``/private/var`` (and ``/tmp`` → ``/private/
-    /// tmp``), so an earlier ``hasPrefix`` comparison against
-    /// ``FileManager.urls(for: .documentDirectory).path`` failed on
-    /// real-device paths like ``/private/var/mobile/.../Documents/
-    /// ToolOutputs/chart.html`` vs the resolved ``/var/mobile/...``.
-    /// Standardising both sides via ``.standardizingPath`` was also
-    /// inconsistent across iOS / iOS Simulator / Mac Catalyst (each
-    /// resolves the symlinks differently). Substring is robust to
-    /// every variant because all of them contain ``/ToolOutputs/``
-    /// somewhere in the middle, and no other legit path in the app
-    /// has that segment by coincidence.
+    ///   * ``/ToolOutputs/`` — matplotlib/plotly/manim chart files
+    ///   * ``http://`` / ``https://`` — pywebview's
+    ///     ``create_window(url=…)`` and ``Window.load_url(…)``
+    ///   * ``$TMPDIR/`` — pywebview's ``create_window(html=…)`` saves
+    ///     HTML to ``$TMPDIR/pywebview_scratch/*.html``; LaTeX engine
+    ///     produces PDFs in ``$TMPDIR/latex_work/``; both are real
+    ///     auto-generated content the user wants to see.
+    ///
+    /// Substring check on ``/ToolOutputs/`` is intentional — iOS
+    /// symlinks ``/var`` → ``/private/var`` and ``hasPrefix`` against
+    /// ``FileManager.urls(.documentDirectory).path`` is inconsistent
+    /// across iOS / Simulator / Catalyst. ``hasPrefix`` against
+    /// ``NSTemporaryDirectory()`` is safe because both Python's
+    /// ``tempfile.gettempdir()`` and Swift's NSTemporaryDirectory()
+    /// return the same string on each platform.
     private func isChartOutputPath(_ path: String) -> Bool {
-        return path.contains("/ToolOutputs/")
+        // matplotlib / plotly / manim charts
+        if path.contains("/ToolOutputs/") { return true }
+        // pywebview create_window(url=…) / load_url(…) — pass raw
+        // URLs through. Loads via URLRequest in showImageOutput.
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            return true
+        }
+        // pywebview create_window(html=…) writes to
+        // $TMPDIR/pywebview_scratch/*.html. LaTeX previews land in
+        // $TMPDIR/latex_work/*.pdf. Both legitimate auto-content.
+        let tmp = NSTemporaryDirectory()
+        if path.hasPrefix(tmp) { return true }
+        // Symlink-resolved variant (just in case some path resolution
+        // happened upstream). NSTemporaryDirectory on iPhone returns
+        // ``/private/var/mobile/.../tmp/`` but Python's
+        // tempfile.gettempdir() may return ``/var/mobile/.../tmp/``
+        // without the /private prefix.
+        if path.contains("/pywebview_scratch/") { return true }
+        if path.contains("/latex_work/") { return true }
+        return false
     }
 
     /// Manual "Preview" toolbar button handler (iPhone only) — scans

@@ -6268,10 +6268,6 @@ except Exception:
     /// calls for the same file (e.g. dir-watch + PTY scanner both
     /// firing) don't dismiss-then-re-present and cause flicker.
     private func presentOrUpdatePreviewSheet(path: String) {
-        NSLog("[preview-sheet] presentOrUpdatePreviewSheet path=%@ existing=%@ presented=%@",
-              path,
-              presentedPreviewSheet == nil ? "nil" : "set",
-              presentedViewController == nil ? "nil" : String(describing: type(of: presentedViewController!)))
         // Already showing this exact path? Nothing to do.
         if let current = presentedPreviewSheet, current.currentPath == path {
             NSLog("[preview-sheet] already showing same path — skip")
@@ -6284,17 +6280,18 @@ except Exception:
             current.load(path: path)
             return
         }
-        // If some OTHER VC is presented (e.g. a settings sheet, the
-        // file browser), iOS will silently ignore present() because
-        // a VC can only present one thing at a time. Log so we can
-        // see this case in the wild.
-        if let other = presentedViewController {
-            NSLog("[preview-sheet] CANNOT present — %@ is already presented",
-                  String(describing: type(of: other)))
-            return
-        }
-        // No sheet up — create + present.
-        NSLog("[preview-sheet] creating + presenting new sheet")
+        // Walk up to find the truly top-most VC that can present.
+        // ``self`` is a child of GameViewController; UIKit's default
+        // present-from-child behaviour searches upward for the nearest
+        // presenter, but if any VC in the chain is mid-transition or
+        // owned by a UISplitViewController quirk, the call silently
+        // no-ops. Resolving the actual top once up front avoids all
+        // of that — we always present from a VC iOS will accept.
+        let presenter = topMostViewController()
+        NSLog("[preview-sheet] creating sheet for %@ — presenter=%@ self=%@",
+              (path as NSString).lastPathComponent,
+              String(describing: type(of: presenter)),
+              String(describing: type(of: self)))
         let vc = PreviewSheetViewController(path: path)
         if let sheet = vc.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
@@ -6302,10 +6299,38 @@ except Exception:
             sheet.preferredCornerRadius = 16
             sheet.largestUndimmedDetentIdentifier = .medium
         }
-        present(vc, animated: true) {
+        presenter.present(vc, animated: true) {
             NSLog("[preview-sheet] presented animated complete")
         }
         presentedPreviewSheet = vc
+    }
+
+    /// Walk to the deepest currently-active view controller — the
+    /// root window's ``rootViewController`` plus any chain of
+    /// ``presentedViewController``. Use this when presenting a sheet
+    /// from a child VC: directly calling ``self.present`` from a
+    /// child VC silently no-ops when any ancestor is itself in the
+    /// middle of a presentation, mid-transition, owned by a split-
+    /// view controller quirk, etc. Presenting from the topmost VC
+    /// is guaranteed to be accepted by UIKit.
+    private func topMostViewController() -> UIViewController {
+        // Find a window via the connected scenes (more reliable
+        // than ``UIApplication.shared.keyWindow`` which is deprecated
+        // on iOS 13+ and returns nil for foreground-inactive scenes).
+        var root: UIViewController? = view.window?.rootViewController
+        if root == nil {
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first(where: { $0.activationState == .foregroundActive })
+            root = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+                ?? scene?.windows.first?.rootViewController
+        }
+        var top = root ?? self
+        // Follow the presented-chain to the deepest VC.
+        while let next = top.presentedViewController, !next.isBeingDismissed {
+            top = next
+        }
+        return top
     }
 
     /// Single entry point — both the PTY scanner and the dir watcher

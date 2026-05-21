@@ -8268,15 +8268,29 @@ fileprivate final class PreviewSheetViewController: UIViewController, WKNavigati
         load(path: currentPath)
     }
 
-    /// Reload the sheet's WebView with a new chart file. Called by
+    /// Reload the sheet's WebView with a new path or URL. Called by
     /// ``CodeEditorViewController.presentOrUpdatePreviewSheet`` when
-    /// a new chart arrives while the sheet is already presented.
-    /// Falls back to a visible diagnostic HTML page if the file is
-    /// missing / empty / unreadable — previously the WebView's dark
-    /// background just showed through making the sheet look "broken
-    /// — only a black thing".
+    /// a new chart / pywebview HTML / URL arrives while the sheet
+    /// is already presented. Falls back to a visible diagnostic
+    /// HTML page if the file is missing / empty / unreadable —
+    /// previously the WebView's dark background just showed through
+    /// making the sheet look "broken — only a black thing".
     func load(path: String) {
         currentPath = path
+
+        // HTTP(S) URL branch — pywebview ``create_window(url=…)`` /
+        // ``Window.load_url(…)`` pass URLs through, not file paths.
+        // Must be checked BEFORE the file-exists guard, otherwise the
+        // sheet shows "File not found" for what is actually a perfectly
+        // valid URL the user wants to navigate to.
+        if path.hasPrefix("http://") || path.hasPrefix("https://"),
+           let url = URL(string: path) {
+            pathLabel.text = path
+            NSLog("[preview-sheet] loading URL: %@", path)
+            webView.load(URLRequest(url: url))
+            return
+        }
+
         pathLabel.text = (path as NSString).lastPathComponent
 
         guard FileManager.default.fileExists(atPath: path) else {

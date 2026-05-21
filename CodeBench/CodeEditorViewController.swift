@@ -6237,21 +6237,28 @@ except Exception:
         showImageOutput(path: path)
     }
 
-    /// True if ``path`` lives under ``~/Documents/ToolOutputs/`` —
-    /// the canonical directory where matplotlib's ``_show_hook`` /
-    /// plotly's patched ``Figure.show`` / manim renders write their
-    /// output files. Used to gate the iPhone auto-present sheet so
-    /// it ONLY fires for actual script-produced charts, not for the
-    /// many other ``showImageOutput`` callers (editor HTML preview,
-    /// file-save refresh, asset→index.html dev-server shim, etc.).
+    /// True if ``path`` lives under any ``ToolOutputs/`` directory —
+    /// the canonical write target for matplotlib's ``_show_hook`` /
+    /// plotly's patched ``Figure.show`` / manim renders. Used to gate
+    /// the iPhone auto-present sheet so it ONLY fires for actual
+    /// script-produced charts, not for the many other
+    /// ``showImageOutput`` callers (editor HTML preview, file-save
+    /// refresh, asset→index.html dev-server shim, etc.).
+    ///
+    /// Implementation note: a substring check is intentional. iOS
+    /// symlinks ``/var`` → ``/private/var`` (and ``/tmp`` → ``/private/
+    /// tmp``), so an earlier ``hasPrefix`` comparison against
+    /// ``FileManager.urls(for: .documentDirectory).path`` failed on
+    /// real-device paths like ``/private/var/mobile/.../Documents/
+    /// ToolOutputs/chart.html`` vs the resolved ``/var/mobile/...``.
+    /// Standardising both sides via ``.standardizingPath`` was also
+    /// inconsistent across iOS / iOS Simulator / Mac Catalyst (each
+    /// resolves the symlinks differently). Substring is robust to
+    /// every variant because all of them contain ``/ToolOutputs/``
+    /// somewhere in the middle, and no other legit path in the app
+    /// has that segment by coincidence.
     private func isChartOutputPath(_ path: String) -> Bool {
-        guard let documents = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask).first else {
-            return false
-        }
-        let toolOutputs = documents.appendingPathComponent("ToolOutputs").path
-        let resolved = (path as NSString).standardizingPath
-        return resolved.hasPrefix(toolOutputs)
+        return path.contains("/ToolOutputs/")
     }
 
     /// iPhone-only: present (or update in place) a half-sheet modal

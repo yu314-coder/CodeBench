@@ -1561,8 +1561,25 @@ final class CodeEditorViewController: UIViewController {
             spacer,
         ]
         if compact {
-            // iPhone: keep only the essentials on the right —
-            // preload (model warm-up) + settings. RAM gauge and
+            // iPhone: add a manual "Preview" eye button so the user
+            // can always summon the latest chart regardless of whether
+            // the auto-present chain (dir-watch → tryShowChart →
+            // showImageOutput → presentOrUpdatePreviewSheet → present)
+            // worked. The auto path has been finicky on iPhone — this
+            // is the reliable escape hatch.
+            let previewButton = UIButton(type: .system)
+            var previewCfg = UIButton.Configuration.plain()
+            previewCfg.image = UIImage(systemName: "eye",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))
+            previewCfg.baseForegroundColor = UIColor(white: 0.55, alpha: 1)
+            previewCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+            previewButton.configuration = previewCfg
+            previewButton.addTarget(self,
+                action: #selector(showLatestPreviewTapped),
+                for: .touchUpInside)
+            previewButton.translatesAutoresizingMaskIntoConstraints = false
+            toolbarItems.append(previewButton)
+            // Then preload (model warm-up) + settings. RAM gauge and
             // LaTeX test are easily reachable via System / Math
             // dashboards; not worth blocking the editor for.
             toolbarItems.append(preloadButton)
@@ -6261,6 +6278,76 @@ except Exception:
         return path.contains("/ToolOutputs/")
     }
 
+    /// Manual "Preview" toolbar button handler (iPhone only) — scans
+    /// ~/Documents/ToolOutputs/ for the most recent chart-like file
+    /// and feeds it to ``showImageOutput``. Reliable fallback when
+    /// the auto-present chain misses; the user can always summon the
+    /// last chart by tapping the eye icon.
+    @objc private func showLatestPreviewTapped() {
+        guard let docs = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask).first else { return }
+        let toolOutputs = docs.appendingPathComponent("ToolOutputs")
+        writePreviewDebugLog("manual-preview tapped, scanning \(toolOutputs.path)")
+
+        let extOK: Set<String> = ["html", "htm", "png", "jpg", "jpeg",
+                                  "gif", "webp", "pdf", "mp4", "mov", "webm"]
+        var best: (path: String, date: Date)?
+        if let enumerator = FileManager.default.enumerator(
+            at: toolOutputs,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]) {
+            for case let url as URL in enumerator {
+                guard let vals = try? url.resourceValues(forKeys:
+                        [.contentModificationDateKey, .isRegularFileKey]),
+                      vals.isRegularFile == true,
+                      let date = vals.contentModificationDate,
+                      extOK.contains(url.pathExtension.lowercased())
+                else { continue }
+                // Skip manim per-frame partials
+                if url.path.contains("/partial_movie_files/") { continue }
+                if best == nil || date > best!.date {
+                    best = (url.path, date)
+                }
+            }
+        }
+
+        if let pick = best {
+            writePreviewDebugLog("manual-preview found \(pick.path)")
+            showImageOutput(path: pick.path)
+        } else {
+            writePreviewDebugLog("manual-preview NO files found in \(toolOutputs.path)")
+            let alert = UIAlertController(
+                title: "No preview available",
+                message: "No chart / image / PDF files found in:\n\(toolOutputs.path)\n\n" +
+                         "Run a script that produces a chart (`plt.show()`, " +
+                         "`fig.show()`, manim's `Scene.render()`) first, then " +
+                         "tap this button again.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            topMostViewController().present(alert, animated: true)
+        }
+    }
+
+    /// Append a line to ``~/Documents/preview-debug.log`` so the user
+    /// can ``cat ~/Documents/preview-debug.log`` from the in-app shell
+    /// to see what happened — without needing an Xcode console
+    /// connection. Use sparingly at the key chain steps; the file
+    /// just keeps growing across runs.
+    private func writePreviewDebugLog(_ msg: String) {
+        guard let docs = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask).first else { return }
+        let path = docs.appendingPathComponent("preview-debug.log").path
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(ts)] \(msg)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile()
+            try? fh.write(contentsOf: data)
+            try? fh.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     /// iPhone-only: present (or update in place) a half-sheet modal
     /// showing the chart at ``path``. Called from ``showImageOutput``
     /// on compact width because the inline outputPanel is hidden
@@ -7230,9 +7317,13 @@ except Exception:
         let isChart = isChartOutputPath(path)
         NSLog("[preview-gate] path=%@ compact=%d isChart=%d",
               path, compact ? 1 : 0, isChart ? 1 : 0)
+        writePreviewDebugLog("showImageOutput called: path=\(path) compact=\(compact) isChart=\(isChart)")
         if compact && isChart {
             NSLog("[preview-gate] dispatching presentOrUpdatePreviewSheet")
+            writePreviewDebugLog("→ dispatching presentOrUpdatePreviewSheet")
             presentOrUpdatePreviewSheet(path: path)
+        } else if compact && !isChart {
+            writePreviewDebugLog("→ skipped (compact but not a chart path; lives outside ToolOutputs/)")
         }
 
         // pywebview shim can send http(s):// URLs straight through.

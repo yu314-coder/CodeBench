@@ -8437,4 +8437,30 @@ fileprivate final class PreviewSheetViewController: UIViewController, WKNavigati
         // images PDF + diagnostic fallback for missing files).
         load(path: currentPath)
     }
+
+    // Real-browser behavior on the half-sheet too: target-nil clicks
+    // (mobile Google results, rel="noopener" links, target=_blank forms)
+    // default to "do nothing"; route to same-view navigation instead.
+    // External schemes (mailto, tel, etc.) hand off to the system.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.allow); return
+        }
+        if navigationAction.targetFrame == nil {
+            webView.load(URLRequest(url: url))
+            decisionHandler(.cancel)
+            return
+        }
+        if let scheme = url.scheme?.lowercased(),
+           !["http", "https", "file", "about", "blob", "data",
+             "ws", "wss"].contains(scheme),
+           UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url, options: [:])
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
 }

@@ -111,16 +111,30 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow); return
         }
-        // Bug fix: some link clicks (especially on mobile Google results,
-        // pages with rel="noopener noreferrer", or pages that use a
-        // wrapper <form target="_blank">) reach decidePolicyFor with
-        // navigationAction.targetFrame == nil. WKWebView's default for
-        // that case is to do NOTHING (the click silently fails) unless
-        // uiDelegate.createWebViewWith handles it — but link clicks
+        // Bug fix: link clicks with `target="_blank"` (mobile Google
+        // results, rel="noopener" links, forms with target=_blank)
+        // reach decidePolicyFor with navigationAction.targetFrame ==
+        // nil. WKWebView's default for that case is do-nothing unless
+        // uiDelegate.createWebViewWith handles it — and link clicks
         // don't always reach createWebViewWith. Detect the "new-frame
         // navigation" case here and cancel + reload in the same view.
-        if navigationAction.targetFrame == nil {
-            NSLog("[browser] target=nil click → loading in same view: %@",
+        //
+        // CRITICAL: gate on navigationType so we DON'T fire for the
+        // INITIAL page load. The first webView.load(URLRequest()) call
+        // arrives with targetFrame == nil too (no main frame exists
+        // yet) and navigationType == .other. If we cancel + reload
+        // that, we get an infinite cancel/reload loop and NOTHING in
+        // the webview is ever clickable.
+        let userInitiated: Bool = {
+            switch navigationAction.navigationType {
+            case .linkActivated, .formSubmitted, .formResubmitted:
+                return true
+            default:
+                return false
+            }
+        }()
+        if userInitiated && navigationAction.targetFrame == nil {
+            NSLog("[browser] target=nil user-click → loading in same view: %@",
                   url.absoluteString)
             webView.load(URLRequest(url: url))
             decisionHandler(.cancel)

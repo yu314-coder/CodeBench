@@ -197,6 +197,9 @@ final class PreviewFullscreenViewController: UIViewController {
         ])
     }
 
+    /// Strong ref to the browser-behavior delegate; WKWebView holds it weakly.
+    private var browserDelegate: BrowserBehaviorDelegate?
+
     private func makeWebView() -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -207,6 +210,9 @@ final class PreviewFullscreenViewController: UIViewController {
         wv.backgroundColor = .black
         wv.isOpaque = false
         wv.scrollView.backgroundColor = .black
+        // Real-browser behavior: target=_blank, alert/confirm/prompt,
+        // file downloads, external schemes. See BrowserBehaviorDelegate.
+        browserDelegate = wv.attachBrowserBehavior(host: self)
         return wv
     }
 

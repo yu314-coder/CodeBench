@@ -476,6 +476,10 @@ final class CodeEditorViewController: UIViewController {
     private let outputPlaymarkIcon = UIImageView()
     private let outputMetaLabel = UILabel()
     private weak var outputPlaceholderGridLayer: CALayer?
+    /// Real-browser delegate for outputWebView — handles target=_blank,
+    /// alert/confirm/prompt, downloads, external schemes. Strong ref
+    /// because WKWebView holds delegates weakly. See BrowserBehaviorDelegate.
+    private var previewBrowserDelegate: BrowserBehaviorDelegate?
     private let outputWebView: WKWebView = {
         let config = WKWebViewConfiguration()
         // iOS 14+: per-navigation JS toggle on WKWebpagePreferences. The
@@ -2388,6 +2392,13 @@ final class CodeEditorViewController: UIViewController {
         outputWebView.configuration.userContentController.add(self, name: "saveVideo")
         outputWebView.configuration.userContentController.add(self, name: "shareVideo")
         outputWebView.configuration.userContentController.add(self, name: "clipboard")
+
+        // Real-browser behavior — without this, pages render but every
+        // target="_blank" link silently fails, every alert/confirm/prompt
+        // is a no-op, every <a download> does nothing, and external
+        // schemes (mailto:, tel:, etc.) hang. See BrowserBehaviorDelegate.
+        // Stored as a property so WKWebView's weak delegate ref survives.
+        previewBrowserDelegate = outputWebView.attachBrowserBehavior(host: self)
 
         // Subtle indigo grid (32×32) behind the empty state. Design CSS:
         //   linear-gradient(to right,  rgba(99,102,241,0.035) 1px, transparent 1px),

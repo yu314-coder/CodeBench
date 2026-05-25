@@ -8448,40 +8448,4 @@ fileprivate final class PreviewSheetViewController: UIViewController, WKNavigati
         load(path: currentPath)
     }
 
-    // Real-browser behavior on the half-sheet too: target-nil USER
-    // CLICKS (mobile Google results, rel="noopener" links, target=
-    // _blank forms) default to "do nothing"; route to same-view nav.
-    // Gate on navigationType so we don't loop on the initial page
-    // load (which also has targetFrame == nil but navigationType ==
-    // .other). External schemes (mailto, tel, etc.) hand off to the
-    // system.
-    func webView(_ webView: WKWebView,
-                 decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url else {
-            decisionHandler(.allow); return
-        }
-        let userInitiated: Bool = {
-            switch navigationAction.navigationType {
-            case .linkActivated, .formSubmitted, .formResubmitted:
-                return true
-            default:
-                return false
-            }
-        }()
-        if userInitiated && navigationAction.targetFrame == nil {
-            webView.load(URLRequest(url: url))
-            decisionHandler(.cancel)
-            return
-        }
-        if let scheme = url.scheme?.lowercased(),
-           !["http", "https", "file", "about", "blob", "data",
-             "ws", "wss"].contains(scheme),
-           UIApplication.shared.canOpenURL(url) {
-            UIApplication.shared.open(url, options: [:])
-            decisionHandler(.cancel)
-            return
-        }
-        decisionHandler(.allow)
-    }
 }

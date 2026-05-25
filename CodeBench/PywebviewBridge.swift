@@ -457,71 +457,16 @@ import WebKit
         return FileHandle(forWritingAtPath: path)
     }
 
-    // MARK: WKNavigationDelegate — page lifecycle + policy forwarding
+    // MARK: WKNavigationDelegate — page lifecycle
     //
-    // The lifecycle callbacks (didFinish / didFail) we publish to Python
-    // for pywebview event hooks. The policy callbacks (decidePolicyFor)
-    // we just forward to whichever delegate was installed before us —
-    // typically BrowserBehaviorDelegate, which handles target=nil link
-    // clicks (the "click a Google result and nothing happens" case),
-    // external schemes (mailto:/tel:/maps:), and file downloads. If we
-    // don't forward, every page that does `<a target="_blank">` or
-    // returns a binary MIME silently no-ops because WKWebView's default
-    // for a non-implementing delegate is "allow", which for target=nil
-    // means "do nothing visible."
-
-    func webView(_ webView: WKWebView,
-                 decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // Selector disambiguation: WKNavigationDelegate has two
-        // `decidePolicyFor:` methods (action + response), both named
-        // `webView:decidePolicyFor:decisionHandler:` in ObjC. Use the
-        // ObjC name with the correct argument-type signature to pick
-        // the right one for responds(to:).
-        let sel = NSSelectorFromString(
-            "webView:decidePolicyForNavigationAction:decisionHandler:")
-        if let fwd = forwardNavigationDelegate as AnyObject?,
-           fwd.responds(to: sel) {
-            forwardNavigationDelegate!.webView?(webView,
-                                                decidePolicyFor: navigationAction,
-                                                decisionHandler: decisionHandler)
-        } else {
-            decisionHandler(.allow)
-        }
-    }
-
-    func webView(_ webView: WKWebView,
-                 decidePolicyFor navigationResponse: WKNavigationResponse,
-                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        let sel = NSSelectorFromString(
-            "webView:decidePolicyForNavigationResponse:decisionHandler:")
-        if let fwd = forwardNavigationDelegate as AnyObject?,
-           fwd.responds(to: sel) {
-            forwardNavigationDelegate!.webView?(webView,
-                                                decidePolicyFor: navigationResponse,
-                                                decisionHandler: decisionHandler)
-        } else {
-            decisionHandler(.allow)
-        }
-    }
-
-    @available(iOS 14.5, *)
-    func webView(_ webView: WKWebView,
-                 navigationAction: WKNavigationAction,
-                 didBecome download: WKDownload) {
-        forwardNavigationDelegate?.webView?(webView,
-                                            navigationAction: navigationAction,
-                                            didBecome: download)
-    }
-
-    @available(iOS 14.5, *)
-    func webView(_ webView: WKWebView,
-                 navigationResponse: WKNavigationResponse,
-                 didBecome download: WKDownload) {
-        forwardNavigationDelegate?.webView?(webView,
-                                            navigationResponse: navigationResponse,
-                                            didBecome: download)
-    }
+    // We only forward the lifecycle callbacks (didFinish / didFail) to
+    // any pre-existing navigation delegate. We do NOT implement or
+    // forward decidePolicyFor — letting WKWebView use its default
+    // (.allow) avoids the cancel/reload loops that the search results
+    // (https://developer.apple.com/forums/thread/659421) flag as the
+    // most common cause of "clicks stop working" inside WKWebView.
+    // target=_blank links are handled by uiDelegate.createWebViewWith
+    // (BrowserBehaviorDelegate's canonical popup-routing mechanism).
 
     func webView(_ webView: WKWebView, didFinish nav: WKNavigation!) {
         let url = webView.url?.absoluteString ?? ""

@@ -111,36 +111,14 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow); return
         }
-        // Bug fix: link clicks with `target="_blank"` (mobile Google
-        // results, rel="noopener" links, forms with target=_blank)
-        // reach decidePolicyFor with navigationAction.targetFrame ==
-        // nil. WKWebView's default for that case is do-nothing unless
-        // uiDelegate.createWebViewWith handles it — and link clicks
-        // don't always reach createWebViewWith. Detect the "new-frame
-        // navigation" case here and cancel + reload in the same view.
-        //
-        // CRITICAL: gate on navigationType so we DON'T fire for the
-        // INITIAL page load. The first webView.load(URLRequest()) call
-        // arrives with targetFrame == nil too (no main frame exists
-        // yet) and navigationType == .other. If we cancel + reload
-        // that, we get an infinite cancel/reload loop and NOTHING in
-        // the webview is ever clickable.
-        let userInitiated: Bool = {
-            switch navigationAction.navigationType {
-            case .linkActivated, .formSubmitted, .formResubmitted:
-                return true
-            default:
-                return false
-            }
-        }()
-        if userInitiated && navigationAction.targetFrame == nil {
-            NSLog("[browser] target=nil user-click → loading in same view: %@",
-                  url.absoluteString)
-            webView.load(URLRequest(url: url))
-            decisionHandler(.cancel)
-            return
-        }
-        // mailto:, tel:, sms:, itms-apps:, maps:, etc. — hand to system.
+        // Log every decision so we can see exactly what's happening on
+        // each click. Strip after the click behavior is verified.
+        NSLog("[browser] decidePolicy navType=%d targetFrame=%@ url=%@",
+              navigationAction.navigationType.rawValue,
+              navigationAction.targetFrame == nil ? "nil" : "main",
+              url.absoluteString)
+        // External schemes (mailto:, tel:, maps:, etc.) — hand to system.
+        // Skip the standard renderable schemes.
         if let scheme = url.scheme?.lowercased(),
            !["http", "https", "file", "about", "blob", "data",
              "ws", "wss"].contains(scheme),
@@ -149,6 +127,14 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
             decisionHandler(.cancel)
             return
         }
+        // Allow everything else, including target=_blank link clicks.
+        // The standard mechanism for target=_blank / window.open is
+        // uiDelegate.createWebViewWith — implemented above to load in
+        // the same view. WKWebView routes those clicks there
+        // automatically when navigationAction.targetFrame == nil
+        // for a link-activated action. We don't intercept here because
+        // gating on navigationType missed some real-world cases AND
+        // false-triggered on initial programmatic loads.
         decisionHandler(.allow)
     }
 

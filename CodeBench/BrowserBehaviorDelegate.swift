@@ -53,13 +53,25 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         // Default WKWebView returns nil → link silently does nothing.
-        // For a preview pane there's no second view to send it to, so
-        // load the requested URL in this same web view.
+        //
+        // Two choices for handling target=_blank / window.open from a
+        // preview pane:
+        //   (a) load in the same web view — what we tried first; on
+        //       Mac Catalyst this caused "only first click works"
+        //       because WKWebView puts the view into a restricted state
+        //       after the first cancelled popup attempt.
+        //   (b) hand the URL to UIApplication.open(_:) so the system
+        //       browser opens it. This is how Apple Mail / Messages /
+        //       Notes / every other embedded preview handles _blank
+        //       links — the user gets the full browser, the preview
+        //       pane stays focused on its main content. RELIABLE on
+        //       every iOS / Catalyst version.
+        // We pick (b).
         let url = navigationAction.request.url
-        NSLog("[browser] createWebViewWith → loading in same view: %@",
+        NSLog("[browser] createWebViewWith → opening externally: %@",
               url?.absoluteString ?? "<nil>")
-        if let url = url {
-            webView.load(URLRequest(url: url))
+        if let url = url, UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url, options: [:])
         }
         return nil
     }

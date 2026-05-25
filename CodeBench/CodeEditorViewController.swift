@@ -2631,7 +2631,17 @@ final class CodeEditorViewController: UIViewController {
     }
 
     @objc private func presentFullscreenPreview() {
-        guard let path = currentOutputPath else { return }
+        // For HTTP(S) pages, prefer the inline preview's CURRENT URL
+        // (where the user has navigated to via in-page link clicks) over
+        // currentOutputPath (the URL that was originally loaded). Without
+        // this, expanding to fullscreen always shows the entry page even
+        // after the user has clicked through search results, links, etc.
+        var path: String? = currentOutputPath
+        if let liveURL = outputWebView.url?.absoluteString,
+           liveURL.hasPrefix("http://") || liveURL.hasPrefix("https://") {
+            path = liveURL
+        }
+        guard let path = path else { return }
         // Live URLs (pywebview pages) need to skip the file-existence
         // check — that test always failed for "https://..." paths so
         // tapping the expand button on a webview preview did nothing.

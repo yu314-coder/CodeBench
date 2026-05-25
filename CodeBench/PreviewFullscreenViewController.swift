@@ -44,6 +44,17 @@ final class PreviewFullscreenViewController: UIViewController {
     // MARK: - Content
 
     private func installContent() {
+        // Live HTTP(S) URLs — for pywebview create_window(url=...) and
+        // for Dash/Flask/Streamlit dashboards expanded to fullscreen.
+        // Detect BEFORE the file-extension switch (otherwise the ext is
+        // "" for paths like "https://example.com" and we'd hit
+        // installUnsupported, which is why fullscreen-of-a-running-page
+        // used to show a "no viewer" label).
+        if path.hasPrefix("http://") || path.hasPrefix("https://"),
+           let url = URL(string: path) {
+            installLiveURL(url: url)
+            return
+        }
         let url = URL(fileURLWithPath: path)
         switch ext {
         case "pdf":
@@ -61,6 +72,15 @@ final class PreviewFullscreenViewController: UIViewController {
         default:
             installUnsupported()
         }
+    }
+
+    private func installLiveURL(url: URL) {
+        let wv = makeWebView()
+        view.addSubview(wv)
+        pinToSafeArea(wv)
+        // loadFileURL doesn't work for http(s); use a real URLRequest so
+        // the page gets the correct origin (cookies, referer, CSP, etc.).
+        wv.load(URLRequest(url: url))
     }
 
     private func installPDF(url: URL) {

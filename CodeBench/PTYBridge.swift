@@ -963,6 +963,18 @@ final class LineBuffer {
             }
             pipeWrite([0x03])
             PythonRuntime.shared.interruptPythonMainThread()
+
+            // iOS / CodeBench: also write the file-signal that
+            // offlinai_shell._python's watchdog polls. PyErr_SetInterrupt
+            // only reaches the main interpreter thread, but `python
+            // script.py` runs the user script on a worker thread, so the
+            // C-API path alone misses every blocking Flask/Dash/
+            // Streamlit/tornado server. The signal file → watchdog →
+            // PyThreadState_SetAsyncExc chain targets the script's
+            // thread by ID. Latency: ≤ ~500ms.
+            let interruptPath = NSTemporaryDirectory()
+                + "offlinai_interrupt"
+            try? Data().write(to: URL(fileURLWithPath: interruptPath))
         case 0x04: // Ctrl-D — EOF if buffer empty, else forward-delete
             if buf.isEmpty {
                 pipeWrite([0x04])

@@ -1523,6 +1523,15 @@ class _StreamWriter:
         self._f = open(path, 'w', encoding='utf-8') if path else None
     def write(self, s):
         if s:
+            # Click (streamlit's dep), and some other libs that go
+            # through binary-stream APIs, can hand us bytes. Decode so
+            # the underlying StringIO + utf-8 file handle don't choke
+            # with `TypeError: string argument expected, got 'bytes'`.
+            if isinstance(s, (bytes, bytearray)):
+                try:
+                    s = bytes(s).decode('utf-8', errors='replace')
+                except Exception:
+                    s = str(s)
             # Tolerate writes after close — happens when third-party libs
             # (transformers' logger, manim's pango warnings, etc.) emit
             # messages after the wrapper has finished and closed its file.
@@ -1591,6 +1600,19 @@ try:
                 return np.bitwise_and(np.asarray(self), np.asarray(other)).view(SafeArray)
             def __or__(self, other):
                 return np.bitwise_or(np.asarray(self), np.asarray(other)).view(SafeArray)
+            # SafeArray is defined inside the runtime-init script, so its
+            # __module__ is "__main__" with no stable import path. pickle
+            # would record "__main__.SafeArray" and fail on unpickle (the
+            # name doesn't exist there in user scripts). Streamlit's
+            # @st.cache_data, joblib, multiprocessing.Queue, anything
+            # that pickles a DataFrame hits this. Reduce as a plain
+            # ndarray instead — round-trips through pickle losslessly,
+            # just loses the SafeArray subclass identity (the runtime
+            # re-applies the patch on next module import anyway).
+            def __reduce__(self):
+                return np.ndarray.__reduce__(self.view(np.ndarray))
+            def __reduce_ex__(self, protocol):
+                return np.ndarray.__reduce_ex__(self.view(np.ndarray), protocol)
 
         # Patch numpy functions ONCE so they return SafeArray.
         # Guard: skip if already patched (script re-runs per execution).

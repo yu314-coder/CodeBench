@@ -4733,6 +4733,21 @@ except Exception:
         //    loops where there's no syscall to wake.
         PythonRuntime.shared.hardStopRunningTask()
 
+        // 3. File-signal for the worker-thread case: PyErr_SetInterrupt
+        //    only reaches the main interpreter thread, but `python
+        //    script.py` runs the user script on a worker thread (the
+        //    REPL thread isn't the main interpreter thread under our
+        //    embedding). offlinai_shell._python installs a daemon
+        //    watchdog that polls $TMPDIR/offlinai_interrupt and
+        //    injects KeyboardInterrupt into the script's thread via
+        //    PyThreadState_SetAsyncExc. Touch the file so the watchdog
+        //    fires — works for Flask/Dash/Streamlit/Tornado/anything
+        //    blocked in accept(). Latency: ≤ ~500ms.
+        let tmp = NSTemporaryDirectory()
+        let interruptPath = (tmp as NSString)
+            .appendingPathComponent("offlinai_interrupt")
+        try? Data().write(to: URL(fileURLWithPath: interruptPath))
+
         // Visible feedback so the user knows the tap registered.
         // Direct feed (not through the PTY round-trip) so it shows
         // immediately even if the read loop is backlogged.

@@ -286,6 +286,18 @@ extension WKWebView {
         self.uiDelegate = helper
         self.navigationDelegate = helper
         self.allowsBackForwardNavigationGestures = true
+        // Build-stamp marker — if this line shows up in Console.app the
+        // new BrowserBehaviorDelegate code IS in the running binary. If
+        // you DON'T see this on app launch / first preview, the build
+        // is stale (incremental Swift compilation often skips newly
+        // added files; nuke ~/Library/Developer/Xcode/DerivedData and
+        // Cmd+Shift+K, then rebuild).
+        NSLog("[browser] attached delegate to %p (host=%@) — v3 build 2026-05-25",
+              webView_pointer_for_log(self), String(describing: type(of: host)))
         return helper
     }
+}
+
+private func webView_pointer_for_log(_ wv: WKWebView) -> UnsafeRawPointer {
+    return Unmanaged.passUnretained(wv).toOpaque()
 }

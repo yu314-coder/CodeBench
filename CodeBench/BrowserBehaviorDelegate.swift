@@ -55,7 +55,10 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
         // Default WKWebView returns nil → link silently does nothing.
         // For a preview pane there's no second view to send it to, so
         // load the requested URL in this same web view.
-        if let url = navigationAction.request.url {
+        let url = navigationAction.request.url
+        NSLog("[browser] createWebViewWith → loading in same view: %@",
+              url?.absoluteString ?? "<nil>")
+        if let url = url {
             webView.load(URLRequest(url: url))
         }
         return nil
@@ -107,6 +110,21 @@ final class BrowserBehaviorDelegate: NSObject, WKUIDelegate,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow); return
+        }
+        // Bug fix: some link clicks (especially on mobile Google results,
+        // pages with rel="noopener noreferrer", or pages that use a
+        // wrapper <form target="_blank">) reach decidePolicyFor with
+        // navigationAction.targetFrame == nil. WKWebView's default for
+        // that case is to do NOTHING (the click silently fails) unless
+        // uiDelegate.createWebViewWith handles it — but link clicks
+        // don't always reach createWebViewWith. Detect the "new-frame
+        // navigation" case here and cancel + reload in the same view.
+        if navigationAction.targetFrame == nil {
+            NSLog("[browser] target=nil click → loading in same view: %@",
+                  url.absoluteString)
+            webView.load(URLRequest(url: url))
+            decisionHandler(.cancel)
+            return
         }
         // mailto:, tel:, sms:, itms-apps:, maps:, etc. — hand to system.
         if let scheme = url.scheme?.lowercased(),

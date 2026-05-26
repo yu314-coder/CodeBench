@@ -527,12 +527,23 @@ final class CodeEditorViewController: UIViewController {
                     ].join('\\n');
                 } else {
                     // Interactive-page mode: minimal CSS — just stop
-                    // iOS Safari from auto-zooming on text inputs and
+                    // iOS Safari from auto-zooming on text inputs,
                     // make sure the body isn't 0 height (some authors
-                    // forget html,body{height:100%}).
+                    // forget html,body{height:100%}), AND give every
+                    // interactive element touch-action:manipulation so
+                    // WKWebView's 300ms double-tap-to-zoom delay
+                    // doesn't swallow taps on pages that don't set the
+                    // viewport meta tag (lots of older sites). Without
+                    // this, button taps on iPad sometimes feel
+                    // unresponsive or are dropped entirely if the user
+                    // taps quickly.
                     style.textContent = [
                         'html { -webkit-text-size-adjust: 100%; }',
                         'body { min-height: 100vh; }',
+                        'html, body, a, button, input, textarea, select, [role="button"], [onclick], [tabindex] {',
+                        '  touch-action: manipulation;',
+                        '  -webkit-tap-highlight-color: rgba(0,0,0,0.08);',
+                        '}',
                     ].join('\\n');
                 }
                 document.head.appendChild(style);

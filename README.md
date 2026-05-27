@@ -1,26 +1,134 @@
 # CodeBench
 
-A self-contained developer / scientific / AI workstation for iPad and Mac. Python 3.14, C, C++, Fortran, pdflatex, and local LLMs — all running on-device, no internet required.
+A self-contained developer / scientific / AI workstation for iPad and Mac. Python 3.14, Jupyter notebooks, C, C++, Fortran, pdflatex, and local LLMs — all running on-device, no internet required.
 
 ```
   iPad / iPadOS / Mac Catalyst
-  ┌──────────────────────────────────────────────────────┐
-  │                                                      │
-  │   Monaco editor ──── IntelliSense + signature help   │
-  │         │                                            │
-  │         ▼                                            │
-  │   Python / C / C++ / Fortran / pdflatex              │
-  │         │                                            │
-  │         ▼                                            │
-  │   SwiftTerm terminal ◄──► PTY ◄──► CPython REPL      │
-  │         │                                            │
-  │         ▼                                            │
-  │   Local LLM chat + RAG + image gen                   │
-  │                                                      │
-  └──────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │                                                          │
+  │   Monaco editor ─── IntelliSense + signature help        │
+  │       ▲                  ▲                               │
+  │       │                  │                               │
+  │       │            ┌─────┴───────┐                       │
+  │       │            │  vim mode   │  ⌘P  ⌘,               │
+  │       │            └─────────────┘                       │
+  │       ▼                                                  │
+  │   Notebook editor  ─── per-cell Run + persistent kernel  │
+  │       │                                                  │
+  │       ▼                                                  │
+  │   Visual debugger ─── step / inspect / call stack        │
+  │       │                                                  │
+  │       ▼                                                  │
+  │   Python / C / C++ / Fortran / pdflatex                  │
+  │       │                                                  │
+  │       ▼                                                  │
+  │   SwiftTerm terminal ◄──► PTY ◄──► CPython REPL          │
+  │       │                                                  │
+  │       ▼                                                  │
+  │   Local LLM chat + RAG + image gen                       │
+  │   (bundled GGUF · OpenAI · Anthropic · Ollama remote)    │
+  │                                                          │
+  └──────────────────────────────────────────────────────────┘
 ```
 
 Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** — the Python 3.14 runtime + 30+ native iOS Python libraries project. Every library listed below has its own reference documentation in that repo; links go directly to each library's main doc.
+
+---
+
+## What's new
+
+### Jupyter notebook editor (`.ipynb`)
+
+Tap any `.ipynb` file in the file browser → opens **directly in the editor box** as a cell-stacked notebook (not raw JSON in Monaco). Each cell has its own toolbar (Run ▶, move ↑/↓, insert +, delete 🗑, code↔markdown toggle 🅼/ƒ). Per-cell Run uses a **persistent in-process Python kernel** so variables defined in cell 1 are reachable from cell 2.
+
+- **Output capture per cell**: stdout, stderr, last-expression result, matplotlib PNG (auto-savefig), HTML (pandas DataFrames, plotly), red error tracebacks
+- **Markdown cells** render with GFM + KaTeX inline math, tap to switch to edit mode
+- **Toolbar at top**: ▶ Run All, ↻ Restart Kernel, 💾 Save (writes back to `.ipynb` JSON in nbformat v4)
+- **No modal popup** — the notebook lives inside `editorContainer`, replacing Monaco for the duration of `.ipynb` editing. Opening a `.py` swaps Monaco back inline.
+
+### Visual debugger
+
+`debug-gui script.py` in the terminal → a **floating toolbar** appears at the top of the editor with:
+
+- ▶ **Continue** · ⏭ **Step Over** · ⤓ **Step Into** · ⤴ **Step Out** · ⏹ **Stop**
+- 🔍 **Variable inspector** panel (slides in from right) — live `f_locals` + `f_globals` tree, repr-clipped to 200 chars per value
+- **Call stack** — top 3 frames shown beneath the variables panel
+- **Current-line arrow** in Monaco's gutter (golden, auto-scrolls into view)
+- Persisted breakpoints (`~/.codebench/breakpoints/<file>.bps`) honoured at launch
+- Headless fallback — if the UI isn't compiled in (older build), the debugger auto-continues after 3 s so scripts don't hang
+
+### Configurable AI providers (`⌘,`)
+
+The AI subsystem can now dispatch to any of four backends, switched per-request or per-session:
+
+| Provider | Configure | Notes |
+|---|---|---|
+| **Bundled GGUF** | Models tab → tap a `.gguf` | Default, runs through `llama.cpp` |
+| **OpenAI** | `⌘,` → Settings → paste API key | Streams `chat/completions` SSE |
+| **Anthropic** | `⌘,` → Settings → paste API key | Streams Messages API with `system` separation |
+| **OpenAI-compat** | `⌘,` → set base URL (e.g. `http://192.168.1.10:11434/v1`) | Ollama / vLLM / llama.cpp server |
+
+API keys are stored in **Keychain** (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Ctrl-C in the terminal cancels in-flight HTTP requests + local generations symmetrically.
+
+### Inline matplotlib / pandas display
+
+`plt.show()` / `display(df)` / `Image.show()` / `fig.show()` from any script — Python or notebook cell — renders **inline in the output panel** with append semantics. No more "saves to disk, you have to open the file." Backed by a Python-side `codebench_inline` module that monkey-patches the show/display hooks and ships PNG / HTML artifacts to Swift via `inline_*.json` signal files.
+
+### Vim mode (in Monaco)
+
+Toggle in `⌘,` settings. Implements a ~80% subset of vim:
+
+- **Modes**: NORMAL · INSERT · VISUAL · V-LINE (status pill bottom-right)
+- **Motion**: `h j k l` · `w b e` · `0 $ ^` · `gg G` · `{ } %`
+- **Insert**: `i a I A o O`
+- **Edit**: `x X r` · `dd yy cc` · `d{motion} y{motion} c{motion}` · `p P` · `u <C-r>` · `J` · `.` (last-change repeat)
+- **Search**: `/ ? n N`
+- **Visual**: `v V` then `d y c x`
+- **Cmdline**: `:w :q :wq :x` (`:w` triggers Monaco save)
+- **Counts**: `3dd`, `5j`, `10G`, etc.
+
+Persists via `localStorage.setItem('codebench.vim.enabled', '1')` so it survives editor reloads.
+
+### Quick Open (`⌘P`) + Settings (`⌘,`)
+
+- **`⌘P`** — VS Code-style fuzzy file picker. Recent files at the top with "recent · " subtitle, full workspace walk underneath (capped at 5 000 files). Arrow keys + Enter to open.
+- **`⌘,`** — unified settings sheet: AI provider, API key, model name, temperature, max_tokens, vim mode toggle, inline-completion toggle.
+
+### Long-press Quick Look in file browser
+
+Right-click / long-press any file in the file browser → "Quick Look" appears at the top of the context menu for:
+
+- `.csv` / `.tsv` → scrollable HTML grid (sticky header, row numbers, alt-row striping; capped at 5 000 × 100 cells)
+- `.json` → pretty-printed + regex syntax highlighting
+- `.yaml` / `.yml` / `.toml` → monospace pretty-print
+- `.png` / `.jpg` / `.heic` / `.webp` / `.bmp` / `.tiff` / `.gif` → pinch-zoomable image with dimensions caption
+- `.npy` / `.npz` → numpy table view (loaded in-process via the bundled Python; 1-D up to 1000 rows, 2-D up to 500×50)
+
+### REPL builtin (`repl`)
+
+A persistent-namespace Python REPL — variables survive across invocations. Rich displayhook for pandas DataFrames (HTML table inline). Meta-commands `:q` `:clear` `:show` `:save FILE`. Use `repl --keep` to preserve the previous session's namespace.
+
+### Performance optimizations
+
+Idle wake-ups dropped from ~117/sec to ~1.5/sec by moving three always-on timers to **kqueue file-system event sources** (`DispatchSourceFileSystemObject`) with a 2 s safety-net fallback:
+
+| Engine | Old polling | New idle | Speedup |
+|---|---|---|---|
+| `PywebviewBridge` | 10 ms (100 Hz) | event-driven | **200×** |
+| `LaTeXEngine` | 100 ms | event-driven | **20×** |
+| `AIEngine` | 150 ms | event-driven | **13×** |
+
+Plus: `IntelliSenseEngine` 3 s blocking-loop → `DispatchSource` event watch (no held threads), `MonacoEditorView.loadFileBatched` collapses 3 JS round trips into 1 (~100 ms saved per file open), C/C++/Fortran Monaco providers lazy-register only on first non-Python file (saves ~210 symbol parses on pure-Python sessions). `BackgroundExecutionGuard` `.sync` → `.async` to remove a Swift-Concurrency deadlock vector.
+
+### Auto-seeded test bundle (`Workspace/Tests/`)
+
+On every launch, three test files auto-seed into your Workspace (respecting the `.codebench_deleted` tombstone so deletes stick):
+
+- `codebench_features_test.py` — automated 24-test feature suite for everything above
+- `codebench_features_test.ipynb` — sample notebook exercising every output type
+- `codebench_debug_target.py` — small target to step through under `debug-gui`
+
+User-edited copies are detected by file-head SHA comparison and **never overwritten** on subsequent launches.
 
 ---
 
@@ -42,15 +150,21 @@ Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** —
 
 | Capability | How |
 |---|---|
-| **Monaco code editor** (real VS-Code editor) | WKWebView-hosted, Python IntelliSense, ~70-entry signature DB, hover docs, auto-resolve from Python daemon for numpy / scipy / sklearn / matplotlib / sympy |
+| **Monaco code editor** (real VS-Code editor) | WKWebView-hosted, Python IntelliSense, ~70-entry signature DB, hover docs, auto-resolve from Python daemon for numpy / scipy / sklearn / matplotlib / sympy. **Vim mode** (NORMAL/INSERT/VISUAL/V-LINE), inline AI completion (ghost text, 350 ms debounced) |
+| **Jupyter notebook editor** | Cell-stacked `.ipynb` editor embedded inline in the editor box. Per-cell Run + persistent in-process kernel, output capture (stdout/stderr/PNG/HTML/error), markdown cells with GFM + KaTeX, save back to nbformat v4 |
+| **Visual debugger** | Floating toolbar (Continue / Step Over / Step Into / Step Out / Stop) + variable inspector + call stack + golden current-line arrow in gutter. Driven by a Pdb subclass over signal files. Persisted breakpoints |
 | **Integrated terminal** | [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) backed by a PTY master/slave pair piping into the embedded CPython REPL |
 | **pdflatex on-device** | [busytex](https://github.com/busytex/busytex) WASM (pdftex 1.40.25 + xetex + luatex + bibtex8 + xdvipdfmx) running in a hidden WKWebView with TeX Live 2023 packages preloaded into MEMFS. A custom 23 MB overlay adds pgf / tikz / beamer / hyperref / mathtools / microtype / cleveref / fancyhdr / bbm / CJKutf8 / fontspec / ctex and ls-R index |
-| **Local LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch for Apple-Core-ML backends. Chat UI with streaming, conversation export |
+| **Local + remote LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch + OpenAI / Anthropic / OpenAI-compat (Ollama, vLLM) HTTP streaming. Chat UI with streaming, conversation export. API keys in Keychain. Provider switchable via `⌘,` |
 | **RAG engine** | In-process vector store for RAG over user-imported docs |
 | **Image generation** | Offline image models via ExecuTorch |
+| **Inline rich output** | `plt.show()` / `display(df)` / `Image.show()` etc. render in the output panel with append semantics — figures, DataFrames, plotly all flow through |
+| **Quick Open** (`⌘P`) | VS Code-style fuzzy file picker (recent + workspace walk) |
+| **Quick Look** (long-press file) | Inline grid view for CSV/JSON/YAML/TOML/NPY/PNG/JPG without opening Monaco |
 | **File browser + tabs** | iOS document browser with multiple concurrent workspaces |
 | **Auto-save** | Debounced ~600 ms after keystroke, plus on run / tab-switch / view-disappear / app-backgrounding |
-| **Tombstone system** | Files deleted via UI are recorded in `<Workspace>/.offlinai_deleted` so starter-script seeders don't resurrect them on next launch |
+| **Tombstone system** | Files deleted via UI are recorded in `<Workspace>/.codebench_deleted` so starter-script seeders don't resurrect them on next launch |
+| **Auto-seeded test bundle** | `Workspace/Tests/` gets 3 test files on launch (respects tombstone + user-edit detection) |
 
 ---
 
@@ -59,11 +173,12 @@ Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** —
 | Language | Runtime | Main doc |
 |---|---|---|
 | **Python 3.14** | BeeWare-embedded CPython | [python-ios-lib README](https://github.com/yu314-coder/python-ios-lib#readme) |
+| **Jupyter `.ipynb`** | Same CPython, cell-stacked editor with persistent in-process kernel | (built-in; tap any `.ipynb` in the file browser) |
 | **C** | Pure-Swift tree-walking interpreter (3.4k LOC, 48 operators, structs, pointers, preprocessor) | [c-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/c-interpreter.md) · [interpreters.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/interpreters.md) |
 | **C++** | Pure-Swift tree-walking interpreter (4.2k LOC, classes, STL, templates, inheritance) | [cpp-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/cpp-interpreter.md) · [interpreters.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/interpreters.md) |
 | **Fortran** | Pure-Swift tree-walking interpreter (4.1k LOC, modules, allocatable arrays, intrinsics) | [fortran-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-interpreter.md) · [fortran-runtime.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-runtime.md) |
 
-All four languages share the same Monaco editor + IntelliSense pipeline and auto-save.
+All four languages share the same Monaco editor + IntelliSense pipeline and auto-save. Python additionally has the dedicated notebook editor for `.ipynb` files (cell-stacked UI in place of Monaco).
 
 ---
 
@@ -140,7 +255,18 @@ Full pdflatex doc: **[media.md#offlinai_latex--local-latex-engine](https://githu
 
 ---
 
-## Local AI
+## Local & remote AI
+
+The AI subsystem (chat, `ai` builtin, inline code-completion) routes to one of four backends, switchable per-session via `⌘,` settings or per-request via the `"provider"` field in `ai_request.json`:
+
+| Backend | Use case |
+|---|---|
+| **Bundled GGUF** (default) | Fully offline. Load a `.gguf` from the Models tab. Runs through `llama.cpp` / Metal |
+| **OpenAI** | Streaming `chat/completions` SSE. Just paste an API key — defaults to `https://api.openai.com/v1` |
+| **Anthropic** | Streaming Messages API. Handles `system` separation automatically |
+| **OpenAI-compat** | Any endpoint that speaks `chat/completions` SSE — Ollama, vLLM, llama.cpp server, LM Studio |
+
+API keys live in **Keychain** (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), one slot per provider. Ctrl-C in the terminal cancels in-flight HTTP requests and local generations symmetrically. Inline AI code-completion (ghost text, 350 ms debounced) uses whichever provider is configured.
 
 - **GGUF models** via `llama.cpp` integrated as an XCFramework. Load any Llama / Mistral / Qwen / Phi model, chat with streaming tokens.
 - **ExecuTorch** backends for Apple-Core-ML / XNNPACK / kernel-optimized inference of PyTorch models.
@@ -157,13 +283,31 @@ All models live in the app sandbox; no tokens leave the device.
 
 The CodeBench shell IS a Python REPL — typing Python executes directly. On top of it there are builtins for POSIX-y operations iOS doesn't give you:
 
-- File/system: `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `mv`, `cat`, `head`, `tail`, `grep`, `find`, `file`, `touch`, `df`, `du`, `ncdu`, `top`
-- Languages: `python` / `python3` (with `-V` / `-c` / `-m` / full flag handling), `cc` / `gcc` / `clang`, `c++` / `g++` / `clang++`, `gfortran` / `f77` / `f90` / `f95`
-- LaTeX: `pdflatex`, `latex`, `tex`, `pdftex`, `latex-diagnose`
-- VCS: `git clone` (via zipball fetch — real Git protocol isn't available sandboxed)
-- Package mgmt: `pip` (install to the per-workspace site-packages dir)
+- **File/system**: `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `mv`, `cat`, `head`, `tail`, `grep`, `find`, `file`, `touch`, `df`, `du`, `ncdu`, `top`
+- **Languages**: `python` / `python3` (with `-V` / `-c` / `-m` / full flag handling), `cc` / `gcc` / `clang`, `c++` / `g++` / `clang++`, `gfortran` / `f77` / `f90` / `f95`
+- **LaTeX**: `pdflatex`, `latex`, `tex`, `pdftex`, `latex-diagnose`
+- **Markdown / notebook viewers**: `md` / `markdown` (renders `.md` to the preview pane via markdown-it-py + KaTeX), `nb` / `ipynb` / `notebook` (read-only `.ipynb` preview — for the full cell-stacked editor, tap the file in the file browser)
+- **AI**: `ai` (chat with the configured provider — bundled GGUF or remote)
+- **Debugger**: `debug` (classic pdb in the terminal), `debug-gui` (floating toolbar + variable inspector in the editor)
+- **REPL**: `repl` (persistent-namespace Python with rich displayhook; `repl --keep` preserves last session's namespace)
+- **Test runners**: `test-libs` / `test_libs` (smoke-test every bundled library)
+- **VCS**: `git clone` (via zipball fetch — real Git protocol isn't available sandboxed; HuggingFace `hf://` URLs supported via `snapshot_download`)
+- **Package mgmt**: `pip` (install to the per-workspace site-packages dir; smart-skips already-bundled deps)
 
 `python --help`, `python -V`, `python -c "print(1+1)"`, `python -m pip install …` all behave like real CPython.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `⌘P` | Quick Open file picker (fuzzy match) |
+| `⌘,` | Settings sheet (AI provider, vim mode, inline completion) |
+| `⌘/` | Keyboard-shortcuts help |
+| `⌘A` (in terminal) | Select all terminal output |
+| `⌘C` (in terminal) | Copy selection |
+| `⌘V` | Paste (Monaco + terminal) |
+| Ctrl-C (in terminal) | Interrupt running script / cancel AI generation |
+| Ctrl-D (in terminal) | EOF / exit current REPL |
 
 ---
 

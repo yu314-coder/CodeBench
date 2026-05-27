@@ -1565,21 +1565,124 @@ window.registerPythonProviders = function (monaco, editor) {
         cls:        '**cls** — Reference to the class inside a classmethod.',
     };
 
+    // Build a rich, multi-section hover. Monaco renders each `contents`
+    // entry as its own block separated by a horizontal rule, so we use
+    // sections to group: signature → summary → parameter table →
+    // returns/raises → source/origin → docs link.
+    function buildRichHover(opts) {
+        // opts: { name, qualifier?, sig?, doc?, params?, returns?,
+        //         module?, kind?, defLine?, docsUrl? }
+        const sections = [];
+        const headerName = opts.qualifier ? opts.qualifier + '.' + opts.name : opts.name;
+
+        // 1) Signature in a fenced python block — Monaco syntax-
+        // highlights it like real code.
+        if (opts.sig) {
+            const sigText = /^[\w.]+\s*\(/.test(opts.sig)
+                ? opts.sig
+                : headerName + opts.sig;
+            sections.push('```python\n' + sigText + '\n```');
+        } else {
+            sections.push('**' + headerName + '**' + (opts.kind ? '  _' + opts.kind + '_' : ''));
+        }
+
+        // 2) Doc summary — strip a leading bold-name echo if present
+        // (the signature block already shows the name).
+        if (opts.doc) {
+            sections.push(opts.doc.replace(/^\*\*[\w.]+[^*]*\*\*\s*\n*/, '').trim());
+        }
+
+        // 3) Parameter table (only when we have parameter docs).
+        if (opts.params && opts.params.length) {
+            const rows = opts.params
+                .filter(p => p && (p.label || p.documentation))
+                .map(p => {
+                    const lab = (p.label || '').replace(/\|/g, '\\|');
+                    const docs = String(p.documentation || '')
+                        .replace(/\|/g, '\\|')
+                        .replace(/\n+/g, ' ')
+                        .replace(/^\*\*[^*]+\*\*\s*[—-]?\s*/, '');
+                    return '| `' + lab + '` | ' + docs + ' |';
+                });
+            if (rows.length) {
+                sections.push(
+                    '| Param | Description |\n' +
+                    '| --- | --- |\n' +
+                    rows.join('\n')
+                );
+            }
+        }
+
+        // 4) Returns / raises pulled from sig if shaped like `... -> T`.
+        if (opts.returns) {
+            sections.push('**Returns** → `' + opts.returns + '`');
+        } else if (opts.sig) {
+            const m = opts.sig.match(/->\s*([^\n]+)/);
+            if (m) sections.push('**Returns** → `' + m[1].trim() + '`');
+        }
+
+        // 5) Origin / source footer — module + (optional) defined-at line.
+        const footer = [];
+        if (opts.module) footer.push('_from `' + opts.module + '`_');
+        if (opts.kind && !opts.sig) footer.push('_' + opts.kind + '_');
+        if (typeof opts.defLine === 'number') footer.push('_defined at line ' + opts.defLine + '_');
+        if (footer.length) sections.push(footer.join(' • '));
+
+        // 6) Docs link — Python stdlib has predictable URLs; render as
+        // an inline link the user can tap.
+        if (opts.docsUrl) {
+            sections.push('[📖 Open Python docs](' + opts.docsUrl + ')');
+        } else if (opts.module && /^[a-z_][\w.]*$/.test(opts.module) && PY_STDLIB_MODULES.has(opts.module.split('.')[0])) {
+            const anchor = opts.qualifier
+                ? opts.module + '.' + opts.name
+                : opts.name;
+            sections.push('[📖 Python docs](https://docs.python.org/3/library/' + opts.module.split('.')[0] + '.html#' + anchor + ')');
+        }
+
+        return sections.map(s => ({ value: s, isTrusted: false, supportHtml: false }));
+    }
+
+    // Set of Python stdlib top-level modules — used to gate the
+    // "Open Python docs" link footer in hover cards.
+    const PY_STDLIB_MODULES = new Set([
+        'os','sys','io','re','math','cmath','random','statistics','json','csv',
+        'time','datetime','calendar','collections','itertools','functools','operator',
+        'pathlib','glob','shutil','tempfile','subprocess','threading','multiprocessing',
+        'asyncio','queue','socket','ssl','http','urllib','email','html','xml',
+        'sqlite3','hashlib','hmac','secrets','base64','binascii','struct','codecs',
+        'argparse','logging','traceback','typing','dataclasses','enum','abc',
+        'contextlib','copy','pickle','pprint','textwrap','string','unicodedata',
+        'unittest','warnings','weakref','gc','inspect','importlib','pkgutil',
+        'platform','locale','signal','select','errno','ctypes',
+        'array','bisect','heapq', 'decimal', 'fractions', 'numbers',
+        'concurrent','zipfile','tarfile','gzip','bz2','lzma','zipapp',
+    ]);
+
     monaco.languages.registerHoverProvider('python', {
         provideHover(model, position) {
             const word = model.getWordAtPosition(position);
             if (!word) return null;
+            const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
 
-            // 1. Static hover docs
+            // 1. Static hover docs (builtins/keywords) — pair with SIG_DB
+            // when available so we get the parameter table too.
             const staticDoc = HOVER_DOCS[word.word];
-            if (staticDoc) {
+            const sigEntry = SIG_DB[word.word] && SIG_DB[word.word][0];
+            if (staticDoc || sigEntry) {
                 return {
-                    range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                    contents: [{ value: staticDoc }],
+                    range,
+                    contents: buildRichHover({
+                        name: word.word,
+                        sig: sigEntry ? sigEntry.label : null,
+                        doc: sigEntry ? sigEntry.doc : staticDoc,
+                        params: sigEntry ? sigEntry.params : null,
+                        kind: PY_KEYWORDS.has(word.word) ? 'keyword' : (sigEntry ? 'builtin' : null),
+                        module: 'builtins',
+                    }),
                 };
             }
 
-            // 2. Is this a library member? Look back for `X.<word>` pattern
+            // 2. Library member: `X.<word>`
             const line = model.getLineContent(position.lineNumber);
             const before = line.slice(0, word.startColumn - 1);
             const memberMatch = before.match(/(\w+)\.\s*$/);
@@ -1588,31 +1691,58 @@ window.registerPythonProviders = function (monaco, editor) {
                 const members = libSymbolsFor(qualifier);
                 if (members && members[word.word]) {
                     const spec = members[word.word];
-                    const lines = [];
-                    if (spec.sig) lines.push('```python\n' + qualifier + '.' + spec.sig + '\n```');
-                    if (spec.doc) lines.push(spec.doc);
+                    const parsedImports = parseImports(model.getValue());
+                    const realModule = resolveAlias(qualifier, parsedImports) || qualifier;
                     return {
-                        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                        contents: [{ value: lines.join('\n\n') }],
+                        range,
+                        contents: buildRichHover({
+                            name: word.word,
+                            qualifier,
+                            sig: spec.sig,
+                            doc: spec.doc,
+                            params: spec.params || (spec.sig ? paramsFromSig(spec.sig) : null),
+                            module: realModule,
+                            kind: spec.kind,
+                        }),
                     };
                 }
             }
 
-            // 3. Bare name in library DB (from `from X import foo`)
+            // 3. Bare name in library DB (from `X import foo`).
             for (const modKey in LIB_SYMBOLS) {
                 const spec = LIB_SYMBOLS[modKey][word.word];
                 if (spec) {
-                    const lines = [];
-                    if (spec.sig) lines.push('```python\n' + word.word + ' (from ' + modKey + ')\n' + spec.sig + '\n```');
-                    if (spec.doc) lines.push(spec.doc);
                     return {
-                        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                        contents: [{ value: lines.join('\n\n') }],
+                        range,
+                        contents: buildRichHover({
+                            name: word.word,
+                            sig: spec.sig,
+                            doc: spec.doc,
+                            params: spec.params || (spec.sig ? paramsFromSig(spec.sig) : null),
+                            module: modKey,
+                            kind: spec.kind,
+                        }),
                     };
                 }
             }
 
-            // 4. Progressive: ask Swift daemon
+            // 4. Local definition (variable/function/class earlier in
+            // this file). Uses scanLocalScope to find the kind/detail.
+            const locals = scanLocalScope(model.getValue(), position.lineNumber);
+            const localHit = locals[word.word];
+            if (localHit) {
+                const kindNames = { 7:'class', 3:'function', 12:'iterable', 6:'variable', 9:'module', 5:'attribute' };
+                return {
+                    range,
+                    contents: buildRichHover({
+                        name: word.word,
+                        kind: localHit.detail || kindNames[localHit.kind] || 'local',
+                        module: '(this file)',
+                    }),
+                };
+            }
+
+            // 5. Progressive: ask Swift daemon.
             const fullText = model.getValue();
             const parsed = parseImports(fullText);
             for (const q of [...Object.keys(parsed.aliases), ...Object.keys(DEFAULT_ALIASES)]) {
@@ -1622,13 +1752,17 @@ window.registerPythonProviders = function (monaco, editor) {
                     return new Promise(resolve => {
                         const id = 'hv_' + Math.random().toString(36).slice(2);
                         window.__resolvePending[id] = (result) => {
-                            const lines = [];
-                            if (result.signature) lines.push('**' + word.word + '**`' + result.signature + '`');
-                            if (result.documentation) lines.push(result.documentation);
-                            if (!lines.length) { resolve(null); return; }
+                            if (!result.signature && !result.documentation) { resolve(null); return; }
                             resolve({
-                                range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                                contents: [{ value: lines.join('\n\n') }],
+                                range,
+                                contents: buildRichHover({
+                                    name: word.word,
+                                    sig: result.signature,
+                                    doc: result.documentation,
+                                    params: result.signature ? paramsFromSig(result.signature) : null,
+                                    module: mod,
+                                    kind: result.kind,
+                                }),
                             });
                         };
                         postToSwift({ kind: 'resolveRequest', id, qualifier: mod, name: word.word });
@@ -1641,6 +1775,43 @@ window.registerPythonProviders = function (monaco, editor) {
             return null;
         },
     });
+
+    // Crude Python-keyword set used to label hover cards.
+    const PY_KEYWORDS = new Set([
+        'def','class','if','elif','else','for','while','try','except','finally',
+        'with','return','yield','lambda','async','await','import','from','as',
+        'pass','break','continue','raise','global','nonlocal','del','in','is',
+        'not','and','or','True','False','None','self','cls',
+    ]);
+
+    // Heuristic parameter extractor — turns "func(a, b=1, *c, **d) -> X"
+    // into a [{label, documentation}] list so callers without a param
+    // table still get one auto-generated. Documentation is left empty;
+    // users still see types and defaults.
+    function paramsFromSig(sig) {
+        if (!sig || typeof sig !== 'string') return null;
+        const open = sig.indexOf('(');
+        if (open < 0) return null;
+        let depth = 0, end = -1;
+        for (let i = open; i < sig.length; i++) {
+            const ch = sig[i];
+            if (ch === '(' || ch === '[') depth++;
+            else if (ch === ')' || ch === ']') { depth--; if (depth === 0) { end = i; break; } }
+        }
+        if (end < 0) return null;
+        const inner = sig.slice(open + 1, end);
+        if (!inner.trim()) return [];
+        const parts = [];
+        let buf = '', d = 0;
+        for (const ch of inner) {
+            if (ch === '(' || ch === '[' || ch === '{') d++;
+            else if (ch === ')' || ch === ']' || ch === '}') d--;
+            if (ch === ',' && d === 0) { parts.push(buf.trim()); buf = ''; }
+            else buf += ch;
+        }
+        if (buf.trim()) parts.push(buf.trim());
+        return parts.map(p => ({ label: p, documentation: '' }));
+    }
 
     console.log('[editor.js] Python providers registered — ' + Object.keys(SIG_DB).length + ' signatures, ' + Object.keys(LIB_SYMBOLS).length + ' libraries');
 };

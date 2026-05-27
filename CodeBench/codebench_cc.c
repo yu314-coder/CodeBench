@@ -123,7 +123,6 @@ static void out_append(OccInterpreter *I, const char *s) {
     I->output[I->out_len] = '\0';
 }
 
-__attribute__((unused))
 static void out_appendf(OccInterpreter *I, const char *fmt, ...) {
     char buf[1024];
     va_list ap;
@@ -332,6 +331,14 @@ static const Keyword keywords[] = {
     {"constexpr", TOK_CONSTEXPR},
     {"_Noreturn", TOK_CONST}, /* treat as const */
     {"auto", TOK_AUTO_TYPE},
+    /* C99/C23: bool / _Bool / restrict / inline mapped to the closest
+     * existing type token (TOK_INT). Modern code uses these as plain
+     * declarations; the interpreter doesn't differentiate widths so a
+     * 1-byte _Bool is functionally the same as int here. */
+    {"bool", TOK_INT}, {"_Bool", TOK_INT},
+    {"restrict", TOK_CONST}, {"__restrict", TOK_CONST}, {"__restrict__", TOK_CONST},
+    {"inline", TOK_CONST}, {"__inline", TOK_CONST}, {"__inline__", TOK_CONST},
+    {"volatile", TOK_CONST},
     {NULL, TOK_EOF}
 };
 
@@ -1698,8 +1705,43 @@ static OccNode *parse_stmt(OccInterpreter *I) {
                 }
             }
         } else {
-            /* typedef int Alias; — skip type, grab alias */
-            while (!check(I, TOK_SEMICOLON) && !check(I, TOK_EOF)) advance(I);
+            /* typedef <basic-type> <Alias>; — capture the alias so it
+             * can be used as a type later. Walk the type tokens, then
+             * the alias identifier (the last IDENT before ;), and
+             * register it as a typedef so subsequent declarations of
+             * `Alias var;` pick the right base type. */
+            char base[128] = {0};
+            char alias_name[128] = {0};
+            /* Collect the base type tokens (int, long long, unsigned, etc.) */
+            int base_len = 0;
+            while (!check(I, TOK_SEMICOLON) && !check(I, TOK_EOF)) {
+                OccToken *t = peek(I);
+                /* Last IDENT before ';' or '[' is the alias name. */
+                if (t->type == TOK_IDENT) {
+                    OccToken *next = (I->tok_pos + 1 < I->n_tokens) ?
+                                      &I->tokens[I->tok_pos + 1] : NULL;
+                    if (next && (next->type == TOK_SEMICOLON ||
+                                  next->type == TOK_LBRACKET)) {
+                        int al = t->length < 127 ? t->length : 127;
+                        memcpy(alias_name, t->start, al);
+                        advance(I);
+                        continue;
+                    }
+                }
+                /* Otherwise it's part of the base type. */
+                if (base_len + t->length < 127) {
+                    if (base_len > 0) base[base_len++] = ' ';
+                    memcpy(base + base_len, t->start, t->length);
+                    base_len += t->length;
+                }
+                advance(I);
+            }
+            if (alias_name[0] && I->n_typedefs < 64) {
+                strncpy(I->typedefs[I->n_typedefs].alias, alias_name, 127);
+                strncpy(I->typedefs[I->n_typedefs].original,
+                        base[0] ? base : "int", 127);
+                I->n_typedefs++;
+            }
         }
         expect(I, TOK_SEMICOLON, ";");
         return new_node(ND_BLOCK, line);
@@ -1757,6 +1799,32 @@ static OccNode *parse_stmt(OccInterpreter *I) {
         if (!check(I, TOK_RBRACE) && !check(I, TOK_EOF))
             add_child(label, parse_stmt(I));
         return label;
+    }
+
+    /* Typedef-alias variable declaration: `MyType x;` where MyType
+     * was registered via `typedef int MyType;`. Rewrite the alias
+     * token's type to the corresponding base-type token so the
+     * standard type-parser handles it. */
+    if (check(I, TOK_IDENT)) {
+        OccToken *t = peek(I);
+        for (int ti = 0; ti < I->n_typedefs; ti++) {
+            const char *alias = I->typedefs[ti].alias;
+            int alen = (int)strlen(alias);
+            if (alen == t->length && memcmp(t->start, alias, alen) == 0) {
+                /* Determine which base-type keyword to use. */
+                const char *base = I->typedefs[ti].original;
+                OccTokenType base_tok = TOK_INT;
+                if (strstr(base, "double"))      base_tok = TOK_DOUBLE;
+                else if (strstr(base, "float"))  base_tok = TOK_FLOAT;
+                else if (strstr(base, "char"))   base_tok = TOK_CHAR;
+                else if (strstr(base, "void"))   base_tok = TOK_VOID;
+                else if (strstr(base, "long"))   base_tok = TOK_LONG;
+                else if (strstr(base, "short"))  base_tok = TOK_SHORT;
+                /* Rewrite this token so the existing parser flow works. */
+                t->type = base_tok;
+                break;
+            }
+        }
     }
 
     /* variable declaration (including static) */

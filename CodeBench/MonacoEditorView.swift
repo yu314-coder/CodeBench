@@ -244,6 +244,68 @@ final class MonacoEditorView: UIView {
         webView.evaluateJavaScript("window.__editor.insertCode(`\(escaped)`)")
     }
 
+    /// Push a new font size into the live Monaco instance.
+    /// Falls back to the UITextView in non-monaco mode.
+    func setFontSize(_ px: Int) {
+        guard isReady else { return }
+        if !Self.monacoEnabled {
+            fallbackTextView.font = .monospacedSystemFont(ofSize: CGFloat(px),
+                                                          weight: .regular)
+            return
+        }
+        webView.evaluateJavaScript(
+            "window.__editor && window.__editor.updateOptions({fontSize: \(px)}); true;",
+            completionHandler: nil)
+    }
+
+    /// Toggle Monaco's word-wrap. No-op in fallback mode (UITextView
+    /// already wraps by default).
+    func setWordWrap(_ on: Bool) {
+        guard isReady else { return }
+        if !Self.monacoEnabled { return }
+        let value = on ? "'on'" : "'off'"
+        webView.evaluateJavaScript(
+            "window.__editor && window.__editor.updateOptions({wordWrap: \(value)}); true;",
+            completionHandler: nil)
+    }
+
+    /// Force focus on Monaco's editing area. Use after a modal
+    /// presentation/dismissal that may have left the WebView's
+    /// first-responder chain dangling — the symptom is "tap the
+    /// editor, nothing happens, cursor won't appear." Calls Monaco's
+    /// own .focus() (which moves the DOM caret) and then asks the
+    /// WebView to become first responder so iOS routes keyboard
+    /// events back into it.
+    func focusEditor() {
+        guard isReady, Self.monacoEnabled else {
+            fallbackTextView.becomeFirstResponder()
+            return
+        }
+        webView.evaluateJavaScript(
+            "window.__editor && window.__editor.focus(); true;",
+            completionHandler: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            _ = self.webView.becomeFirstResponder()
+        }
+    }
+
+    /// Set Monaco's color theme. Standard built-in themes are
+    /// "vs" (light), "vs-dark" (dark), and "hc-black" (high contrast).
+    func setTheme(_ name: String) {
+        guard isReady else { return }
+        if !Self.monacoEnabled {
+            // Mirror in the fallback view: dark themes get a dark bg.
+            let dark = name != "vs"
+            fallbackTextView.backgroundColor = dark ? .black : .white
+            fallbackTextView.textColor = dark ? .white : .black
+            return
+        }
+        let escaped = name.replacingOccurrences(of: "'", with: "\\'")
+        webView.evaluateJavaScript(
+            "monaco && monaco.editor.setTheme && monaco.editor.setTheme('\(escaped)'); true;",
+            completionHandler: nil)
+    }
+
     /// Re-tag the editor's syntax-highlighting language without
     /// touching the buffer contents. Used when the user toggles
     /// the Python / C / C++ / Fortran selector — only the highlighter
@@ -365,137 +427,10 @@ extension MonacoEditorView: WKScriptMessageHandler {
                 .replacingOccurrences(of: "$", with: "\\$")
             webView.evaluateJavaScript("window.__editor.pasteFromClipboard(`\(escaped)`)")
 
-        case "inlineCompletionRequest":
-            // Monaco's inline-completion provider, debounced 350ms,
-            // sent us (prefix, suffix, reqId). Run ai_complete on a
-            // background queue so we don't block the WKWebView IPC
-            // thread (which would freeze typing). The Python call
-            // takes ~50-300ms on the bundled tiny model.
-            handleInlineCompletionRequest(body)
-
-        case "toggleBreakpoint":
-            // User tapped the glyph margin. Update the persistence
-            // file for the current open script and push the new full
-            // breakpoint set back so the gutter dot appears/disappears.
-            if let line = body["line"] as? Int {
-                toggleBreakpoint(line: line)
-            }
-
         default:
             break
         }
     }
-
-    // MARK: - Inline AI completion bridge
-
-    /// Serial queue so requests don't pile up — at most one Python
-    /// ai_complete in flight at a time. The latest reqId always wins;
-    /// older ones get their results dropped by the JS-side reqId check.
-    private static let aiCompletionQueue = DispatchQueue(
-        label: "codebench.ai.completion", qos: .userInitiated)
-    /// Track the last request ID we *dispatched*. If a newer one comes
-    /// in before the older one finishes, we can skip the older one.
-    private static var lastDispatchedReqId: Int = 0
-
-    private func handleInlineCompletionRequest(_ body: [String: Any]) {
-        guard let reqId = body["reqId"] as? Int,
-              let prefix = body["prefix"] as? String else { return }
-        let suffix = body["suffix"] as? String ?? ""
-
-        // Drop if a newer request has already started
-        Self.lastDispatchedReqId = reqId
-
-        Self.aiCompletionQueue.async { [weak self] in
-            // Re-check staleness right before doing the expensive call
-            if reqId != Self.lastDispatchedReqId { return }
-
-            let completion = AIEngine.shared.inlineComplete(
-                prefix: prefix, suffix: suffix, maxTokens: 64,
-                timeoutSeconds: 4.0) ?? ""
-
-            // One more staleness check before crossing back to the JS side
-            if reqId != Self.lastDispatchedReqId { return }
-
-            // Escape for JS template literal
-            let escaped = completion
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "`", with: "\\`")
-                .replacingOccurrences(of: "$", with: "\\$")
-            DispatchQueue.main.async {
-                self?.webView.evaluateJavaScript(
-                    "window.__editor.setInlineCompletion(\(reqId), `\(escaped)`)")
-            }
-        }
-    }
-
-    // MARK: - Breakpoint persistence
-
-    /// Path used by the Python `debug` builtin to load saved breakpoints.
-    /// Must match `bp_dir` in offlinai_shell.py `_debug`.
-    private var breakpointStoreDir: URL {
-        let docs = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return docs.deletingLastPathComponent()
-            .appendingPathComponent(".codebench", isDirectory: true)
-            .appendingPathComponent("breakpoints", isDirectory: true)
-    }
-
-    /// Maps a file path to its breakpoint store filename — same
-    /// transform as the Python side (replace / with _, strip leading _).
-    private func breakpointFile(for scriptPath: String) -> URL {
-        var name = scriptPath.replacingOccurrences(of: "/", with: "_")
-        while name.hasPrefix("_") { name = String(name.dropFirst()) }
-        return breakpointStoreDir.appendingPathComponent("\(name).bps")
-    }
-
-    /// Current open file (set by CodeEditorViewController when loadFile
-    /// fires). Used to scope breakpoint persistence.
-    var currentScriptPath: String?
-
-    private func toggleBreakpoint(line: Int) {
-        guard let path = currentScriptPath else { return }
-        var lines = loadBreakpoints(for: path)
-        if lines.contains(line) {
-            lines.removeAll { $0 == line }
-        } else {
-            lines.append(line)
-            lines.sort()
-        }
-        saveBreakpoints(lines, for: path)
-        pushBreakpointsToJS(lines)
-    }
-
-    func refreshBreakpointsForCurrentFile() {
-        guard let path = currentScriptPath else {
-            pushBreakpointsToJS([]); return
-        }
-        let lines = loadBreakpoints(for: path)
-        pushBreakpointsToJS(lines)
-    }
-
-    private func loadBreakpoints(for path: String) -> [Int] {
-        let url = breakpointFile(for: path)
-        guard let txt = try? String(contentsOf: url, encoding: .utf8) else {
-            return []
-        }
-        return txt.split(separator: "\n").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-    }
-
-    private func saveBreakpoints(_ lines: [Int], for path: String) {
-        let dir = breakpointStoreDir
-        try? FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true)
-        let url = breakpointFile(for: path)
-        let txt = lines.map(String.init).joined(separator: "\n")
-        try? txt.write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    private func pushBreakpointsToJS(_ lines: [Int]) {
-        let arr = "[" + lines.map(String.init).joined(separator: ",") + "]"
-        webView.evaluateJavaScript("window.__editor.setBreakpoints(\(arr))")
-    }
-}
 
     private func handleResolveRequest(_ body: [String: Any]) {
         guard let id = body["id"] as? String,

@@ -454,7 +454,7 @@ import PDFKit
 
     private func startSignalWatcher() {
         DispatchQueue.main.async {
-            self.signalTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
                 self?.checkForCompileRequest()
                 self?.checkForTextRequest()
                 self?.checkForDocCompileRequest()
@@ -463,6 +463,13 @@ import PDFKit
                 self?.checkForEditorApplyRequest()
                 self?.checkForOpenInEditorRequest()
             }
+            // .common so dragging the editor/preview split doesn't
+            // pause LaTeX compile-request polling — UIKit's .tracking
+            // mode otherwise stalls the default-mode runloop and
+            // pdflatex/manim signal files would queue up until the
+            // user released the drag.
+            RunLoop.main.add(t, forMode: .common)
+            self.signalTimer = t
             // Preload the WASM engine so the first pdflatex call doesn't
             // pay the cold-start tax. busytex is the default path —
             // larger footprint (~230 MB of data packages to stream

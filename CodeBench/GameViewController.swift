@@ -5958,8 +5958,31 @@ final class GameViewController: UIViewController {
         ec.onModelSelected = { [weak self] slot in
             guard let self else { return }
             self.selectedModelSlot = slot
-            self.loadModel(for: slot)
+            // If the GGUF isn't on disk yet, kick off a download via
+            // the Models manager rather than dead-ending with a status
+            // bar message. Keeps the "ai run <name>" feel from the
+            // shell command — pick → pull → load.
+            if self.modelURLs[slot] == nil {
+                self.pullModelThenLoad(slot)
+            } else {
+                self.loadModel(for: slot)
+            }
         }
+        // New hooks added when the chat-panel model menu was reworked
+        // to be grouped + status-aware. The chooser surfaces a Files
+        // picker; the "open Models tab" link drops into the full
+        // management screen for power users.
+        ec.onChooseModelFile = { [weak self] in
+            self?.presentGGUFFilePicker()
+        }
+        ec.onOpenModelsTab = { [weak self] in
+            self?.openModelsManager()
+        }
+        // Feed the menu its initial state: which slots are on disk
+        // and which one (if any) is loaded.
+        ec.downloadedModelSlots = Set(self.modelURLs.keys)
+        ec.loadedModelSlot      = self.loadedModelSlot
+
         // Show currently loaded model name (or selected slot name)
         if let loaded = loadedModelSlot {
             ec.updateModelName(loaded.title)
@@ -9216,6 +9239,9 @@ Output format rules:
                 // Update editor with loaded model
                 self.editorController?.llamaRunner = self.runner
                 self.editorController?.updateModelName(slot.title)
+                // Update the chat panel's model menu so the loaded
+                // slot now shows ✦ (and the "Loaded · X" header).
+                self.syncEditorModelState()
 
                 self.setLoadingState(false, message: "Loaded \(slot.title) (ctx \(context), batch \(batch)).")
                 completion?(.success(()))
@@ -9404,6 +9430,81 @@ Output format rules:
         UserDefaults.standard.set(url.path, forKey: lastModelPathDefaultsKey)
         modelURLs[slot] = url
         updateModelUI()
+        // Push fresh download-status to the editor so the chat panel's
+        // model menu shows ✓ next to this slot immediately.
+        syncEditorModelState()
+        // "ai run"-style: if the user picked this slot from the chat
+        // menu and it wasn't downloaded yet, they implicitly asked to
+        // load it once the download finishes. Honour that here.
+        if pendingAutoLoadSlot == slot {
+            pendingAutoLoadSlot = nil
+            loadModel(for: slot)
+        }
+    }
+
+    // ─── Editor ↔ chat-panel model-state sync ─────────────────────
+    //
+    // The chat panel's model menu wants to know two things:
+    //   • which slots have a .gguf on disk (✓ vs ↓ marker)
+    //   • which slot is currently loaded (✦ marker + header text)
+    // We push both whenever they change so the menu stays accurate
+    // without the editor having to poll us.
+
+    private var pendingAutoLoadSlot: ModelSlot?
+
+    fileprivate func syncEditorModelState() {
+        editorController?.downloadedModelSlots = Set(modelURLs.keys)
+        editorController?.loadedModelSlot      = loadedModelSlot
+    }
+
+    /// `ai run <name>` analogue: start a pull for `slot` and queue it
+    /// to auto-load once the .gguf lands on disk. If the user
+    /// cancels, the queued slot is cleared in the cancel path of the
+    /// download progress view.
+    fileprivate func pullModelThenLoad(_ slot: ModelSlot) {
+        // Friendly confirm: many of these are multi-GB and we don't
+        // want a single tap to commit the user to a cellular download.
+        let sizeNote: String = {
+            // pull size note from the catalog subtitle (e.g. "~4.7 GB")
+            let sub = slot.subtitle
+            return sub
+        }()
+        let alert = UIAlertController(
+            title: "Download \(slot.title)?",
+            message: "\(sizeNote)\n\nThe file will save to ~/Documents/Models/. We'll auto-load it when it's ready.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in })
+        alert.addAction(UIAlertAction(title: "Download", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.pendingAutoLoadSlot = slot
+            self.selectedModelSlot   = slot
+            self.startDownload(for: slot)
+        })
+        // Present from whichever VC is currently in front (editor or
+        // game) so we don't ride on a stale presenter.
+        let presenter = self.presentedViewController ?? self
+        presenter.present(alert, animated: true)
+    }
+
+    /// Show a Files picker for any local .gguf — corresponds to the
+    /// shell command's `ai load <path>`. After copy-in, the file is
+    /// adopted under the closest-matching slot, or a generic one if
+    /// the filename doesn't look like a registered model.
+    fileprivate func presentGGUFFilePicker() {
+        let types: [UTType] = [UTType(filenameExtension: "gguf") ?? .data]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        let presenter = self.presentedViewController ?? self
+        presenter.present(picker, animated: true)
+    }
+
+    /// Open the full ModelsManagerViewController. Posts the same
+    /// notification used by Settings and the editor's own "no GGUF
+    /// found" sheet so the existing presentation path is reused.
+    fileprivate func openModelsManager() {
+        NotificationCenter.default.post(
+            name: .codeBenchOpenModelsManager, object: nil)
     }
 }
 

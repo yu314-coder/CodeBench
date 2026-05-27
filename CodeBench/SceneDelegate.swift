@@ -8,9 +8,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         if window == nil {
+            // Plain UIWindow. The KeyCaptureWindow subclass used to
+            // sit here to forward arrow keys to the Konami tracker
+            // (up-up-down-down → Developer Panel), but that easter
+            // egg was removed; no need to override sendEvent anymore.
             window = UIWindow(windowScene: windowScene)
         }
         window?.makeKeyAndVisible()
+
+        // Pre-warm a WKWebView so the first preview pane / pywebview
+        // page comes up instantly instead of waiting on WebContent
+        // process launch (which is 150-400 ms cold).
+        WebViewWarmupPool.shared.warmUp()
 
         // Show onboarding on first launch
         if !UserDefaults.standard.bool(forKey: "onboarding.completed") {

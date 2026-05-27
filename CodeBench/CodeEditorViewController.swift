@@ -341,10 +341,46 @@ final class CodeEditorViewController: UIViewController {
     // "AI Assist" pill in the editor header bar.
     private var isAIChatVisible = false
     // isSettingsPanelVisible removed — settings now shown as popover
-    /// Assigned externally by GameViewController when embedding
-    var llamaRunner: LlamaRunner?
+    /// Assigned externally by GameViewController when embedding.
+    /// didSet keeps the chat panel coherent when a model arrives mid-
+    /// session: any "No model loaded" CTA cards still in the chat scroll
+    /// area get pruned, and the send button refreshes its enabled state
+    /// in case the user had already typed a message.
+    var llamaRunner: LlamaRunner? {
+        didSet {
+            guard llamaRunner != nil, oldValue == nil else { return }
+            removeNoModelCTACards()
+            updateChatSendEnabled()
+        }
+    }
     /// Called when the user picks a model from the model selector menu
     var onModelSelected: ((ModelSlot) -> Void)?
+
+    /// Called when the user taps "Choose .gguf File…" in the model menu.
+    /// Host wires this to an in-app file picker so users can load any
+    /// GGUF without having to go through the Models tab.
+    var onChooseModelFile: (() -> Void)?
+
+    /// Called when the user taps "Open Models tab" in the menu — this
+    /// is the existing "go full-screen model manager" path. Kept as
+    /// an escape hatch even though most users won't need it now that
+    /// the chat menu shows download status inline.
+    var onOpenModelsTab: (() -> Void)?
+
+    /// Slots whose underlying .gguf is currently on disk. The model
+    /// menu uses this to draw ✓ next to downloaded slots and ↓ next
+    /// to ones that need a pull. Updated by GameViewController as
+    /// downloads complete.
+    var downloadedModelSlots: Set<ModelSlot> = [] {
+        didSet { modelSelectorButton.menu = buildModelMenu() }
+    }
+
+    /// Currently loaded slot (for the menu's "Loaded: X" header row
+    /// and the ✦ marker on the loaded entry). Updated by
+    /// GameViewController when a load succeeds.
+    var loadedModelSlot: ModelSlot? {
+        didSet { modelSelectorButton.menu = buildModelMenu() }
+    }
 
     // MARK: - UI Components
 
@@ -366,6 +402,9 @@ final class CodeEditorViewController: UIViewController {
 
     // Editor
     private let editorContainer = UIView()
+    /// Currently-embedded notebook VC, if any. Lives in `editorContainer`
+    /// in place of `monacoView` when an `.ipynb` file is open.
+    private var embeddedNotebookVC: NotebookViewController?
     // Files panel mounted inside the editor's leftPanel (replaces the
     // file browser that used to live in the app sidebar). Collapsible
     // via the toolbar's folder icon — width 220pt when shown, 0 when
@@ -476,10 +515,6 @@ final class CodeEditorViewController: UIViewController {
     private let outputPlaymarkIcon = UIImageView()
     private let outputMetaLabel = UILabel()
     private weak var outputPlaceholderGridLayer: CALayer?
-    /// Real-browser delegate for outputWebView — handles target=_blank,
-    /// alert/confirm/prompt, downloads, external schemes. Strong ref
-    /// because WKWebView holds delegates weakly. See BrowserBehaviorDelegate.
-    private var previewBrowserDelegate: BrowserBehaviorDelegate?
     private let outputWebView: WKWebView = {
         let config = WKWebViewConfiguration()
         // iOS 14+: per-navigation JS toggle on WKWebpagePreferences. The
@@ -527,23 +562,12 @@ final class CodeEditorViewController: UIViewController {
                     ].join('\\n');
                 } else {
                     // Interactive-page mode: minimal CSS — just stop
-                    // iOS Safari from auto-zooming on text inputs,
+                    // iOS Safari from auto-zooming on text inputs and
                     // make sure the body isn't 0 height (some authors
-                    // forget html,body{height:100%}), AND give every
-                    // interactive element touch-action:manipulation so
-                    // WKWebView's 300ms double-tap-to-zoom delay
-                    // doesn't swallow taps on pages that don't set the
-                    // viewport meta tag (lots of older sites). Without
-                    // this, button taps on iPad sometimes feel
-                    // unresponsive or are dropped entirely if the user
-                    // taps quickly.
+                    // forget html,body{height:100%}).
                     style.textContent = [
                         'html { -webkit-text-size-adjust: 100%; }',
                         'body { min-height: 100vh; }',
-                        'html, body, a, button, input, textarea, select, [role="button"], [onclick], [tabindex] {',
-                        '  touch-action: manipulation;',
-                        '  -webkit-tap-highlight-color: rgba(0,0,0,0.08);',
-                        '}',
                     ].join('\\n');
                 }
                 document.head.appendChild(style);
@@ -2190,34 +2214,59 @@ final class CodeEditorViewController: UIViewController {
         chatStackView.alignment = .fill
         chatScrollView.addSubview(chatStackView)
 
-        // Input row
+        // Input row — bumped to 44pt min height with a visible 1pt
+        // accent border and a clearer placeholder. User feedback was
+        // "no place for me to tap to chat" — the previous 30pt-ish
+        // field blended into the panel background. 44pt is iOS's
+        // minimum tap target.
         chatInputField.translatesAutoresizingMaskIntoConstraints = false
-        chatInputField.placeholder = "Ask about your code..."
-        chatInputField.font = UIFont.systemFont(ofSize: 14)
+        chatInputField.placeholder = "Type a message…"
+        chatInputField.font = UIFont.systemFont(ofSize: 15)
         chatInputField.backgroundColor = EditorTheme.gutterBg
         chatInputField.textColor = EditorTheme.foreground
-        chatInputField.layer.cornerRadius = 8
-        chatInputField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 1))
+        chatInputField.layer.cornerRadius = 10
+        chatInputField.layer.borderWidth = 1
+        chatInputField.layer.borderColor = EditorTheme.accent.withAlphaComponent(0.45).cgColor
+        chatInputField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
         chatInputField.leftViewMode = .always
-        chatInputField.rightView = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 1))
+        chatInputField.rightView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
         chatInputField.rightViewMode = .always
         chatInputField.keyboardAppearance = .dark
         chatInputField.returnKeyType = .send
         chatInputField.delegate = self
+        // Send button mirrors the input field state — gray + un-tappable
+        // when the field is empty, full violet + tappable as soon as the
+        // user types a character. The previous behaviour ("tap fires, but
+        // sendChatMessage early-returns on empty text") was a dead spot
+        // that looked broken.
+        chatInputField.addTarget(self, action: #selector(chatInputDidChange),
+                                  for: .editingChanged)
+        // Lock to 44pt — iOS HIG minimum hit target. Was getting
+        // intrinsic-sized to ~30pt, which is below the tap-target
+        // standard and hard to spot in a narrow panel.
+        chatInputField.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
         var sendConfig = UIButton.Configuration.filled()
-        sendConfig.image = UIImage(systemName: "arrow.up.circle.fill")
-        sendConfig.baseBackgroundColor = .systemCyan
+        sendConfig.image = UIImage(systemName: "arrow.up.circle.fill",
+                                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold))
+        sendConfig.baseBackgroundColor = EditorTheme.accent
         sendConfig.baseForegroundColor = .white
         sendConfig.cornerStyle = .capsule
         sendConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
         chatSendButton.configuration = sendConfig
         chatSendButton.addTarget(self, action: #selector(sendChatMessage), for: .touchUpInside)
         chatSendButton.translatesAutoresizingMaskIntoConstraints = false
+        // Square send button matching input height
+        chatSendButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        chatSendButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        // Chat opens to an empty input → no message to send → button starts
+        // disabled. updateChatSendEnabled() flips it back on as soon as the
+        // user types or a model gets loaded.
+        chatSendButton.isEnabled = false
 
         let inputRow = UIStackView(arrangedSubviews: [chatInputField, chatSendButton])
         inputRow.axis = .horizontal
-        inputRow.spacing = 6
+        inputRow.spacing = 8
         inputRow.alignment = .center
         inputRow.translatesAutoresizingMaskIntoConstraints = false
 
@@ -2263,10 +2312,11 @@ final class CodeEditorViewController: UIViewController {
             inputRow.leadingAnchor.constraint(equalTo: aiChatContainer.leadingAnchor, constant: 8),
             inputRow.trailingAnchor.constraint(equalTo: aiChatContainer.trailingAnchor, constant: -8),
             inputRow.bottomAnchor.constraint(equalTo: aiChatContainer.bottomAnchor, constant: -8),
-            inputRow.heightAnchor.constraint(equalToConstant: 36),
-
-            chatSendButton.widthAnchor.constraint(equalToConstant: 36),
-            chatSendButton.heightAnchor.constraint(equalToConstant: 36)
+            // Row sizes itself from its children (input field 44pt, send button
+            // 44×44pt — both set near the top of this method). Don't pin to 36pt
+            // here; that was leftover from the pre-tap-target iteration and
+            // fought the 44pt constraints, logging "Unable to simultaneously
+            // satisfy constraints" on every chat open.
         ])
     }
 
@@ -2403,13 +2453,6 @@ final class CodeEditorViewController: UIViewController {
         outputWebView.configuration.userContentController.add(self, name: "saveVideo")
         outputWebView.configuration.userContentController.add(self, name: "shareVideo")
         outputWebView.configuration.userContentController.add(self, name: "clipboard")
-
-        // Real-browser behavior — without this, pages render but every
-        // target="_blank" link silently fails, every alert/confirm/prompt
-        // is a no-op, every <a download> does nothing, and external
-        // schemes (mailto:, tel:, etc.) hang. See BrowserBehaviorDelegate.
-        // Stored as a property so WKWebView's weak delegate ref survives.
-        previewBrowserDelegate = outputWebView.attachBrowserBehavior(host: self)
 
         // Subtle indigo grid (32×32) behind the empty state. Design CSS:
         //   linear-gradient(to right,  rgba(99,102,241,0.035) 1px, transparent 1px),
@@ -2642,17 +2685,7 @@ final class CodeEditorViewController: UIViewController {
     }
 
     @objc private func presentFullscreenPreview() {
-        // For HTTP(S) pages, prefer the inline preview's CURRENT URL
-        // (where the user has navigated to via in-page link clicks) over
-        // currentOutputPath (the URL that was originally loaded). Without
-        // this, expanding to fullscreen always shows the entry page even
-        // after the user has clicked through search results, links, etc.
-        var path: String? = currentOutputPath
-        if let liveURL = outputWebView.url?.absoluteString,
-           liveURL.hasPrefix("http://") || liveURL.hasPrefix("https://") {
-            path = liveURL
-        }
-        guard let path = path else { return }
+        guard let path = currentOutputPath else { return }
         // Live URLs (pywebview pages) need to skip the file-existence
         // check — that test always failed for "https://..." paths so
         // tapping the expand button on a webview preview did nothing.
@@ -4048,6 +4081,10 @@ except Exception:
     /// panel is visible. No-op if it's already up. Used by the
     /// `AI Chat` dashboard card so tapping it directly opens the
     /// chat instead of just switching tabs.
+
+    /// Show the inline AI Assist side panel. Used by the dashboard
+    /// AI Chat tile so tapping it directly opens the panel rather
+    /// than only switching tabs.
     func showAIChatPanel() {
         if !isAIChatVisible { toggleAIChat() }
     }
@@ -4058,18 +4095,26 @@ except Exception:
         runTapped()
     }
 
+    /// Toolbar AI Assist pill tap. Animates the inline panel's width
+    /// between 0 and 260pt and toggles ``isAIChatVisible``.
     @objc private func toggleAIChat() {
         isAIChatVisible.toggle()
-        // Slide the inline chat panel in from / out to the right edge.
         aiChatWidthConstraint.constant = isAIChatVisible ? 260 : 0
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseInOut) {
             self.aiChatContainer.alpha = self.isAIChatVisible ? 1.0 : 0.0
             self.view.layoutIfNeeded()
         }
         applyAIToggleStyle()
-        // Light haptic feedback so the toggle feels tactile.
-        let gen = UIImpactFeedbackGenerator(style: .light)
-        gen.impactOccurred()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        // Opening the panel with a brand-new session AND no model? Drop
+        // the inline CTA in so the user has somewhere to click instead
+        // of staring at a blank scroll area waiting for inspiration.
+        if isAIChatVisible
+            && chatStackView.arrangedSubviews.isEmpty
+            && llamaRunner == nil {
+            addInlineNoModelCTA()
+        }
     }
 
     /// Repaints the AI Assist pill to reflect `isAIChatVisible`.
@@ -4196,9 +4241,30 @@ except Exception:
         present(popoverVC, animated: true)
     }
 
+    @objc private func chatInputDidChange() {
+        updateChatSendEnabled()
+    }
+
+    /// Single source of truth for the chat send-button's enabled state.
+    /// Called from three places:
+    ///   • after every text-edit in the chat input field
+    ///   • after the input is cleared on send
+    ///   • after a model is loaded (so an already-typed message becomes
+    ///     sendable without re-typing — see ``llamaRunner`` didSet).
+    private func updateChatSendEnabled() {
+        let hasText = !(chatInputField.text ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // We allow tap-while-no-model so the inline CTA fires from
+        // sendChatMessage — without that path the user gets no feedback
+        // at all on the first send attempt. So the rule is just "non-
+        // empty text", not "non-empty text AND model loaded".
+        chatSendButton.isEnabled = hasText
+    }
+
     @objc private func sendChatMessage() {
         guard let text = chatInputField.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         chatInputField.text = ""
+        updateChatSendEnabled()      // back to disabled until the user types again
         chatInputField.resignFirstResponder()
 
         addChatBubble(text: text, isUser: true)
@@ -4213,7 +4279,11 @@ except Exception:
         ]
 
         guard let runner = llamaRunner else {
-            addChatBubble(text: "No model loaded. Load a model from the Models tab in the sidebar first.", isUser: false)
+            // Old behaviour: a dead-end text bubble telling the user
+            // to navigate elsewhere ("go to the Models tab"). Better:
+            // surface the model picker right here, so picking a model
+            // is one tap rather than a sidebar excursion.
+            addInlineNoModelCTA()
             return
         }
 
@@ -6635,6 +6705,107 @@ except Exception:
         }
     }
 
+    /// Drop an inline "no model loaded" card into the chat with a
+    /// tap-to-pick button. Replaces the old static-text bubble that
+    /// just said "go to Models tab in the sidebar." Tapping the
+    /// button shows the same UIMenu the header model selector does,
+    /// so users can ✓ a downloaded slot OR ↓ pull one without
+    /// leaving the chat.
+    private func addInlineNoModelCTA() {
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = UIColor(white: 0.18, alpha: 1)
+        card.layer.cornerRadius = 12
+        card.layer.borderWidth = 0.5
+        card.layer.borderColor = UIColor.systemPurple.withAlphaComponent(0.6).cgColor
+
+        let icon = UIImageView(image: UIImage(systemName: "cpu"))
+        icon.tintColor = .systemPurple
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.contentMode = .scaleAspectFit
+
+        let title = UILabel()
+        title.text = "No model loaded"
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .white
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let subtitle = UILabel()
+        subtitle.text = "Pick a model to start chatting."
+        subtitle.font = .systemFont(ofSize: 12, weight: .regular)
+        subtitle.textColor = UIColor(white: 0.75, alpha: 1)
+        subtitle.numberOfLines = 0
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let pickButton = UIButton(type: .system)
+        var cfg = UIButton.Configuration.filled()
+        cfg.title = "Pick a model"
+        cfg.image = UIImage(systemName: "chevron.down")
+        cfg.imagePadding = 6
+        cfg.imagePlacement = .trailing
+        cfg.baseBackgroundColor = .systemPurple
+        cfg.baseForegroundColor = .white
+        cfg.cornerStyle = .medium
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
+        var attr = AttributeContainer()
+        attr.font = .systemFont(ofSize: 12, weight: .semibold)
+        cfg.attributedTitle = AttributedString("Pick a model", attributes: attr)
+        pickButton.configuration = cfg
+        pickButton.showsMenuAsPrimaryAction = true
+        pickButton.menu = buildModelMenu()
+        pickButton.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(icon)
+        card.addSubview(title)
+        card.addSubview(subtitle)
+        card.addSubview(pickButton)
+        NSLayoutConstraint.activate([
+            icon.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            icon.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
+
+            title.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            title.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
+            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            subtitle.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+
+            pickButton.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 10),
+            pickButton.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            pickButton.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+        ])
+
+        let wrapper = UIView()
+        wrapper.translatesAutoresizingMaskIntoConstraints = false
+        // Identifier so llamaRunner.didSet can find and prune these
+        // cards once a model arrives — otherwise they sit there
+        // contradicting the working chat below them.
+        wrapper.accessibilityIdentifier = "ai.chat.no-model-cta"
+        wrapper.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 4),
+            card.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 4),
+            card.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -4),
+            card.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -4),
+        ])
+        chatStackView.addArrangedSubview(wrapper)
+        scrollChatToBottom()
+    }
+
+    /// Strip any "No model loaded" cards previously added by
+    /// ``addInlineNoModelCTA``. Idempotent — safe to call when none
+    /// exist.
+    private func removeNoModelCTACards() {
+        for view in chatStackView.arrangedSubviews
+            where view.accessibilityIdentifier == "ai.chat.no-model-cta" {
+            chatStackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
     /// Render AI response text with basic markdown: **bold**, `code`, ```code blocks```
     private func renderMarkdownText(_ text: String, into label: UILabel) {
         let result = NSMutableAttributedString()
@@ -6988,13 +7159,126 @@ except Exception:
 
     // MARK: - Model Selector
 
+    /// Build the model picker menu. The old version was a flat list
+    /// of 15 entries with no signal about which were already
+    /// downloaded — users had no way to tell "ready to load" from
+    /// "needs a 4 GB download." This version:
+    ///
+    ///   • Header row showing the currently loaded model (or
+    ///     "No model loaded").
+    ///   • A "Choose .gguf File…" entry so any GGUF on disk works,
+    ///     not just registry slots — matching what the `ai` shell
+    ///     command does with `ai load <path>`.
+    ///   • Models grouped into inline submenus by family (Qwen3.5,
+    ///     Gemma 4, Llama, etc.). UIMenu's `.displayInline` option
+    ///     makes nested children render as labeled sections in the
+    ///     dropdown — much easier to scan than 15 flat rows.
+    ///   • A leading icon per row:
+    ///       ✦ this slot is currently loaded
+    ///       ✓ downloaded, ready to load
+    ///       ↓ needs to be pulled (taps still work — host will start
+    ///         the download).
     private func buildModelMenu() -> UIMenu {
-        let actions = ModelSlot.allCases.map { slot in
-            UIAction(title: slot.title, subtitle: slot.subtitle) { [weak self] _ in
+        // ── 1. Status header (non-interactive label-style row) ──
+        let headerTitle: String
+        let headerSubtitle: String
+        if let loaded = loadedModelSlot {
+            headerTitle = "Loaded · \(loaded.title)"
+            headerSubtitle = loaded.subtitle
+        } else {
+            headerTitle = "No model loaded"
+            headerSubtitle = "Pick one below or tap Choose .gguf File…"
+        }
+        let header = UIAction(
+            title: headerTitle,
+            subtitle: headerSubtitle,
+            image: UIImage(systemName: "circle.hexagongrid.fill"),
+            attributes: .disabled  // visual-only row
+        ) { _ in }
+        let headerGroup = UIMenu(options: .displayInline, children: [header])
+
+        // ── 2. Per-slot action factory ──
+        func actionFor(_ slot: ModelSlot) -> UIAction {
+            let isLoaded     = (slot == loadedModelSlot)
+            let isDownloaded = downloadedModelSlots.contains(slot)
+            let iconName: String
+            if isLoaded {
+                iconName = "sparkle"                       // ✦ loaded
+            } else if isDownloaded {
+                iconName = "checkmark.circle.fill"         // ✓ ready
+            } else {
+                iconName = "arrow.down.circle"             // ↓ needs pull
+            }
+            return UIAction(
+                title: slot.title,
+                subtitle: slot.subtitle,
+                image: UIImage(systemName: iconName),
+                state: isLoaded ? .on : .off
+            ) { [weak self] _ in
                 self?.onModelSelected?(slot)
             }
         }
-        return UIMenu(title: "Select Model", children: actions)
+
+        // ── 3. Family-grouped sections ──
+        // Group ModelSlot.allCases by family heuristic. Adding a new
+        // slot to ModelCatalog.swift later only needs a new case in
+        // this switch to land it in the right section.
+        enum Family: String, CaseIterable {
+            case qwen   = "Qwen 3.5"
+            case gemma  = "Gemma 4"
+            case llama  = "Llama 3.2"
+            case other  = "Others"
+        }
+        func family(of slot: ModelSlot) -> Family {
+            switch slot {
+            case .qwen35_08b, .qwen35_2b, .qwen35_4b, .qwen35_9b:
+                return .qwen
+            case .gemma4_e2b, .gemma4_e4b, .gemma4_26b:
+                return .gemma
+            case .llama32_1b, .llama32_3b:
+                return .llama
+            case .phi35_mini, .mistral7b_v03, .qwen25coder_7b,
+                 .deepseek_r1_distill_qwen7b, .granite31_8b, .smollm2_1_7b:
+                return .other
+            }
+        }
+        var bucketed: [Family: [ModelSlot]] = [:]
+        for slot in ModelSlot.allCases {
+            bucketed[family(of: slot), default: []].append(slot)
+        }
+        let familyMenus: [UIMenu] = Family.allCases.compactMap { fam in
+            guard let slots = bucketed[fam], !slots.isEmpty else { return nil }
+            return UIMenu(
+                title: fam.rawValue,
+                options: .displayInline,
+                children: slots.map(actionFor)
+            )
+        }
+
+        // ── 4. Footer: file picker + full Models tab escape hatch ──
+        let chooseFile = UIAction(
+            title: "Choose .gguf File…",
+            subtitle: "Load any GGUF on disk",
+            image: UIImage(systemName: "doc.badge.plus")
+        ) { [weak self] _ in
+            self?.onChooseModelFile?()
+        }
+        let openManager = UIAction(
+            title: "Open Models tab…",
+            subtitle: "Manage downloads & disk usage",
+            image: UIImage(systemName: "rectangle.stack.fill")
+        ) { [weak self] _ in
+            self?.onOpenModelsTab?()
+        }
+        let footerGroup = UIMenu(
+            options: .displayInline,
+            children: [chooseFile, openManager]
+        )
+
+        return UIMenu(
+            title: "Models",
+            children: [headerGroup] + familyMenus + [footerGroup]
+        )
     }
 
     func updateModelName(_ name: String) {
@@ -7033,6 +7317,24 @@ except Exception:
     private var lastSavedText: String?
 
     func loadFile(url: URL) {
+        // .ipynb files open in the dedicated notebook editor, embedded
+        // INLINE inside `editorContainer` in place of `monacoView`.
+        if url.pathExtension.lowercased() == "ipynb" {
+            appendToTerminal("[diag] loadFile: \(url.lastPathComponent) — .ipynb branch\n", isError: false)
+            SessionRestore.lastOpenFile = url
+            SessionRestore.lastWorkspace = url.deletingLastPathComponent()
+            currentFileURL = url
+            editorFileNameLabel.text = url.lastPathComponent
+            UserDefaults.standard.set(url.path, forKey: "editor.lastFilePath")
+            publishCurrentEditorFile(url)
+            swapInNotebookEditor(for: url)
+            return
+        }
+        // Switching back to a regular file — restore Monaco if a
+        // notebook is currently embedded.
+        if embeddedNotebookVC != nil {
+            swapOutNotebookEditor()
+        }
         // Session-restore hook: remember the last opened file so the
         // next app launch can reopen it automatically.
         SessionRestore.lastOpenFile = url
@@ -7138,16 +7440,6 @@ except Exception:
         }
         codeTextView.text = contents  // mirror
         monacoView.setCode(contents, language: monacoLang)
-        // Tell Monaco's breakpoint store which file we're editing so
-        // glyph-margin taps update the right persistence file and so
-        // the gutter immediately shows the saved breakpoints for this
-        // file (read from ~/.codebench/breakpoints/<path>.bps).
-        monacoView.currentScriptPath = url.path
-        // Defer the gutter refresh until Monaco is ready — if the
-        // setCode JS hasn't run yet, the call will be queued.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.monacoView.refreshBreakpointsForCurrentFile()
-        }
         currentFileURL = url
         lastSavedText = contents
         editorFileNameLabel.text = url.lastPathComponent
@@ -7213,6 +7505,50 @@ except Exception:
     /// user has in the editor right now. Writes an empty file (not
     /// deleted) when nothing's loaded, so the Python side can reliably
     /// distinguish "no current file" from "signal file missing".
+    /// Swap Monaco out of `editorContainer` and embed a fresh
+    /// NotebookViewController in the same frame.
+    private func swapInNotebookEditor(for url: URL) {
+        if let existing = embeddedNotebookVC {
+            existing.willMove(toParent: nil)
+            existing.view.removeFromSuperview()
+            existing.removeFromParent()
+            embeddedNotebookVC = nil
+        }
+        monacoView.isHidden = true
+
+        let nb = NotebookViewController(fileURL: url)
+        addChild(nb)
+        nb.view.translatesAutoresizingMaskIntoConstraints = false
+        editorContainer.addSubview(nb.view)
+        NSLayoutConstraint.activate([
+            nb.view.topAnchor.constraint(equalTo: monacoView.topAnchor),
+            nb.view.leadingAnchor.constraint(equalTo: monacoView.leadingAnchor),
+            nb.view.trailingAnchor.constraint(equalTo: monacoView.trailingAnchor),
+            nb.view.bottomAnchor.constraint(equalTo: monacoView.bottomAnchor),
+        ])
+        editorContainer.bringSubviewToFront(nb.view)
+        nb.didMove(toParent: self)
+        embeddedNotebookVC = nb
+
+        // Visible confirmation in the terminal pane.
+        DispatchQueue.main.async { [weak self] in
+            let f = nb.view.frame
+            self?.appendToTerminal(
+                "[diag] notebook view mounted: \(Int(f.width))×\(Int(f.height))\n",
+                isError: false)
+        }
+    }
+
+    /// Tear down the embedded notebook and restore Monaco.
+    private func swapOutNotebookEditor() {
+        guard let nb = embeddedNotebookVC else { return }
+        nb.willMove(toParent: nil)
+        nb.view.removeFromSuperview()
+        nb.removeFromParent()
+        embeddedNotebookVC = nil
+        monacoView.isHidden = false
+    }
+
     private func publishCurrentEditorFile(_ url: URL?) {
         let dir = NSTemporaryDirectory().appending("latex_signals")
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -7917,6 +8253,10 @@ extension CodeEditorViewController: UIPopoverPresentationControllerDelegate {
     func adaptivePresentationStyle(for controller: UIPresentationController) -> UIModalPresentationStyle {
         return .none
     }
+    // Note: the AI chat is no longer a modal presentation — it lives
+    // embedded inside the preview pane — so we no longer need a
+    // ``presentationControllerDidDismiss`` handler to repaint the
+    // AI Assist pill.
 }
 
 // MARK: - UIDocumentPickerDelegate — for the toolbar "Open" button.
@@ -8468,5 +8808,4 @@ fileprivate final class PreviewSheetViewController: UIViewController, WKNavigati
         // images PDF + diagnostic fallback for missing files).
         load(path: currentPath)
     }
-
 }

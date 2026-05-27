@@ -284,10 +284,16 @@ import JavaScriptCore
     private func startSignalWatcher() {
         guard pollTimer == nil else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05,
-                                                    repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
                 self?.checkForJSEvalRequest()
             }
+            // .common so JS eval requests (from Python's `js -e …`
+            // builtin) keep being picked up while the user is dragging
+            // the editor's resizer or scrolling the terminal — was
+            // .default which stalls under UIKit's .tracking phase.
+            RunLoop.main.add(t, forMode: .common)
+            self.pollTimer = t
         }
     }
 

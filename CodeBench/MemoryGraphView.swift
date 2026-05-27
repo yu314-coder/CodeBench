@@ -1,14 +1,33 @@
 import UIKit
 import Darwin.Mach
+import os
 
-/// Tiny always-on RAM usage sparkline pinned to the top-right of the
-/// main UI. Polls Mach `host_statistics64` every 1.5s, plots the
-/// last 60 samples as a smoothed line with a gradient fill, and
-/// displays the current "<used>/<total>" string next to the chart.
+/// Tiny always-on RAM sparkline pinned to the top-right of the main
+/// UI. Polls THIS APP's memory footprint every 1.5s, plots the last
+/// 60 samples as a smoothed line with a gradient fill, and shows the
+/// current "<used>/<limit>" next to the chart.
 ///
-/// Tap to bring up a detailed breakdown sheet (active / inactive /
-/// wired / compressor pages) — same data CodeBench's `top` builtin
-/// shows, just summarized graphically.
+/// Why "this app" vs "the device": iOS sandboxes apps. The system-
+/// wide `host_statistics64` reading is essentially useless inside a
+/// sandboxed process — it returns either the device's full memory
+/// (which the app can never reach because jetsam kills you long
+/// before) or filtered values that depend on entitlements. What
+/// matters is YOUR FOOTPRINT vs YOUR JETSAM LIMIT, which is what
+/// Xcode's gauge / Apple's Activity Monitor on macOS show.
+///
+/// Implementation:
+///   used  = task_vm_info_data_t.phys_footprint  — same number Xcode's
+///           debug-gauge calls "Memory" (= dirty + compressed pages
+///           charged to this process).
+///   limit = phys_footprint + os_proc_available_memory()
+///           — the jetsam ceiling, dynamically reported by iOS 13+.
+///           os_proc_available_memory() returns 0 if not yet supported
+///           or if called too early; we fall back to ~50% of physical
+///           in that case (a reasonable iOS-app default).
+///
+/// Tap to bring up a detailed breakdown sheet (footprint, available,
+/// resident, virtual) — same data CodeBench's `top` builtin shows.
+@_silgen_name("os_proc_available_memory") private func _os_proc_available_memory() -> Int
 final class MemoryGraphView: UIView {
 
     // MARK: - Public
@@ -65,7 +84,7 @@ final class MemoryGraphView: UIView {
         layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
         backgroundColor = bgColor
 
-        titleLabel.text = "RAM"
+        titleLabel.text = "APP RAM"
         titleLabel.font = UIFont.systemFont(ofSize: 9, weight: .bold).rounded
         titleLabel.textColor = dimColor
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -135,21 +154,26 @@ final class MemoryGraphView: UIView {
     }
 
     private func sample() {
-        guard let info = vmStats() else { return }
-        // "Used" memory matches what Apple's Activity Monitor labels
-        // app+wired+compressed: active + inactive + wired +
-        // compressor pages. Excludes purgeable pages (those are
-        // immediately reclaimable by the kernel and shouldn't count
-        // as "in use" in a memory-pressure sense).
-        let pageSize = vm_kernel_page_size
-        let used =
-            UInt64(info.active_count) +
-            UInt64(info.inactive_count) +
-            UInt64(info.wire_count) +
-            UInt64(info.compressor_page_count)
-        let usedBytes = used * UInt64(pageSize)
-        let total = totalRAM > 0 ? totalRAM : sysctlMemSize()
-        if totalRAM == 0 { totalRAM = total }
+        // Match Xcode's memory graph exactly: it shows
+        // `phys_footprint` (the jetsam ledger). Anything else
+        // diverges from what the user sees in Xcode and in iOS's
+        // own per-app memory accounting. Mmap'd CLEAN pages
+        // (model weights) won't show here — that's correct,
+        // because they don't count against jetsam either.
+        guard let usedBytes = appPhysFootprint() else { return }
+
+        // For the ceiling we still use the jetsam-aware number
+        // (footprint + os_proc_available_memory). resident_size
+        // can technically exceed the jetsam limit because clean
+        // pages are evictable on demand, so capping the ratio at 1.0
+        // keeps the visual sane during high-resident situations.
+        // Denominator: device physical RAM. The jetsam-aware ceiling
+        // (footprint + os_proc_available_memory) excludes clean mmap
+        // pages, so resident_size routinely exceeds it during model
+        // load — produced nonsensical "5GB/3GB" readings. Device RAM
+        // gives the intuitive "X GB out of your iPad's Y GB" view.
+        if totalRAM == 0 { totalRAM = sysctlMemSize() }
+        let total = totalRAM
         guard total > 0 else { return }
         let ratio = min(1.0, max(0.0, Double(usedBytes) / Double(total)))
 
@@ -160,17 +184,50 @@ final class MemoryGraphView: UIView {
         setNeedsLayout()   // triggers rebuildPath via layoutSubviews
     }
 
-    private func vmStats() -> vm_statistics64_data_t? {
-        var info = vm_statistics64_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size /
-                                            MemoryLayout<integer_t>.size)
-        let host = mach_host_self()
+    /// All pages this process has resident in physical RAM right
+    /// now — clean, dirty, and compressed alike. Includes mmap'd
+    /// file pages (model weights, frameworks, etc.) which is what
+    /// the user expects to see when they ask "how much RAM is my
+    /// model using". Different from phys_footprint, which excludes
+    /// clean mmap pages because jetsam doesn't count them.
+    private func appResidentSize() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
         let kr = withUnsafeMutablePointer(to: &info) { p in
             p.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reb in
-                host_statistics64(host, HOST_VM_INFO64, reb, &count)
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), reb, &count)
             }
         }
-        return kr == KERN_SUCCESS ? info : nil
+        guard kr == KERN_SUCCESS else { return nil }
+        return UInt64(info.resident_size)
+    }
+
+    /// Dirty + compressed pages charged to THIS process — the
+    /// number jetsam uses for kill decisions. Used only for the
+    /// ceiling computation (footprint + available = jetsam limit).
+    private func appPhysFootprint() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) { p in
+            p.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reb in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), reb, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return nil }
+        return UInt64(info.phys_footprint)
+    }
+
+    /// Bytes the app can still allocate before iOS jetsams it.
+    /// Returns 0 if the symbol resolved at startup but the OS
+    /// returned 0 (rare), or if we caught the call at a point the
+    /// kernel hasn't initialised the limit yet.
+    private func osProcAvailableMemory() -> Int {
+        // _silgen_name binding declared at module top; the symbol
+        // exists from iOS 13.0 onward.
+        let v = _os_proc_available_memory()
+        return v > 0 ? v : 0
     }
 
     private func sysctlMemSize() -> UInt64 {

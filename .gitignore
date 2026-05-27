@@ -44,3 +44,7 @@ _vendor/
 /Monaco
 /Sources
 /Package.swift
+
+# Backup files
+*.bak
+*.bak.*

@@ -458,15 +458,6 @@ import WebKit
     }
 
     // MARK: WKNavigationDelegate — page lifecycle
-    //
-    // We only forward the lifecycle callbacks (didFinish / didFail) to
-    // any pre-existing navigation delegate. We do NOT implement or
-    // forward decidePolicyFor — letting WKWebView use its default
-    // (.allow) avoids the cancel/reload loops that the search results
-    // (https://developer.apple.com/forums/thread/659421) flag as the
-    // most common cause of "clicks stop working" inside WKWebView.
-    // target=_blank links are handled by uiDelegate.createWebViewWith
-    // (BrowserBehaviorDelegate's canonical popup-routing mechanism).
 
     func webView(_ webView: WKWebView, didFinish nav: WKNavigation!) {
         let url = webView.url?.absoluteString ?? ""

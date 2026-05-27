@@ -44,15 +44,14 @@ final class PreviewFullscreenViewController: UIViewController {
     // MARK: - Content
 
     private func installContent() {
-        // Live HTTP(S) URLs — for pywebview create_window(url=...) and
-        // for Dash/Flask/Streamlit dashboards expanded to fullscreen.
-        // Detect BEFORE the file-extension switch (otherwise the ext is
-        // "" for paths like "https://example.com" and we'd hit
-        // installUnsupported, which is why fullscreen-of-a-running-page
-        // used to show a "no viewer" label).
+        // pywebview pages are passed in as http(s):// URLs — they
+        // have no meaningful path extension, so the switch fell
+        // through to "Unsupported" and the user saw a placeholder
+        // instead of the actual page when expanding to fullscreen.
+        // Detect URL strings first and route to installWebURL.
         if path.hasPrefix("http://") || path.hasPrefix("https://"),
-           let url = URL(string: path) {
-            installLiveURL(url: url)
+           let liveURL = URL(string: path) {
+            installWebURL(liveURL)
             return
         }
         let url = URL(fileURLWithPath: path)
@@ -74,12 +73,12 @@ final class PreviewFullscreenViewController: UIViewController {
         }
     }
 
-    private func installLiveURL(url: URL) {
+    /// Same as `installWeb` but for a live network URL — used for
+    /// pywebview apps presented at runtime.
+    private func installWebURL(_ url: URL) {
         let wv = makeWebView()
         view.addSubview(wv)
         pinToSafeArea(wv)
-        // loadFileURL doesn't work for http(s); use a real URLRequest so
-        // the page gets the correct origin (cookies, referer, CSP, etc.).
         wv.load(URLRequest(url: url))
     }
 
@@ -217,22 +216,30 @@ final class PreviewFullscreenViewController: UIViewController {
         ])
     }
 
-    /// Strong ref to the browser-behavior delegate; WKWebView holds it weakly.
-    private var browserDelegate: BrowserBehaviorDelegate?
-
     private func makeWebView() -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []
+        // Install the pywebview bridge BEFORE creating the WKWebView —
+        // configure() injects the bootstrap user-script that sets up
+        // window.pywebview.api as a Proxy that forwards every JS-side
+        // method call back to Python via WKScriptMessage. Without this
+        // the bridge is never wired and JS calls fail with "api not
+        // found" — the bug the user hit when fullscreening a preview
+        // that worked fine inline.
+        PywebviewBridge.configure(cfg)
+
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.translatesAutoresizingMaskIntoConstraints = false
         wv.backgroundColor = .black
         wv.isOpaque = false
         wv.scrollView.backgroundColor = .black
-        // Real-browser behavior: target=_blank, alert/confirm/prompt,
-        // file downloads, external schemes. See BrowserBehaviorDelegate.
-        browserDelegate = wv.attachBrowserBehavior(host: self)
+        // Attach the navigation delegate that pywebview uses to fire
+        // `loaded` / `load_error` events the page can subscribe to.
+        // Same shared instance the inline preview uses, so an event
+        // handler attached during inline mode keeps firing in fullscreen.
+        PywebviewBridge.shared.bind(wv)
         return wv
     }
 

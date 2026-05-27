@@ -695,11 +695,57 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                 return (source, false)
             }
         }
-        // Uses T1 fontenc? If not, no injection needed.
+        // Trigger 1: explicit `\usepackage[T1]{fontenc}`.
         let usesT1 = lowered.range(
             of: "\\\\usepackage\\[[^\\]]*\\bt1\\b[^\\]]*\\]\\{fontenc\\}",
             options: .regularExpression) != nil
-        guard usesT1 else { return (source, false) }
+
+        // Trigger 2: any package that pulls TS1 (Text Companion) glyphs.
+        // The doc here was failing with `tcrm1200 at 600 not found` —
+        // that's a TS1 font lookup triggered by `textcomp`, `siunitx`,
+        // `eurosym`, `units`, etc. — even without explicit T1 fontenc.
+        // Each of these silently switches LaTeX into TS1 mode and
+        // demands tcrm bitmaps which iOS can't generate (no fork()).
+        let ts1Packages = [
+            "textcomp", "siunitx", "eurosym", "units", "marvosym",
+            "wasysym", "pifont", "fontawesome", "fontawesome5",
+            "tipa", "phonetic",
+        ]
+        let usesTS1 = ts1Packages.contains { pkg in
+            lowered.contains("\\usepackage{\(pkg)}") ||
+            lowered.range(of: "\\\\usepackage\\[[^\\]]*\\]\\{\(pkg)\\}",
+                          options: .regularExpression) != nil
+        }
+
+        // Trigger 3: bare TS1 glyph commands the user wrote directly
+        // (`\textcurrency`, `\texteuro`, `\textdegree`, etc.). These
+        // pull in TS1 even without an explicit textcomp/siunitx import
+        // because LaTeX kernels load TS1 lazily.
+        let ts1Glyphs = [
+            "\\textcurrency", "\\texteuro", "\\textcent", "\\textyen",
+            "\\textsterling", "\\textdegree", "\\textmu", "\\textohm",
+            "\\textcelsius", "\\textperthousand", "\\textnumero",
+        ]
+        let usesTS1Glyph = ts1Glyphs.contains { lowered.contains($0.lowercased()) }
+
+        // Trigger 4: document classes that internally load textcomp /
+        // T1 fontenc without the user's .tex showing it. IEEEtran,
+        // acmart, revtex etc. all pull TS1 via their class files —
+        // those failures look identical to the user (tcrm1200 not
+        // found) but our regex-on-source detection above misses them.
+        let ts1Classes = [
+            "ieeetran", "acmart", "revtex", "revtex4", "revtex4-1", "revtex4-2",
+            "elsarticle", "achemso", "tugboat", "memoir", "scrartcl", "scrreprt",
+            "scrbook", "scrlttr2",
+        ]
+        let usesTS1Class = ts1Classes.contains { cls in
+            lowered.range(of: "\\\\documentclass(?:\\[[^\\]]*\\])?\\{\(cls)\\}",
+                          options: .regularExpression) != nil
+        }
+
+        guard usesT1 || usesTS1 || usesTS1Glyph || usesTS1Class else {
+            return (source, false)
+        }
 
         // Insert right after the \documentclass{…} line.
         let docClassRegex = try? NSRegularExpression(

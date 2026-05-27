@@ -23,4 +23,11 @@
 // pdftex library entry point
 extern int dllpdftexmain(int argc, char *argv[]);
 
+// LoRA fine-tune bridge (ported from QVAC fabric-llm.cpp's
+// examples/llama.swiftui FinetuneBridge). Provides the
+// `llama_swift_run_lora_finetune` C entry point that wraps the
+// full LoRA training pipeline in a single call. Used by
+// LlamaFinetuner.swift.
+#include "FinetuneBridge.h"
+
 #endif

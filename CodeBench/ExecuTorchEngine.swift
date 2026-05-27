@@ -53,12 +53,33 @@ final class ExecuTorchEngine {
     private func watchLoop() {
         let fm = FileManager.default
         let heartbeat = signalDir.appendingPathComponent(".engine_alive")
+        var lastHeartbeat: TimeInterval = 0
         while isRunning {
             // Heartbeat so `offlinai_torch.is_available()` can detect us.
-            try? Data().write(to: heartbeat, options: .atomic)
+            // Bug fix: when manim is rendering at 1080p the whole app is
+            // near jetsam. `Data().write(to:options:.atomic)` calls
+            // `[NSString fileSystemRepresentation]` which can raise
+            // NSMallocException at sub-1KB allocations — that uncaught
+            // ObjC exception crashed the app right when the user least
+            // needed it (mid-render). Throttle to 1 Hz, AND skip the
+            // write entirely when available memory is tight, AND wrap
+            // in autoreleasepool so any temporary NS objects from path
+            // serialization release immediately.
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastHeartbeat >= 1.0 && Self.availableBytes() > 64 * 1024 * 1024 {
+                autoreleasepool {
+                    // Best-effort. The thrown NSException type is not
+                    // catchable from pure Swift; the only mitigation
+                    // is the memory pre-check above (don't attempt
+                    // when RAM is critical) which closes the window
+                    // where this would crash.
+                    try? Data().write(to: heartbeat, options: .atomic)
+                }
+                lastHeartbeat = now
+            }
 
             guard let entries = try? fm.contentsOfDirectory(at: signalDir, includingPropertiesForKeys: nil) else {
-                Thread.sleep(forTimeInterval: 0.1); continue
+                Thread.sleep(forTimeInterval: 0.5); continue
             }
             let requests = entries.filter {
                 $0.lastPathComponent.hasPrefix("req_") && $0.pathExtension == "json"
@@ -66,8 +87,24 @@ final class ExecuTorchEngine {
             for reqURL in requests {
                 autoreleasepool { handleRequest(at: reqURL) }
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            // Idle the worker harder during memory pressure so we
+            // aren't competing with the active render for pages.
+            let idle: TimeInterval = Self.availableBytes() < 200 * 1024 * 1024 ? 1.0 : 0.1
+            Thread.sleep(forTimeInterval: idle)
         }
+    }
+
+    /// Bytes the app can still allocate before iOS jetsams it. Returns
+    /// 0 if the symbol can't be resolved (older iOS). Used to gate
+    /// heartbeat writes during low-memory periods so we don't trigger
+    /// NSMallocException on `[NSString fileSystemRepresentation]`.
+    private static func availableBytes() -> Int {
+        // Cached function pointer — dlsym once.
+        struct C { static let fn: (@convention(c) () -> Int)? = {
+            let h = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "os_proc_available_memory")
+            return h.map { unsafeBitCast($0, to: (@convention(c) () -> Int).self) }
+        }() }
+        return C.fn?() ?? 0
     }
 
     // MARK: - Request handling

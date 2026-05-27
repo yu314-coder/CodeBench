@@ -8,12 +8,20 @@ import Metal        // MTLCreateSystemDefaultDevice for GPU status pill
 ///   ┌─ Gradient brand stripe ───────────────────────────────────┐
 ///   │ Hero ── BenchCode title + stats pills (Python / GPU / RAM)│
 ///   │                                                           │
-///   │ QUICK ACTIONS — 4 wide pill buttons                       │
+///   │ QUICK ACTIONS — 3 wide pill buttons (main verbs)          │
 ///   │                                                           │
 ///   │ RECENT — horizontal scroll of file cards                  │
 ///   │                                                           │
-///   │ ALL TOOLS — 2-D grid of category-tinted cards             │
+///   │ ALL TOOLS — 2-D grid of 6 category-tinted cards           │
 ///   └───────────────────────────────────────────────────────────┘
+///
+/// Button inventory was deliberately pared down (13 → 9): the
+/// dashboard used to show Editor and AI Chat in BOTH the Quick
+/// Actions row AND the tools grid; Run Last (Quick Actions) and
+/// Run Script (tools grid) were the same verb. GPU Lab survives
+/// as a feature but is reached from Settings, not the dashboard,
+/// since it's a one-off benchmark rather than something users want
+/// at first-tap distance.
 ///
 /// The visual identity is intentionally NOT a stock UICollectionView
 /// of identical cells (which is exactly what App Store 4.3 reviewers
@@ -396,10 +404,13 @@ private final class SectionHeader: UIView {
 
 // MARK: - QuickActionsRow
 
-/// Four wide pill-buttons for the most common one-tap actions:
-/// Run Last, New Py File, Code Editor, AI Chat. Visually distinct
-/// from the smaller tool cards below — these are LARGER and read
-/// as "main verbs."
+/// Three wide pill-buttons for the most common one-tap actions:
+/// Run Last, New File, AI Chat. Visually distinct from the smaller
+/// tool cards below — these are LARGER and read as "main verbs."
+///
+/// Editor is intentionally NOT here — it's the largest card in the
+/// tools grid right below, and showing both was a duplication users
+/// noticed. Three is also a better fit at iPhone-compact widths.
 private final class QuickActionsRow: UIView {
 
     var onSelect: ((WorkspaceDashboardView.Action) -> Void)?
@@ -409,8 +420,6 @@ private final class QuickActionsRow: UIView {
          UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1), .runLast),
         ("New File",   "plus.app.fill",
          UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1), .newPyFile),
-        ("Editor",     "chevron.left.forwardslash.chevron.right",
-         UIColor(red: 0.40, green: 0.65, blue: 0.95, alpha: 1), .editor),
         ("AI Chat",    "sparkles",
          UIColor(red: 0.78, green: 0.62, blue: 0.99, alpha: 1), .aiChat),
     ]
@@ -736,6 +745,11 @@ private final class ToolsGrid: UIView {
         let tint: UIColor, action: WorkspaceDashboardView.Action
     }
 
+    // Trimmed from 9 → 6 cards. Dropped:
+    //   • AI Chat   — already in Quick Actions row
+    //   • Run Script — same verb as "Run Last" in Quick Actions
+    //   • GPU Lab    — specialized one-off (still reachable from
+    //                  Settings; doesn't need first-tap real estate)
     private let tools: [Tool] = [
         Tool(title: "Code Editor",
              subtitle: "Monaco · IntelliSense",
@@ -752,11 +766,6 @@ private final class ToolsGrid: UIView {
              icon: "terminal.fill",
              tint: UIColor(red: 0.55, green: 0.65, blue: 0.95, alpha: 1),
              action: .terminal),
-        Tool(title: "AI Chat",
-             subtitle: "On-device LLM",
-             icon: "brain.head.profile",
-             tint: UIColor(red: 0.69, green: 0.51, blue: 0.95, alpha: 1),
-             action: .aiChat),
         Tool(title: "Libraries",
              subtitle: "115+ packages",
              icon: "books.vertical.fill",
@@ -767,16 +776,6 @@ private final class ToolsGrid: UIView {
              icon: "x.squareroot",
              tint: UIColor(red: 0.85, green: 0.72, blue: 0.35, alpha: 1),
              action: .latex),
-        Tool(title: "Run Script",
-             subtitle: "Execute current file",
-             icon: "play.fill",
-             tint: UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1),
-             action: .runScript),
-        Tool(title: "GPU Lab",
-             subtitle: "Metal benchmark",
-             icon: "memorychip.fill",
-             tint: UIColor(red: 0.95, green: 0.45, blue: 0.70, alpha: 1),
-             action: .gpuLab),
         Tool(title: "Settings",
              subtitle: "Themes · model",
              icon: "gearshape.2.fill",

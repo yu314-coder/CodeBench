@@ -487,6 +487,26 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
     }
 
     func bell(source: TerminalView) {
+        // Settings toggle: when "Visual bell" is on, briefly flash
+        // the terminal background instead of haptic-only. The
+        // setting key is namespaced under Settings.terminalVisualBell;
+        // read directly from UserDefaults to avoid a Settings import
+        // here (the property defaults to true for parity with
+        // older builds).
+        let visual = UserDefaults.standard.object(
+            forKey: "settings.terminal.visualBell") as? Bool ?? true
+        if visual {
+            DispatchQueue.main.async {
+                let original = source.backgroundColor
+                UIView.animate(withDuration: 0.05, animations: {
+                    source.backgroundColor = UIColor(white: 0.4, alpha: 1.0)
+                }, completion: { _ in
+                    UIView.animate(withDuration: 0.15) {
+                        source.backgroundColor = original
+                    }
+                })
+            }
+        }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -515,6 +535,21 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
 final class LineBuffer {
 
     static let shared = LineBuffer()
+    private static let historyDefaultsKey = "linebuffer.history"
+    private static let historyCap = 500
+
+    /// Persist history across app launches.
+    private func saveHistory() {
+        // Cap to last `historyCap` entries to keep UserDefaults sane.
+        let recent = Array(history.suffix(Self.historyCap))
+        UserDefaults.standard.set(recent, forKey: Self.historyDefaultsKey)
+    }
+    private func loadHistory() {
+        if let saved = UserDefaults.standard.stringArray(forKey: Self.historyDefaultsKey) {
+            history = saved
+            histIdx = history.count
+        }
+    }
 
     /// The current typed-line bytes (UTF-8).
     private var buf: [UInt8] = []
@@ -810,7 +845,9 @@ final class LineBuffer {
         echo(buf, tv)
     }
 
-    private init() {}
+    private init() {
+        loadHistory()
+    }
 
     // MARK: - Public entry point
 
@@ -926,24 +963,18 @@ final class LineBuffer {
         case 0x7F, 0x08: // Backspace / BS
             backspace(terminalView: tv)
         case 0x03: // Ctrl-C
-            // Two paths for interrupt — which one matters depends on
-            // whether Python is reading stdin or executing code:
-            //   1) If the REPL is blocked in os.read(0, …), the REPL
-            //      will see the 0x03 byte and raise KeyboardInterrupt
-            //      inside its own frame.
-            //   2) If the user script is running (e.g. `while True:`),
-            //      the REPL is NOT reading stdin — bytes pile up in the
-            //      pipe. We need PyErr_SetInterrupt() which asynchronously
-            //      raises KeyboardInterrupt in the Python main thread at
-            //      the next bytecode boundary.
-            //   3) When the `ai` REPL is mid-generation (polling Swift's
-            //      response file in a tight time.sleep loop, NOT reading
-            //      stdin), neither of the above helps. Write the cancel
-            //      signal file directly so AIEngine.pollCancel picks it
-            //      up within 150ms, calls runner.cancelGeneration(), and
-            //      writes ai_done.txt with status -130; Python's
-            //      _stream_response then returns normally with that
-            //      status and handles it as "user cancelled".
+            // Two-step interrupt: byte injection wakes blocked stdin
+            // reads (REPL main loop AND patched input() in sub-REPLs
+            // like js/node), and hardStopRunningTask flips the
+            // PyErr_SetInterrupt flag for tight Python bytecode loops
+            // (e.g. `while True: pass`).
+            //
+            // Why both? PyErr_SetInterrupt is silent when Python is
+            // parked in a blocking syscall — there's no bytecode tick
+            // to check the flag. The 0x03 byte covers exactly that
+            // case: the syscall returns with the byte, the consumer
+            // recognizes it as Ctrl+C, and KeyboardInterrupt fires.
+            // Together: every state Python can be in.
             echo([0x5e, 0x43, 0x0d, 0x0a], tv) // "^C\r\n"
             buf.removeAll(keepingCapacity: true)
             cursor = 0
@@ -962,7 +993,7 @@ final class LineBuffer {
                                atomically: true, encoding: .utf8)
             }
             pipeWrite([0x03])
-            PythonRuntime.shared.interruptPythonMainThread()
+            PythonRuntime.shared.hardStopRunningTask()
 
             // iOS / CodeBench: also write the file-signal that
             // offlinai_shell._python's watchdog polls. PyErr_SetInterrupt
@@ -1234,6 +1265,7 @@ final class LineBuffer {
         "cc", "gcc", "clang",
         "c++", "g++", "clang++",
         "gfortran", "f77", "f90", "f95",
+        "swift",
         // LaTeX compilers
         "pdflatex", "latex", "tex", "pdftex", "xelatex",
         "latex-diagnose",
@@ -1325,6 +1357,8 @@ final class LineBuffer {
             return ["tex", "ltx"]
         case "python", "python3":
             return ["py"]
+        case "swift":
+            return ["swift"]
         case "bibtex", "biber":
             return ["aux", "bib", "bcf"]
         case "dvipdf", "dvipdfm", "dvipdfmx":
@@ -1451,6 +1485,9 @@ final class LineBuffer {
             if history.last != s {
                 history.append(s)
                 if history.count > 500 { history.removeFirst() }
+                // Persist across launches — UserDefaults is debounced
+                // by the OS so frequent writes are fine.
+                saveHistory()
             }
         }
         buf.removeAll(keepingCapacity: true)

@@ -7138,6 +7138,16 @@ except Exception:
         }
         codeTextView.text = contents  // mirror
         monacoView.setCode(contents, language: monacoLang)
+        // Tell Monaco's breakpoint store which file we're editing so
+        // glyph-margin taps update the right persistence file and so
+        // the gutter immediately shows the saved breakpoints for this
+        // file (read from ~/.codebench/breakpoints/<path>.bps).
+        monacoView.currentScriptPath = url.path
+        // Defer the gutter refresh until Monaco is ready — if the
+        // setCode JS hasn't run yet, the call will be queued.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.monacoView.refreshBreakpointsForCurrentFile()
+        }
         currentFileURL = url
         lastSavedText = contents
         editorFileNameLabel.text = url.lastPathComponent

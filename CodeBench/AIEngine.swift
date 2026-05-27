@@ -327,4 +327,96 @@ import llama   // GGML_TYPE_F16 and other ggml constants
         let text = "\(status)\n\(message)\n"
         try? text.write(toFile: path, atomically: true, encoding: .utf8)
     }
+
+    // MARK: - Inline code completion (low-latency, direct runner path)
+
+    /// Background-thread inline-completion call. Bypasses the
+    /// ai_request.json file protocol and goes straight to the runner
+    /// to keep latency tight (the file protocol adds ~50ms of FS
+    /// polling overhead which is meaningful at typing speed).
+    ///
+    /// Returns nil if no model is loaded, the runner is busy, the
+    /// request times out, or the response is empty.
+    ///
+    /// MUST be called from a background queue — blocks until the
+    /// completion finishes or times out (use semaphore.wait).
+    func inlineComplete(prefix: String,
+                        suffix: String = "",
+                        maxTokens: Int = 64,
+                        timeoutSeconds: TimeInterval = 4.0) -> String? {
+        guard let runner = runner else { return nil }
+        // Don't pile up requests — if a full chat is in flight, skip
+        // this inline call rather than queuing behind it.
+        if inFlight { return nil }
+
+        let systemPrompt = """
+        You are an inline code-completion engine. Given the code BEFORE the cursor and the code AFTER the cursor, return ONLY the text that should be inserted at the cursor to make the surrounding code valid and natural. Do not explain. Do not wrap in markdown fences. Do not repeat the prefix or suffix. Return at most one line for a mid-line completion, or up to ~10 lines for a multi-line completion. Stop as soon as the natural code block ends.
+        """
+        let userPrompt = """
+        ### CODE BEFORE CURSOR
+        \(prefix)
+        ### CODE AFTER CURSOR
+        \(suffix)
+        ### COMPLETION (insert at cursor)
+        """
+        let messages: [ChatMessage] = [
+            ChatMessage(role: .system, content: systemPrompt),
+            ChatMessage(role: .user,   content: userPrompt),
+        ]
+
+        var collected = ""
+        let semaphore = DispatchSemaphore(value: 0)
+        var completed = false
+        let lock = NSLock()
+
+        runner.generate(
+            messages: messages,
+            maxTokens: maxTokens,
+            grammar: nil,
+            stopSequences: ["### ", "\n\n\n"],
+            onToken: { token in
+                lock.lock(); collected += token; lock.unlock()
+            },
+            completion: { _ in
+                lock.lock(); completed = true; lock.unlock()
+                semaphore.signal()
+            }
+        )
+
+        let result = semaphore.wait(timeout: .now() + timeoutSeconds)
+        if result == .timedOut {
+            // The completion will keep producing tokens until cancelled —
+            // but we no longer care. Trigger cancel so the next inline
+            // request isn't blocked behind this one.
+            runner.cancelGeneration()
+            return nil
+        }
+
+        lock.lock(); let out = collected; lock.unlock()
+        let trimmed = stripCompletionArtifacts(out.trimmingCharacters(
+            in: .whitespacesAndNewlines))
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Some local models still emit `Completion:` prefixes or ``` fences
+    /// even when told not to. Strip them.
+    private func stripCompletionArtifacts(_ s: String) -> String {
+        var out = s
+        if out.hasPrefix("```") {
+            if let nl = out.firstIndex(of: "\n") {
+                out = String(out[out.index(after: nl)...])
+            }
+            if out.hasSuffix("```") {
+                out = String(out.dropLast(3))
+            }
+        }
+        for marker in ["completion:", "Completion:", "Output:", "Result:"] {
+            if out.lowercased().hasPrefix(marker.lowercased()) {
+                out = String(out.dropFirst(marker.count))
+                    .trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }

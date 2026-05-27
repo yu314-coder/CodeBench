@@ -115,6 +115,24 @@
         .monaco-editor .suggest-widget .monaco-list-row.focused {
             background: linear-gradient(90deg, rgba(99,102,241,0.25), rgba(168,85,247,0.12)) !important;
         }
+        /* ── Visual debugger: breakpoint gutter + current-line ─── */
+        .codebench-bp-glyph {
+            background: #e85d6e;
+            border-radius: 50%;
+            width: 12px !important;
+            height: 12px !important;
+            margin: 4px 4px 4px 8px;
+            box-shadow: 0 0 6px rgba(232, 93, 110, 0.6);
+        }
+        .codebench-debug-current-line {
+            background: rgba(255, 215, 0, 0.12);
+        }
+        .codebench-debug-arrow::before {
+            content: "▶";
+            color: #ffd700;
+            font-size: 14px;
+            margin-left: 4px;
+        }
     </style>
 </head>
 <body>
@@ -243,7 +261,8 @@
                 scrollBeyondLastLine: false,
                 lineNumbers: 'on',
                 lineNumbersMinChars: 3,
-                glyphMargin: false,
+                glyphMargin: true,  // enable for breakpoint gutter
+                inlineSuggest: { enabled: true, mode: 'subwordSmart' },
                 folding: true,
                 showFoldingControls: 'mouseover',
                 wordWrap: 'on',
@@ -446,7 +465,147 @@
                         forceMoveMarkers: true,
                     }]);
                 },
+                // ── Inline AI completion (called by Swift bridge) ────
+                // Swift's `setInlineCompletion(text)` after a debounced
+                // ai_complete call. We store the suggestion and
+                // immediately trigger Monaco's inline-completions
+                // provider so the ghost text appears without the user
+                // having to manually trigger anything.
+                setInlineCompletion(reqId, text) {
+                    if (reqId !== window.__inlineReqId) {
+                        // Stale response — user typed more, this
+                        // suggestion is no longer valid. Drop it.
+                        return;
+                    }
+                    window.__inlineSuggestion = text || '';
+                    // Re-trigger the inline provider so the new
+                    // suggestion renders. Cheap; Monaco short-circuits
+                    // if nothing changed.
+                    editor.trigger('ai', 'editor.action.inlineSuggest.trigger', {});
+                },
+                clearInlineCompletion() {
+                    window.__inlineSuggestion = '';
+                    window.__inlineReqId++;
+                },
+                // ── Breakpoint gutter (visual debugger Phase 2) ──────
+                // Replace the full breakpoint set for the current file.
+                // `lines` is an array of 1-indexed line numbers. Swift
+                // calls this after reading ~/.codebench/breakpoints/
+                // and whenever the file changes.
+                setBreakpoints(lines) {
+                    const editorObj = editor;
+                    const newDecos = (lines || []).map(ln => ({
+                        range: new monaco.Range(ln, 1, ln, 1),
+                        options: {
+                            isWholeLine: false,
+                            glyphMarginClassName: 'codebench-bp-glyph',
+                            glyphMarginHoverMessage: { value: '**Breakpoint** — tap to remove' },
+                            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                        }
+                    }));
+                    window.__bpDecorations = editorObj.deltaDecorations(
+                        window.__bpDecorations || [], newDecos);
+                    window.__bpLines = new Set(lines || []);
+                },
+                // Highlight the current execution line (when stepping
+                // through code in the debugger). Pass 0 to clear.
+                setDebugCurrentLine(line) {
+                    const decos = line && line > 0 ? [{
+                        range: new monaco.Range(line, 1, line, 1),
+                        options: {
+                            isWholeLine: true,
+                            className: 'codebench-debug-current-line',
+                            glyphMarginClassName: 'codebench-debug-arrow',
+                            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                        }
+                    }] : [];
+                    window.__debugLineDecos = editor.deltaDecorations(
+                        window.__debugLineDecos || [], decos);
+                },
             };
+
+            // ── Inline AI completion provider ──────────────────────────
+            // Performance: every keystroke triggers Monaco's provider.
+            // We don't talk to Python on every call — only when the user
+            // has paused for 350ms. The provider returns a cached
+            // suggestion if present, otherwise empty (which renders no
+            // ghost text). Swift fires setInlineCompletion when ready.
+            window.__inlineSuggestion = '';
+            window.__inlineReqId = 0;
+            window.__inlineDebounceTimer = null;
+
+            monaco.languages.registerInlineCompletionsProvider({pattern: '**'}, {
+                provideInlineCompletions(model, position, context, token) {
+                    // Cancellation: Monaco signals when the user typed
+                    // again. Bail out so we don't return stale ghost text.
+                    if (token.isCancellationRequested) {
+                        return { items: [] };
+                    }
+
+                    // If we have a cached suggestion, serve it instantly
+                    // (no network/Python round-trip). The text already
+                    // matches the cursor position because Swift only
+                    // sends it for the most recent reqId.
+                    const suggestion = window.__inlineSuggestion;
+                    if (suggestion && suggestion.length > 0) {
+                        return {
+                            items: [{
+                                insertText: suggestion,
+                                range: new monaco.Range(
+                                    position.lineNumber, position.column,
+                                    position.lineNumber, position.column),
+                            }]
+                        };
+                    }
+
+                    // No cached suggestion. Schedule a debounced fetch
+                    // from Python. Don't BLOCK the provider — Monaco
+                    // expects fast/sync returns. Just kick off the
+                    // request and return empty; when Swift calls
+                    // setInlineCompletion the provider re-fires.
+                    if (window.__inlineDebounceTimer) {
+                        clearTimeout(window.__inlineDebounceTimer);
+                    }
+                    window.__inlineDebounceTimer = setTimeout(() => {
+                        const reqId = ++window.__inlineReqId;
+                        const text = model.getValue();
+                        const offset = model.getOffsetAt(position);
+                        const prefix = text.slice(Math.max(0, offset - 1500), offset);
+                        const suffix = text.slice(offset, offset + 300);
+                        postToSwift({
+                            kind: 'inlineCompletionRequest',
+                            reqId: reqId,
+                            prefix: prefix,
+                            suffix: suffix,
+                        });
+                    }, 350);
+
+                    return { items: [] };
+                },
+                freeInlineCompletions(_completions) { /* no-op */ },
+            });
+
+            // Clear cached suggestion as soon as the user types — the
+            // previous suggestion is almost never still valid.
+            editor.onDidChangeModelContent(() => {
+                window.__inlineSuggestion = '';
+            });
+
+            // ── Breakpoint gutter clicks ──────────────────────────────
+            // Tap on the glyph margin to toggle a breakpoint. Send the
+            // line number to Swift, which updates the persistence file
+            // and calls setBreakpoints back with the new full set.
+            window.__bpLines = new Set();
+            window.__bpDecorations = [];
+            window.__debugLineDecos = [];
+            editor.onMouseDown(e => {
+                if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                    return;
+                }
+                const ln = e.target.position && e.target.position.lineNumber;
+                if (!ln) return;
+                postToSwift({ kind: 'toggleBreakpoint', line: ln });
+            });
 
             // Single bundled entry point — registers Python + C + C++ + Fortran
             // IntelliSense providers. See editor.js for the full language DB.

@@ -39,6 +39,21 @@ import WebKit
 
     static let shared = PywebviewBridge()
 
+    /// UserDefaults key behind the hidden Developer panel's
+    /// "pywebview: no cache" toggle (BC logo, top-left → Developer).
+    static let disableCacheKey = "pywebview.disableCache"
+
+    /// Developer toggle. When `true`, pywebview WKWebViews are given an
+    /// *ephemeral* (`.nonPersistent()`) website data store, so they never
+    /// read or write the on-disk HTTP cache — every load is fresh. The
+    /// persistent `.default()` cache is left untouched on disk, so flipping
+    /// the toggle back OFF transparently reuses the cache that was
+    /// preserved. Read at WKWebView construction time, so a change takes
+    /// effect on the next pywebview window / page load.
+    static var disableCache: Bool {
+        UserDefaults.standard.bool(forKey: disableCacheKey)
+    }
+
     /// The active output WebView. Set by CodeEditorViewController when
     /// it shows a page; weak so we don't keep it alive past its VC.
     weak var webView: WKWebView?
@@ -105,10 +120,19 @@ import WebKit
         // `load_html` or `load_url` from Python spins a cold pool.
         config.processPool = sharedProcessPool
 
-        // Persistent website data store — keeps cached CSS/JS/images
-        // between page loads. Default is .default() but some setups
-        // accidentally use ephemeral; make it explicit.
-        config.websiteDataStore = .default()
+        // Website data store — governs the on-disk HTTP cache, cookies,
+        // localStorage, etc. for pywebview WKWebViews.
+        //
+        // Normally .default() (persistent) so cached CSS/JS/images carry
+        // over between loads. The hidden Developer panel exposes a
+        // "pywebview: no cache" toggle: when ON we hand the web view an
+        // ephemeral (.nonPersistent()) store instead. An ephemeral store
+        // never reads or writes the disk cache, so every load is fresh —
+        // and it leaves the persistent .default() cache intact on disk,
+        // so turning the toggle back OFF transparently reuses the cache
+        // that was preserved. (Fixed at construction time, so it applies
+        // to the next pywebview window / page load.)
+        config.websiteDataStore = Self.disableCache ? .nonPersistent() : .default()
 
         // Media: allow inline playback without a user gesture so the
         // page can start animations/audio immediately. iOS default

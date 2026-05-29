@@ -650,6 +650,19 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                 },
             ]),
 
+            // ── Webview / pywebview ───────────────────────────────
+            Section(title: "Webview", rows: [
+                // When ON, pywebview WKWebViews use an ephemeral data
+                // store (.nonPersistent()) → every page loads fresh, the
+                // disk cache is never read or written. The existing
+                // persistent cache is left intact, so turning this OFF
+                // again transparently reuses it. Applies to the next
+                // pywebview window / page load.
+                .toggle(title: "pywebview: no cache",
+                        getter: { PywebviewBridge.disableCache },
+                        setter: { UserDefaults.standard.set($0, forKey: PywebviewBridge.disableCacheKey) }),
+            ]),
+
             // ── Easter eggs (direct triggers) ─────────────────────
             Section(title: "Easter eggs (direct)", rows: [
                 .action(title: "Open Hidden Games",

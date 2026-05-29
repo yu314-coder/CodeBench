@@ -450,8 +450,6 @@ final class NotebookViewController: UIViewController, UIScrollViewDelegate {
         nextExecCount += 1
         cv.setExecutionCount(count)
         cv.setOutputs([])
-        cv.setBusy(true)
-        inFlightCount += 1
 
         // Ship request: code, exec_id, notebook scope
         let sigDir = NSTemporaryDirectory().appending("latex_signals/")
@@ -464,34 +462,46 @@ final class NotebookViewController: UIViewController, UIScrollViewDelegate {
         ]
         let reqPath = sigDir + "notebook_exec_request_\(execId).json"
         let respPath = sigDir + "notebook_exec_response_\(execId).json"
+        // Serialize BEFORE marking the cell busy / bumping inFlightCount, so a
+        // serialization failure doesn't leave the cell stuck on [*] and leak
+        // the in-flight count.
         guard let data = try? JSONSerialization.data(withJSONObject: req) else { return }
+        cv.setBusy(true)
+        inFlightCount += 1
         try? data.write(to: URL(fileURLWithPath: reqPath))
 
-        // Poll for response (60 s budget)
-        let deadline = Date().addingTimeInterval(60)
-        func tick() {
-            if FileManager.default.fileExists(atPath: respPath),
-               let respData = try? Data(contentsOf: URL(fileURLWithPath: respPath)),
-               let resp = try? JSONSerialization.jsonObject(with: respData) as? [String: Any] {
-                try? FileManager.default.removeItem(atPath: respPath)
-                self.handleExecResponse(cv, resp: resp)
-                cv.setBusy(false)
-                self.inFlightCount = max(0, self.inFlightCount - 1)
-                return
-            }
-            if Date() > deadline {
-                cv.setOutputs([CellOutput(
-                    outputType: "error", text: nil, name: nil, data: nil,
-                    ename: "TimeoutError",
-                    evalue: "cell execution exceeded 60 s",
-                    traceback: nil)])
-                cv.setBusy(false)
-                self.inFlightCount = max(0, self.inFlightCount - 1)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: tick)
+        // Poll for the response (60 s budget). Uses a weak-self method, NOT a
+        // self-rescheduling local closure: the old version captured self + the
+        // cell view strongly and kept re-scheduling for up to 60 s, so closing
+        // or swapping the notebook neither stopped polling nor let the VC
+        // deallocate, and responses fired on a detached view.
+        pollExecResponse(cv, respPath: respPath, deadline: Date().addingTimeInterval(60))
+    }
+
+    private func pollExecResponse(_ cv: NotebookCellView, respPath: String, deadline: Date) {
+        if FileManager.default.fileExists(atPath: respPath),
+           let respData = try? Data(contentsOf: URL(fileURLWithPath: respPath)),
+           let resp = try? JSONSerialization.jsonObject(with: respData) as? [String: Any] {
+            try? FileManager.default.removeItem(atPath: respPath)
+            handleExecResponse(cv, resp: resp)
+            cv.setBusy(false)
+            inFlightCount = max(0, inFlightCount - 1)
+            return
         }
-        tick()
+        if Date() > deadline {
+            cv.setOutputs([CellOutput(
+                outputType: "error", text: nil, name: nil, data: nil,
+                ename: "TimeoutError",
+                evalue: "cell execution exceeded 60 s",
+                traceback: nil)])
+            cv.setBusy(false)
+            inFlightCount = max(0, inFlightCount - 1)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak cv] in
+            guard let self = self, let cv = cv else { return }  // notebook closed → stop polling
+            self.pollExecResponse(cv, respPath: respPath, deadline: deadline)
+        }
     }
 
     private func handleExecResponse(_ cv: NotebookCellView, resp: [String: Any]) {

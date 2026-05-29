@@ -9639,7 +9639,9 @@ extension GameViewController: UITableViewDataSource, UITableViewDelegate {
                 alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
                 alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
                     guard let self, let newTitle = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !newTitle.isEmpty else { return }
-                    self.conversations[actualIndex].title = newTitle
+                    // Re-resolve by id — actualIndex may be stale after a re-sort.
+                    guard let idx = self.conversations.firstIndex(where: { $0.id == conversation.id }) else { return }
+                    self.conversations[idx].title = newTitle
                     self.saveConversations()
                     self.reloadConversationList()
                     HapticService.shared.tapLight()
@@ -9651,7 +9653,9 @@ extension GameViewController: UITableViewDataSource, UITableViewDelegate {
             let pinImage = conversation.isPinned ? "pin.slash" : "pin.fill"
             let pinAction = UIAction(title: pinTitle, image: UIImage(systemName: pinImage)) { [weak self] _ in
                 guard let self else { return }
-                self.conversations[actualIndex].isPinned.toggle()
+                // Re-resolve by id — actualIndex may be stale after a re-sort.
+                guard let idx = self.conversations.firstIndex(where: { $0.id == conversation.id }) else { return }
+                self.conversations[idx].isPinned.toggle()
                 self.saveConversations()
                 self.reloadConversationList()
                 HapticService.shared.tapLight()
@@ -9668,7 +9672,10 @@ extension GameViewController: UITableViewDataSource, UITableViewDelegate {
                 alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
                 alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
                     guard let self else { return }
-                    self.deleteConversation(at: actualIndex)
+                    // Re-resolve by id — actualIndex may be stale after a re-sort.
+                    if let idx = self.conversations.firstIndex(where: { $0.id == conversation.id }) {
+                        self.deleteConversation(at: idx)
+                    }
                 })
                 self.present(alert, animated: true)
             }
@@ -9705,6 +9712,11 @@ extension GameViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     private func deleteConversation(at index: Int) {
+        // Bounds guard: context-menu/swipe actions capture an index that
+        // can go stale when reloadConversationList() re-sorts conversations
+        // (it fires async from the generation-completion handler). Without
+        // this, a deferred delete crashes with "Index out of range".
+        guard index >= 0 && index < conversations.count else { return }
         let deletingCurrent = index == currentConversationIndex
         conversations.remove(at: index)
         if conversations.isEmpty {

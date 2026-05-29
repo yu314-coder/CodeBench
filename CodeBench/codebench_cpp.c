@@ -940,6 +940,7 @@ static OcppValType token_to_valtype(OcppInterpreter *I, OcppTokenType t) {
 
 static OcppNode *parse_expr(OcppInterpreter *I);
 static OcppNode *parse_assign_expr(OcppInterpreter *I);
+static OcppNode *parse_postfix(OcppInterpreter *I);
 static OcppNode *parse_add(OcppInterpreter *I);
 static OcppNode *parse_stmt(OcppInterpreter *I);
 static OcppNode *parse_block(OcppInterpreter *I);
@@ -1164,10 +1165,19 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
             n->n_stmts = 0;
             n->stmts = (OcppNode **)calloc(8, sizeof(OcppNode *));
             int cap_idx = 0;
+            /* captures + params SHARE param_names[16]; cap the combined
+             * count so a lambda with many captures/params can't write past
+             * the fixed arrays (was a heap/stack overflow — no bounds check). */
+            const int slot_max = (int)(sizeof(n->param_names) / sizeof(n->param_names[0]));
             while (!check(I, CTOK_RBRACKET) && !check(I, CTOK_EOF)) {
                 if (cap_idx > 0) expect(I, CTOK_COMMA);
                 int by_ref = 0;
                 if (check(I, CTOK_AMP)) { advance(I); by_ref = 1; }
+                if (cap_idx >= slot_max) {
+                    /* out of capture slots — consume the token and drop it */
+                    if (check(I, CTOK_IDENT) || check(I, CTOK_ASSIGN)) advance(I);
+                    continue;
+                }
                 if (check(I, CTOK_IDENT)) {
                     OcppToken *cap_tok = advance(I);
                     tok_str(cap_tok, n->param_names[cap_idx], sizeof(n->param_names[0]));
@@ -1192,19 +1202,27 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
             n->n_params = 0;
             while (!check(I, CTOK_RPAREN) && !check(I, CTOK_EOF)) {
                 if (n->n_params > 0) expect(I, CTOK_COMMA);
-                /* type */
+                /* Will this param fit alongside the captures already stored? */
+                int slot = cap_idx + n->n_params;
+                int have_slot = (slot < slot_max);
+                /* type (parse regardless, to stay token-synced) */
+                OcppValType pty;
                 if (is_type_token(peek(I)->type)) {
-                    n->param_types[n->n_params] = token_to_valtype(I, advance(I)->type);
+                    pty = token_to_valtype(I, advance(I)->type);
                 } else {
                     advance(I);
-                    n->param_types[n->n_params] = CVAL_INT;
+                    pty = CVAL_INT;
                 }
                 /* optional & */
                 if (check(I, CTOK_AMP)) advance(I);
                 /* name */
                 OcppToken *pname = expect(I, CTOK_IDENT);
-                tok_str(pname, n->param_names[cap_idx + n->n_params], sizeof(n->param_names[0]));
-                n->n_params++;
+                if (have_slot) {
+                    n->param_types[n->n_params] = pty;
+                    tok_str(pname, n->param_names[slot], sizeof(n->param_names[0]));
+                    n->n_params++;
+                }
+                /* else: out of slots — param parsed but dropped (memory-safe) */
             }
             expect(I, CTOK_RPAREN);
 
@@ -1236,7 +1254,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
                 OcppNode *n = alloc_node(I, NP_CAST);
                 n->val_type = cast_type;
                 n->line = t->line;
-                n->children[0] = parse_primary(I);
+                n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
                 n->n_children = 1;
                 return n;
             }
@@ -1255,7 +1273,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_NEG);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1263,7 +1281,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_NOT);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1271,7 +1289,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_BIT_NOT);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1279,7 +1297,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_PRE_INC);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1287,7 +1305,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_PRE_DEC);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1295,7 +1313,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_DEREF);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -1303,7 +1321,7 @@ static OcppNode *parse_primary(OcppInterpreter *I) {
         advance(I);
         OcppNode *n = alloc_node(I, NP_ADDR);
         n->line = t->line;
-        n->children[0] = parse_primary(I);
+        n->children[0] = parse_postfix(I);  /* postfix binds tighter than unary */
         n->n_children = 1;
         return n;
     }
@@ -3894,10 +3912,16 @@ static OcppValue eval_node(OcppInterpreter *I, OcppNode *n) {
         return make_bool(val_to_bool(eval_node(I, n->children[1])));
     }
 
-    case NP_NEG: return is_numeric(eval_node(I, n->children[0])) ?
-        (eval_node(I, n->children[0]).type == CVAL_DOUBLE || eval_node(I, n->children[0]).type == CVAL_FLOAT ?
-         make_float(-val_to_double(eval_node(I, n->children[0]))) :
-         make_int(-val_to_int(eval_node(I, n->children[0])))) : make_int(0);
+    case NP_NEG: {
+        /* Evaluate the operand exactly ONCE — the old ternary called
+         * eval_node up to 4 times, so `-f()` / `-x++` ran repeatedly
+         * (wrong results + duplicated side effects). */
+        OcppValue nv = eval_node(I, n->children[0]);
+        if (!is_numeric(nv)) return make_int(0);
+        if (nv.type == CVAL_DOUBLE || nv.type == CVAL_FLOAT)
+            return make_float(-val_to_double(nv));
+        return make_int(-val_to_int(nv));
+    }
     case NP_NOT: return make_bool(!val_to_bool(eval_node(I, n->children[0])));
     case NP_BIT_NOT: return make_int(~val_to_int(eval_node(I, n->children[0])));
 
@@ -4044,14 +4068,23 @@ static OcppValue eval_node(OcppInterpreter *I, OcppNode *n) {
         int nargs = n->n_stmts;
         if (nargs > 16) nargs = 16;
         for (int i = 0; i < nargs; i++) {
-            args[i] = eval_node(I, n->stmts[i]);
-            /* Best-effort lvalue capture — only succeeds for things
-             * that have storage (identifiers, member access, array
-             * index). For literals / temporaries this stays NULL. */
-            if (n->stmts[i]->type == NP_IDENT ||
-                n->stmts[i]->type == NP_MEMBER ||
-                n->stmts[i]->type == NP_INDEX) {
+            if (n->stmts[i]->type == NP_INDEX) {
+                /* Resolve the subscript lvalue ONCE and read the value
+                 * from it. Evaluating both eval_node and eval_lvalue (as
+                 * the else branch does) would run a side-effecting index
+                 * like v[j++] twice. */
                 arg_lvalues[i] = eval_lvalue(I, n->stmts[i]);
+                args[i] = arg_lvalues[i] ? *arg_lvalues[i]
+                                         : eval_node(I, n->stmts[i]);
+            } else {
+                args[i] = eval_node(I, n->stmts[i]);
+                /* Best-effort lvalue capture for by-reference params —
+                 * identifier / member access are side-effect-free to
+                 * resolve, so a second pass here is harmless. */
+                if (n->stmts[i]->type == NP_IDENT ||
+                    n->stmts[i]->type == NP_MEMBER) {
+                    arg_lvalues[i] = eval_lvalue(I, n->stmts[i]);
+                }
             }
         }
 
@@ -4159,6 +4192,42 @@ static OcppValue eval_node(OcppInterpreter *I, OcppNode *n) {
             I->current_scope = prev;
             scope_destroy(lscope);
             return result;
+        }
+
+        /* Iterator-based algorithms: sort/reverse(v.begin(), v.end()).
+         * Our begin()/end() return plain indices, so the value-based
+         * builtin can't reach the container. Resolve it from the
+         * `.begin()` arg AST and operate in place. */
+        if ((strcmp(n->name, "sort") == 0 || strcmp(n->name, "reverse") == 0) &&
+            n->op == 0 && nargs >= 1 &&
+            n->stmts[0]->type == NP_CALL &&
+            (n->stmts[0]->op == 1 || n->stmts[0]->op == 2) &&
+            strcmp(n->stmts[0]->name, "begin") == 0 &&
+            n->stmts[0]->n_children > 0) {
+            OcppValue *cont = eval_lvalue(I, n->stmts[0]->children[0]);
+            if (cont && cont->type == CVAL_VECTOR) {
+                int len = cont->v.vec.len;
+                if (strcmp(n->name, "sort") == 0) {
+                    qsort(cont->v.vec.data, len, sizeof(OcppValue), value_compare);
+                } else {
+                    for (int k = 0; k < len / 2; k++) {
+                        OcppValue tmp = cont->v.vec.data[k];
+                        cont->v.vec.data[k] = cont->v.vec.data[len - 1 - k];
+                        cont->v.vec.data[len - 1 - k] = tmp;
+                    }
+                }
+                return make_void();
+            }
+        }
+        /* std::swap(a, b) — swap through the captured lvalues so the
+         * caller's variables actually change (the value-based builtin
+         * only swapped local copies). */
+        if (strcmp(n->name, "swap") == 0 && n->op == 0 && nargs >= 2 &&
+            arg_lvalues[0] && arg_lvalues[1]) {
+            OcppValue tmp = *arg_lvalues[0];
+            *arg_lvalues[0] = *arg_lvalues[1];
+            *arg_lvalues[1] = tmp;
+            return make_void();
         }
 
         /* STL / built-in functions */

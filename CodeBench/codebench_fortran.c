@@ -1572,15 +1572,34 @@ static OfortNode *parse_select_case(OfortInterpreter *I) {
 
             if (check(I, FTOK_DEFAULT) || check_ident_upper(I, "DEFAULT")) {
                 advance(I);
-                cb->children[0] = NULL; /* default case */
+                cb->children[0] = NULL; /* default case (n_stmts stays 0) */
             } else {
                 expect(I, FTOK_LPAREN);
-                cb->children[0] = parse_expr(I);
-                /* check for range: case (lo:hi) */
-                if (check(I, FTOK_COLON)) {
-                    advance(I);
-                    cb->children[1] = parse_expr(I);
-                    cb->n_children = 2;
+                /* One or more comma-separated selectors; each is a single
+                 * value or a lo:hi range. Stored as item nodes in
+                 * cb->stmts so CASE value-lists like CASE (1, 2, 5:10)
+                 * parse — previously the comma hit expect(RPAREN) and
+                 * hard-errored. children[] stays reserved for the body;
+                 * a default case is the one with n_stmts == 0. */
+                cb->stmts = NULL; cb->n_stmts = 0;
+                int scap = 0;
+                while (1) {
+                    OfortNode *item = alloc_node(I, FND_CASE_BLOCK);
+                    item->children[0] = parse_expr(I);
+                    item->n_children = 1;
+                    if (check(I, FTOK_COLON)) {  /* lo:hi range */
+                        advance(I);
+                        item->children[1] = parse_expr(I);
+                        item->n_children = 2;
+                    }
+                    if (cb->n_stmts >= scap) {
+                        scap = scap ? scap * 2 : 4;
+                        cb->stmts = (OfortNode **)realloc(cb->stmts,
+                                        sizeof(OfortNode *) * scap);
+                    }
+                    cb->stmts[cb->n_stmts++] = item;
+                    if (!check(I, FTOK_COMMA)) break;
+                    advance(I); /* consume comma, parse next selector */
                 }
                 expect(I, FTOK_RPAREN);
             }
@@ -3172,7 +3191,20 @@ static void exec_node(OfortInterpreter *I, OfortNode *n) {
             /* Simple variable assignment */
             OfortVar *v = find_var(I, lhs->name);
             if (v && v->is_parameter) ofort_error(I, "Cannot assign to PARAMETER '%s'", lhs->name);
-            set_var(I, lhs->name, rhs);
+            if (v && v->val.type == FVAL_ARRAY && rhs.type != FVAL_ARRAY) {
+                /* Whole-array = scalar → BROADCAST to every element
+                 * (Fortran array assignment, e.g. the idiomatic
+                 * `arr = 0`). The old code replaced the array variable
+                 * with the scalar, so any later arr(i) access then
+                 * errored "'arr' is not an array". */
+                for (int k = 0; k < v->val.v.arr.len; k++) {
+                    free_value(&v->val.v.arr.data[k]);
+                    v->val.v.arr.data[k] = copy_value(rhs);
+                }
+                free_value(&rhs);
+            } else {
+                set_var(I, lhs->name, rhs);
+            }
         } else if (lhs->type == FND_FUNC_CALL) {
             /* Array element assignment: arr(i) = val */
             OfortVar *var = find_var(I, lhs->name);
@@ -3319,41 +3351,47 @@ static void exec_node(OfortInterpreter *I, OfortNode *n) {
 
     case FND_SELECT_CASE: {
         OfortValue sel = eval_node(I, n->children[0]);
-        int matched = 0;
+        int matched = 0, default_idx = -1;
         for (int i = 0; i < n->n_stmts && !matched; i++) {
             OfortNode *cb = n->stmts[i];
-            if (!cb->children[0]) {
-                /* DEFAULT */
-                int body_idx = cb->n_children - 1;
-                exec_node(I, cb->children[body_idx]);
-                matched = 1;
-            } else {
-                OfortValue case_val = eval_node(I, cb->children[0]);
-                int match = 0;
-                if (cb->n_children >= 3) {
-                    /* range: lo:hi */
-                    OfortValue hi = eval_node(I, cb->children[1]);
-                    long long sv = val_to_int(sel);
-                    match = (sv >= val_to_int(case_val) && sv <= val_to_int(hi));
-                    free_value(&hi);
-                } else {
-                    /* single value */
-                    if (sel.type == FVAL_CHARACTER || case_val.type == FVAL_CHARACTER) {
-                        char sb[OFORT_MAX_STRLEN], cb2[OFORT_MAX_STRLEN];
-                        value_to_string(I, sel, sb, sizeof(sb));
-                        value_to_string(I, case_val, cb2, sizeof(cb2));
-                        match = (strcmp(sb, cb2) == 0);
-                    } else {
-                        match = (val_to_int(sel) == val_to_int(case_val));
-                    }
-                }
-                free_value(&case_val);
-                if (match) {
-                    int body_idx = cb->n_children - 1;
-                    exec_node(I, cb->children[body_idx]);
-                    matched = 1;
-                }
+            if (cb->n_stmts == 0) {
+                /* DEFAULT (no selector items) — defer until all explicit
+                 * cases have been checked, so it works wherever it
+                 * appears in source order. */
+                default_idx = i;
+                continue;
             }
+            /* Match against each selector item: a single value or lo:hi
+             * range. ANY item matching selects this block's body. */
+            int match = 0;
+            for (int k = 0; k < cb->n_stmts && !match; k++) {
+                OfortNode *item = cb->stmts[k];
+                OfortValue lo = eval_node(I, item->children[0]);
+                if (item->n_children == 2 && item->children[1]) {
+                    OfortValue hi = eval_node(I, item->children[1]);
+                    long long sv = val_to_int(sel);
+                    match = (sv >= val_to_int(lo) && sv <= val_to_int(hi));
+                    free_value(&hi);
+                } else if (sel.type == FVAL_CHARACTER || lo.type == FVAL_CHARACTER) {
+                    char sb[OFORT_MAX_STRLEN], cb2[OFORT_MAX_STRLEN];
+                    value_to_string(I, sel, sb, sizeof(sb));
+                    value_to_string(I, lo, cb2, sizeof(cb2));
+                    match = (strcmp(sb, cb2) == 0);
+                } else {
+                    match = (val_to_int(sel) == val_to_int(lo));
+                }
+                free_value(&lo);
+            }
+            if (match) {
+                int body_idx = cb->n_children - 1;
+                if (body_idx >= 0) exec_node(I, cb->children[body_idx]);
+                matched = 1;
+            }
+        }
+        if (!matched && default_idx >= 0) {
+            OfortNode *cb = n->stmts[default_idx];
+            int body_idx = cb->n_children - 1;
+            if (body_idx >= 0) exec_node(I, cb->children[body_idx]);
         }
         free_value(&sel);
         break;
@@ -3418,24 +3456,52 @@ static void exec_node(OfortInterpreter *I, OfortNode *n) {
         exec_node(I, fn->children[0]);
         I->returning = 0;
 
-        /* Handle INTENT(OUT/INOUT) — copy back */
+        /* Handle pass-by-reference write-back (INTENT OUT/INOUT, or the
+         * Fortran default). Capture each param's final value BEFORE
+         * popping the callee scope, then write back into the caller's
+         * lvalue AFTER popping — so the target resolves in the caller
+         * scope. Handles whole-variable args (arr / x) AND array-element
+         * args like `call sub(arr(i))`, which previously evaluated fine
+         * but never wrote back (only FND_IDENT did). */
+        OfortValue back[OFORT_MAX_PARAMS];
+        int do_back[OFORT_MAX_PARAMS];
+        for (int i = 0; i < OFORT_MAX_PARAMS; i++) do_back[i] = 0;
         for (int i = 0; i < fn->n_params && i < nargs; i++) {
-            if (fn->param_intents[i] == 2 || fn->param_intents[i] == 3) {
+            int intent = fn->param_intents[i];
+            if (intent == 2 || intent == 3 || intent == 0) { /* OUT/INOUT/default */
                 OfortVar *pv = find_var(I, fn->param_names[i]);
-                if (pv && n->stmts[i]->type == FND_IDENT) {
-                    set_var(I, n->stmts[i]->name, copy_value(pv->val));
-                }
-            }
-            /* Default: assume all args can be modified (Fortran default) */
-            else if (fn->param_intents[i] == 0 && n->stmts[i]->type == FND_IDENT) {
-                OfortVar *pv = find_var(I, fn->param_names[i]);
-                if (pv) {
-                    set_var(I, n->stmts[i]->name, copy_value(pv->val));
-                }
+                if (pv) { back[i] = copy_value(pv->val); do_back[i] = 1; }
             }
         }
 
         pop_scope(I);
+
+        for (int i = 0; i < fn->n_params && i < nargs; i++) {
+            if (!do_back[i]) continue;
+            OfortNode *arg = n->stmts[i];
+            if (arg->type == FND_IDENT) {
+                set_var(I, arg->name, back[i]);  /* takes ownership */
+            } else if (arg->type == FND_FUNC_CALL && arg->n_stmts >= 1) {
+                /* array element arr(idx) = back[i] (1-D) */
+                OfortVar *av = find_var(I, arg->name);
+                if (av && av->val.type == FVAL_ARRAY) {
+                    OfortValue iv = eval_node(I, arg->stmts[0]);
+                    int idx = (int)val_to_int(iv) - 1; /* 1-based → 0-based */
+                    free_value(&iv);
+                    if (idx >= 0 && idx < av->val.v.arr.len) {
+                        free_value(&av->val.v.arr.data[idx]);
+                        av->val.v.arr.data[idx] = back[i]; /* takes ownership */
+                    } else {
+                        free_value(&back[i]);
+                    }
+                } else {
+                    free_value(&back[i]);
+                }
+            } else {
+                free_value(&back[i]); /* literal/expression arg — nothing to update */
+            }
+        }
+
         for (int i = 0; i < nargs; i++) free_value(&args[i]);
         break;
     }

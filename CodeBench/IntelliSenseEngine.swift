@@ -182,6 +182,57 @@ final class IntelliSenseEngine {
         }
     }
 
+    // MARK: - List members (lazy module introspection, async)
+
+    /// Ask the Python daemon for every public member of `module` via
+    /// `dir()`, classified into `CompletionKind`s. Non-blocking; fires
+    /// `completion` on the main queue with the (possibly empty) list.
+    /// Used by `PythonSymbolIndex.ensureMembers` to populate completions
+    /// for modules that weren't eagerly indexed at launch.
+    /// `completion(members, answered)` — `answered` is `true` only when the
+    /// daemon actually responded (even with an empty list, e.g. a module
+    /// that fails to import). A timeout returns `(_, false)` so the caller
+    /// can keep the module retryable: a heavy module (torch) may exceed the
+    /// window on first import but answer instantly once the import is cached.
+    func listMembers(of module: String,
+                     completion: @escaping (_ members: [(String, CompletionKind)], _ answered: Bool) -> Void) {
+        let id = UUID().uuidString
+        let reqPayload: [String: Any] = [
+            "id": id,
+            "op": "members",
+            "module": module,
+        ]
+        let reqURL = signalDir.appendingPathComponent("req_\(id).json")
+        guard let reqData = try? JSONSerialization.data(withJSONObject: reqPayload) else {
+            completion([], false)
+            return
+        }
+        try? reqData.write(to: reqURL, options: .atomic)
+
+        let respURL = signalDir.appendingPathComponent("resp_\(id).json")
+
+        DispatchQueue.global(qos: .utility).async {
+            for _ in 0..<120 {  // 120 * 50ms = 6s (a heavy module imports slowly the first time)
+                if FileManager.default.fileExists(atPath: respURL.path) {
+                    var pairs: [(String, CompletionKind)] = []
+                    if let data = try? Data(contentsOf: respURL),
+                       let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                       let members = json["members"] as? [String: Int] {
+                        for (name, raw) in members {
+                            pairs.append((name, CompletionKind(rawValue: raw) ?? .variable))
+                        }
+                    }
+                    try? FileManager.default.removeItem(at: respURL)
+                    DispatchQueue.main.async { completion(pairs, true) }
+                    return
+                }
+                usleep(50_000)  // 50ms
+            }
+            try? FileManager.default.removeItem(at: reqURL)
+            DispatchQueue.main.async { completion([], false) }  // timed out — not definitive
+        }
+    }
+
     // MARK: - Quick classification of base-candidate strings
 
     /// Classify a keyword/builtin string into a completion kind.

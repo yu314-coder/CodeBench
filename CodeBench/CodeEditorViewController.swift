@@ -1158,7 +1158,16 @@ final class CodeEditorViewController: UIViewController {
             let parsed = PythonImportScanner.scan(text)
             let resolvedModule = PythonSymbolIndex.shared.resolveAlias(qualifier, aliases: parsed.aliases)
             let memberPairs = PythonSymbolIndex.shared.membersWithKinds(of: qualifier, aliases: parsed.aliases)
-            guard !memberPairs.isEmpty else { hideSuggestions(); return }
+            guard !memberPairs.isEmpty else {
+                // Not in the eager index — introspect this module's members
+                // on demand (any importable module), then rebuild the list
+                // once they arrive. Dedup/guards live in ensureMembers.
+                PythonSymbolIndex.shared.ensureMembers(of: resolvedModule) { [weak self] gained in
+                    if gained { self?.updateSuggestions() }
+                }
+                hideSuggestions()
+                return
+            }
 
             items = memberPairs.map { pair in
                 CompletionItem(label: pair.name, kind: pair.kind, detail: resolvedModule, module: resolvedModule)

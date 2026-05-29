@@ -17,22 +17,33 @@ final class PythonSymbolIndex {
     private(set) var availableModules: Set<String> = []
 
     private var isBuilt = false
-    private let cacheKey = "python.symbol.index.v3"
+    private let cacheKey = "python.symbol.index.v4"
     private let queue = DispatchQueue(label: "codebench.python.symindex", qos: .utility)
+
+    /// Modules whose members are being / have been fetched lazily, so we
+    /// don't re-request the same module on every keystroke.
+    private var fetchingMembers: Set<String> = []
+    private var triedMembers: Set<String> = []
 
     private init() {
         loadFromCache()
     }
 
-    /// Known libraries shipped with the app — we only introspect these.
+    /// Libraries whose members we introspect *eagerly* at build time, so
+    /// the most common `module.` completions are instant. Every other
+    /// importable module still appears in the name list (full discovery
+    /// below) and gets its members fetched lazily on first `.` access.
     private let knownModules: [String] = [
         "numpy", "scipy", "sklearn", "matplotlib.pyplot", "matplotlib",
         "sympy", "mpmath", "plotly", "networkx",
         "PIL", "av", "cairo",
         "manim", "manimpango",
-        "requests", "bs4",  // BeautifulSoup
+        "requests", "httpx", "bs4",  // BeautifulSoup
+        "pandas", "openpyxl", "webview", "flask",
         "json", "os", "sys", "math", "random", "time", "datetime",
         "re", "collections", "itertools", "functools",
+        "pathlib", "typing", "dataclasses", "io", "csv", "sqlite3",
+        "string", "textwrap", "hashlib", "base64", "pickle",
         "tqdm", "rich", "click", "pygments", "yaml",
         "jsonschema", "pydub", "svgelements", "offlinai_latex",
     ]
@@ -62,36 +73,32 @@ final class PythonSymbolIndex {
     private func build() {
         // Python script that introspects each module and classifies each member.
         // Returns `[name, kind]` per symbol so we can assign icons in the UI.
-        let modulesList = knownModules.map { "\"\($0)\"" }.joined(separator: ", ")
+        let eagerList = knownModules.map { "\"\($0)\"" }.joined(separator: ", ")
         let script = """
-        import sys, json, inspect
+        import sys, os, json, inspect
+        result = {"members": {}, "modules": []}
         try:
             import importlib
-            names = [\(modulesList)]
 
             # Kind codes must match Swift's `CompletionKind` raw values (LSP spec).
             def classify(obj):
                 try:
                     if inspect.ismodule(obj): return 9       # module
-                    if inspect.isclass(obj):
-                        if issubclass(obj, BaseException): return 7  # class (exception)
-                        return 7                             # class
+                    if inspect.isclass(obj): return 7        # class
                     if inspect.ismethod(obj): return 2       # method
                     if inspect.isfunction(obj) or inspect.isbuiltin(obj): return 3  # function
                     if isinstance(obj, type): return 7       # class
-                    if isinstance(obj, (int, float, complex, bool, bytes)):
-                        return 21                            # constant
-                    if isinstance(obj, str):
-                        return 21                            # constant (string)
-                    if isinstance(obj, (list, tuple, set, frozenset, dict)):
-                        return 6                             # variable (collection)
+                    if isinstance(obj, (int, float, complex, bool, bytes)): return 21  # constant
+                    if isinstance(obj, str): return 21       # constant (string)
+                    if isinstance(obj, (list, tuple, set, frozenset, dict)): return 6  # collection
                     if callable(obj): return 3               # function fallback
                     return 6                                 # variable
                 except Exception:
                     return 6
 
-            out = {}
-            for name in names:
+            # ── 1. eager member introspection for the common libraries ──
+            members = {}
+            for name in [\(eagerList)]:
                 try:
                     mod = importlib.import_module(name)
                     items = {}
@@ -100,17 +107,49 @@ final class PythonSymbolIndex {
                         if m.startswith('_'): continue
                         if count >= 400: break
                         try:
-                            obj = getattr(mod, m)
-                            items[m] = classify(obj)
+                            items[m] = classify(getattr(mod, m))
                         except Exception:
                             items[m] = 6
                         count += 1
-                    out[name] = items
+                    members[name] = items
                 except Exception:
                     pass
+            result["members"] = members
+
+            # ── 2. discover EVERY importable top-level module name ──
+            #     (names only, no import — cheap, so the list is complete:
+            #      stdlib + builtins + everything in every site-packages)
+            mods = set()
+            try: mods |= set(sys.builtin_module_names)
+            except Exception: pass
+            try: mods |= set(sys.stdlib_module_names)
+            except Exception: pass
+            SKIP = ('.dist-info', '.egg-info', '.txt', '.cfg', '.pth', '.md', '.json')
+            for p in list(sys.path):
+                if not p or not os.path.isdir(p): continue
+                try: entries = os.listdir(p)
+                except OSError: continue
+                for e in entries:
+                    if e.startswith(('_', '.')): continue
+                    if e.endswith(SKIP): continue
+                    full = os.path.join(p, e)
+                    try:
+                        if os.path.isdir(full):
+                            if (os.path.exists(os.path.join(full, '__init__.py')) or
+                                os.path.exists(os.path.join(full, '__init__.pyc'))):
+                                mods.add(e)
+                        elif e.endswith(('.py', '.pyc')):
+                            base = e.split('.', 1)[0]
+                            if base[:1].isalpha(): mods.add(base)
+                        elif e.endswith('.so') or '.cpython' in e or '.abi3' in e:
+                            base = e.split('.', 1)[0]
+                            if base[:1].isalpha(): mods.add(base)
+                    except OSError:
+                        pass
+            result["modules"] = sorted(m for m in mods if m and not m.startswith('_'))
 
             print("__SYMIDX_START__")
-            print(json.dumps(out))
+            print(json.dumps(result))
             print("__SYMIDX_END__")
         except Exception as _e:
             print("__SYMIDX_ERROR__", _e)
@@ -129,15 +168,20 @@ final class PythonSymbolIndex {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard let data = jsonPart.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Int]] else {
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             print("[symindex] Failed to parse JSON")
             return
         }
 
+        let parsedMembers = (root["members"] as? [String: [String: Int]]) ?? [:]
+        let discovered = (root["modules"] as? [String]) ?? []
+
         var members: [String: [String]] = [:]
         var kinds: [String: [String: CompletionKind]] = [:]
-        var available: Set<String> = []
-        for (mod, symMap) in parsed {
+        // Seed the importable-name set from the full discovery, then add
+        // any eagerly-indexed modules (+ their top-level package names).
+        var available: Set<String> = Set(discovered)
+        for (mod, symMap) in parsedMembers {
             members[mod] = Array(symMap.keys).sorted()
             var kindMap: [String: CompletionKind] = [:]
             for (name, rawKind) in symMap {
@@ -155,7 +199,8 @@ final class PythonSymbolIndex {
         availableModules = available
         isBuilt = true
         saveToCache()
-        print("[symindex] Indexed \(members.count) modules (v3, kind-annotated)")
+        print("[symindex] Indexed \(members.count) modules w/ members, "
+              + "\(available.count) importable names (v4)")
     }
 
     // MARK: - Cache
@@ -245,9 +290,48 @@ final class PythonSymbolIndex {
         return moduleMembers[resolved] != nil
     }
 
-    /// All module names (for `import x` suggestions).
+    /// All importable module names (for `import x` / bare suggestions).
+    /// Returns the full discovered universe (stdlib + builtins + every
+    /// site-packages top-level), not just the eagerly-introspected libs.
     var allModules: [String] {
-        Array(moduleMembers.keys).sorted()
+        availableModules.isEmpty ? Array(moduleMembers.keys).sorted()
+                                 : availableModules.sorted()
+    }
+
+    /// Fetch a module's members on demand, for any importable module that
+    /// wasn't eagerly indexed (e.g. `webview`, `torch`, a stdlib module).
+    /// Introspects `dir()` live via the IntelliSense daemon, caches the
+    /// result, and calls `completion(true)` — on the main queue — only
+    /// when new members were added, so the caller can refresh its list.
+    /// Dedups in-flight and already-tried modules so it's safe to call on
+    /// every keystroke.
+    func ensureMembers(of resolvedModule: String, completion: @escaping (Bool) -> Void) {
+        if let existing = moduleKinds[resolvedModule], !existing.isEmpty {
+            completion(false); return
+        }
+        let top = resolvedModule.components(separatedBy: ".").first ?? resolvedModule
+        guard availableModules.contains(resolvedModule) || availableModules.contains(top) else {
+            completion(false); return   // not importable — nothing to fetch
+        }
+        guard !fetchingMembers.contains(resolvedModule),
+              !triedMembers.contains(resolvedModule) else { completion(false); return }
+        fetchingMembers.insert(resolvedModule)
+        IntelliSenseEngine.shared.listMembers(of: resolvedModule) { [weak self] pairs, answered in
+            guard let self = self else { return }
+            self.fetchingMembers.remove(resolvedModule)
+            // Only give up permanently if the daemon actually answered (even
+            // empty — e.g. a module that can't import). A timeout stays
+            // retryable: the import may simply be slow the first time and
+            // will be cached for the next access.
+            if answered { self.triedMembers.insert(resolvedModule) }
+            guard !pairs.isEmpty else { completion(false); return }
+            var kindMap: [String: CompletionKind] = [:]
+            for (name, kind) in pairs { kindMap[name] = kind }
+            self.moduleKinds[resolvedModule] = kindMap
+            self.moduleMembers[resolvedModule] = pairs.map { $0.0 }.sorted()
+            self.saveToCache()
+            completion(true)
+        }
     }
 }
 

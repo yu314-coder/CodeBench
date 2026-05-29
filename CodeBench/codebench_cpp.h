@@ -146,6 +146,7 @@ typedef struct OcppValue {
             int len;
             int cap;
             OcppValType elem_type;
+            int kind;        /* 0=vector/list/deque, 1=stack, 2=queue */
         } vec;
         struct {             /* CVAL_MAP */
             struct OcppValue *keys;

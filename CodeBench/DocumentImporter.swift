@@ -16,23 +16,38 @@ final class DocumentImporter: NSObject, UIDocumentPickerDelegate {
         super.init()
     }
 
-    func presentPicker() {
-        let types: [UTType] = [.pdf, .plainText, .utf8PlainText, .text]
+    func presentPicker(types: [UTType] = [.pdf, .plainText, .utf8PlainText, .text],
+                       allowsMultiple: Bool = false) {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.delegate = self
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = allowsMultiple
         picker.modalPresentationStyle = .formSheet
         presenter?.present(picker, animated: true)
     }
 
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
-        let filename = url.lastPathComponent
+    /// Broad type set for AI-chat attachments: PDFs, any text/source file
+    /// (code, json, csv, xml, markdown, ...), plus `.data` as a catch-all
+    /// so nothing is greyed out. Non-text picks fail gracefully in
+    /// `extractPlainText` and surface via `didFailWith`.
+    func presentAttachmentPicker() {
+        presentPicker(types: [
+            .pdf, .pythonScript, .sourceCode, .swiftSource, .cSource,
+            .cPlusPlusSource, .cHeader, .cPlusPlusHeader, .shellScript,
+            .json, .xml, .html, .javaScript, .commaSeparatedText,
+            .plainText, .utf8PlainText, .utf16PlainText, .text, .data,
+        ], allowsMultiple: true)
+    }
 
-        if url.pathExtension.lowercased() == "pdf" {
-            extractPDFText(from: url, filename: filename)
-        } else {
-            extractPlainText(from: url, filename: filename)
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        // Fires the delegate once per file (the AI-attachment picker allows
+        // multi-select; the default single-select picker yields one URL).
+        for url in urls {
+            let filename = url.lastPathComponent
+            if url.pathExtension.lowercased() == "pdf" {
+                extractPDFText(from: url, filename: filename)
+            } else {
+                extractPlainText(from: url, filename: filename)
+            }
         }
     }
 
@@ -58,8 +73,21 @@ final class DocumentImporter: NSObject, UIDocumentPickerDelegate {
     }
 
     private func extractPlainText(from url: URL, filename: String) {
+        // Guard against slurping a huge / binary file into memory.
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 5_000_000 {
+            delegate?.documentImporter(self, didFailWith: "\(filename): file too large (\(size / 1_000_000) MB).")
+            return
+        }
         do {
-            let text = try String(contentsOf: url, encoding: .utf8)
+            // Try UTF-8 first, then a lenient fallback so Latin-1 / Windows
+            // text files still import rather than failing as "binary".
+            let text: String
+            if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
+                text = utf8
+            } else {
+                text = try String(contentsOf: url, encoding: .isoLatin1)
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 delegate?.documentImporter(self, didFailWith: "File is empty.")

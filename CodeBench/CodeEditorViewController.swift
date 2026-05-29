@@ -497,6 +497,19 @@ final class CodeEditorViewController: UIViewController {
     private let chatSendButton = UIButton(type: .system)
     private var aiChatWidthConstraint: NSLayoutConstraint!
 
+    // ── AI-chat file attachments ──────────────────────────────────────
+    /// Paperclip button in the chat composer; opens the attachment picker.
+    private let chatAttachButton = UIButton(type: .system)
+    /// Horizontal strip of attachment chips shown above the input (hidden
+    /// when nothing is attached).
+    private let attachmentsScrollView = UIScrollView()
+    private let attachmentsStackView = UIStackView()
+    /// A DocumentImporter dedicated to chat attachments — separate from the
+    /// editor's "open file" picker so a pick *attaches* rather than opens.
+    private var aiAttachImporter: DocumentImporter?
+    /// Files queued for the next chat message: (filename, extracted text).
+    private var pendingAttachments: [(name: String, text: String)] = []
+
     // Output panel (right side)
     private let outputPanel = UIView()
     // Output panel header (matches editorHeaderBar's 36pt baseline).
@@ -2273,11 +2286,42 @@ final class CodeEditorViewController: UIViewController {
         // user types or a model gets loaded.
         chatSendButton.isEnabled = false
 
-        let inputRow = UIStackView(arrangedSubviews: [chatInputField, chatSendButton])
+        // Attach (paperclip) button — opens a file picker; each picked
+        // file's text is queued and bundled into the next message.
+        var attachCfg = UIButton.Configuration.plain()
+        attachCfg.image = UIImage(systemName: "paperclip",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+        attachCfg.baseForegroundColor = EditorTheme.accent
+        attachCfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
+        chatAttachButton.configuration = attachCfg
+        chatAttachButton.addTarget(self, action: #selector(chatAttachTapped), for: .touchUpInside)
+        chatAttachButton.translatesAutoresizingMaskIntoConstraints = false
+        chatAttachButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        chatAttachButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        chatAttachButton.accessibilityLabel = "Attach file"
+
+        let inputRow = UIStackView(arrangedSubviews: [chatAttachButton, chatInputField, chatSendButton])
         inputRow.axis = .horizontal
         inputRow.spacing = 8
         inputRow.alignment = .center
         inputRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // Attachment-chip strip — horizontal, scrollable, collapses to zero
+        // height when no files are attached (hidden arranged subview).
+        attachmentsScrollView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentsScrollView.showsHorizontalScrollIndicator = false
+        attachmentsScrollView.isHidden = true
+        attachmentsStackView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentsStackView.axis = .horizontal
+        attachmentsStackView.spacing = 6
+        attachmentsStackView.alignment = .center
+        attachmentsScrollView.addSubview(attachmentsStackView)
+
+        // Composer = [attachment chips] above [attach | input | send].
+        let composerStack = UIStackView(arrangedSubviews: [attachmentsScrollView, inputRow])
+        composerStack.axis = .vertical
+        composerStack.spacing = 6
+        composerStack.translatesAutoresizingMaskIntoConstraints = false
 
         // Close (X) button — second way to dismiss the chat panel.
         let closeChatButton = UIButton(type: .system)
@@ -2300,7 +2344,7 @@ final class CodeEditorViewController: UIViewController {
 
         aiChatContainer.addSubview(chatHeaderRow)
         aiChatContainer.addSubview(chatScrollView)
-        aiChatContainer.addSubview(inputRow)
+        aiChatContainer.addSubview(composerStack)
 
         NSLayoutConstraint.activate([
             chatHeaderRow.topAnchor.constraint(equalTo: aiChatContainer.topAnchor, constant: 10),
@@ -2310,7 +2354,7 @@ final class CodeEditorViewController: UIViewController {
             chatScrollView.topAnchor.constraint(equalTo: chatHeaderRow.bottomAnchor, constant: 8),
             chatScrollView.leadingAnchor.constraint(equalTo: aiChatContainer.leadingAnchor, constant: 8),
             chatScrollView.trailingAnchor.constraint(equalTo: aiChatContainer.trailingAnchor, constant: -8),
-            chatScrollView.bottomAnchor.constraint(equalTo: inputRow.topAnchor, constant: -8),
+            chatScrollView.bottomAnchor.constraint(equalTo: composerStack.topAnchor, constant: -8),
 
             chatStackView.topAnchor.constraint(equalTo: chatScrollView.topAnchor),
             chatStackView.leadingAnchor.constraint(equalTo: chatScrollView.leadingAnchor),
@@ -2318,9 +2362,18 @@ final class CodeEditorViewController: UIViewController {
             chatStackView.bottomAnchor.constraint(equalTo: chatScrollView.bottomAnchor),
             chatStackView.widthAnchor.constraint(equalTo: chatScrollView.widthAnchor),
 
-            inputRow.leadingAnchor.constraint(equalTo: aiChatContainer.leadingAnchor, constant: 8),
-            inputRow.trailingAnchor.constraint(equalTo: aiChatContainer.trailingAnchor, constant: -8),
-            inputRow.bottomAnchor.constraint(equalTo: aiChatContainer.bottomAnchor, constant: -8),
+            // Attachment chips pinned inside their scroll view; the strip is
+            // 34pt tall when visible and collapses (hidden) when empty.
+            attachmentsStackView.topAnchor.constraint(equalTo: attachmentsScrollView.topAnchor),
+            attachmentsStackView.bottomAnchor.constraint(equalTo: attachmentsScrollView.bottomAnchor),
+            attachmentsStackView.leadingAnchor.constraint(equalTo: attachmentsScrollView.leadingAnchor),
+            attachmentsStackView.trailingAnchor.constraint(equalTo: attachmentsScrollView.trailingAnchor),
+            attachmentsStackView.heightAnchor.constraint(equalTo: attachmentsScrollView.heightAnchor),
+            attachmentsScrollView.heightAnchor.constraint(equalToConstant: 34),
+
+            composerStack.leadingAnchor.constraint(equalTo: aiChatContainer.leadingAnchor, constant: 8),
+            composerStack.trailingAnchor.constraint(equalTo: aiChatContainer.trailingAnchor, constant: -8),
+            composerStack.bottomAnchor.constraint(equalTo: aiChatContainer.bottomAnchor, constant: -8),
             // Row sizes itself from its children (input field 44pt, send button
             // 44×44pt — both set near the top of this method). Don't pin to 36pt
             // here; that was leftover from the pre-tap-target iteration and
@@ -4267,20 +4320,121 @@ except Exception:
         // sendChatMessage — without that path the user gets no feedback
         // at all on the first send attempt. So the rule is just "non-
         // empty text", not "non-empty text AND model loaded".
-        chatSendButton.isEnabled = hasText
+        // Also sendable when files are attached (e.g. "summarize this"
+        // with no typed text), so an attachment-only message can go.
+        chatSendButton.isEnabled = hasText || !pendingAttachments.isEmpty
+    }
+
+    // MARK: - AI-chat attachments
+
+    /// Paperclip tapped — open the attachment picker. Lazily creates the
+    /// dedicated importer so a pick *attaches* the file (vs. the editor's
+    /// own picker, which opens the file into the editor).
+    @objc private func chatAttachTapped() {
+        if aiAttachImporter == nil {
+            aiAttachImporter = DocumentImporter(presenter: self)
+            aiAttachImporter?.delegate = self
+        }
+        aiAttachImporter?.presentAttachmentPicker()
+    }
+
+    /// Rebuild the attachment-chip strip from `pendingAttachments`.
+    /// Each chip shows the filename and a remove (×) button; the strip
+    /// hides itself when there's nothing attached.
+    private func refreshAttachmentChips() {
+        attachmentsStackView.arrangedSubviews.forEach {
+            attachmentsStackView.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for (i, att) in pendingAttachments.enumerated() {
+            let chip = UIView()
+            chip.backgroundColor = EditorTheme.accent.withAlphaComponent(0.16)
+            chip.layer.cornerRadius = 8
+            chip.layer.borderWidth = 1
+            chip.layer.borderColor = EditorTheme.accent.withAlphaComponent(0.40).cgColor
+            chip.translatesAutoresizingMaskIntoConstraints = false
+
+            let icon = UIImageView(image: UIImage(systemName: "doc.text"))
+            icon.tintColor = EditorTheme.accent
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            icon.widthAnchor.constraint(equalToConstant: 13).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 13).isActive = true
+
+            let lbl = UILabel()
+            lbl.text = att.name
+            lbl.font = .systemFont(ofSize: 12, weight: .medium)
+            lbl.textColor = EditorTheme.foreground
+            lbl.lineBreakMode = .byTruncatingMiddle
+            lbl.translatesAutoresizingMaskIntoConstraints = false
+
+            let remove = UIButton(type: .system)
+            remove.setImage(UIImage(systemName: "xmark.circle.fill",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13)), for: .normal)
+            remove.tintColor = EditorTheme.gutterText
+            remove.tag = i
+            remove.addTarget(self, action: #selector(removeAttachmentTapped(_:)), for: .touchUpInside)
+            remove.translatesAutoresizingMaskIntoConstraints = false
+            remove.widthAnchor.constraint(equalToConstant: 20).isActive = true
+
+            let row = UIStackView(arrangedSubviews: [icon, lbl, remove])
+            row.axis = .horizontal
+            row.spacing = 5
+            row.alignment = .center
+            row.translatesAutoresizingMaskIntoConstraints = false
+            chip.addSubview(row)
+            NSLayoutConstraint.activate([
+                row.topAnchor.constraint(equalTo: chip.topAnchor, constant: 4),
+                row.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -4),
+                row.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
+                row.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
+                chip.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
+            ])
+            attachmentsStackView.addArrangedSubview(chip)
+        }
+        attachmentsScrollView.isHidden = pendingAttachments.isEmpty
+    }
+
+    /// Remove a single queued attachment (× on its chip). `refreshAttachmentChips`
+    /// re-tags the remaining chips so subsequent removals stay correct.
+    @objc private func removeAttachmentTapped(_ sender: UIButton) {
+        let idx = sender.tag
+        guard idx >= 0 && idx < pendingAttachments.count else { return }
+        pendingAttachments.remove(at: idx)
+        refreshAttachmentChips()
+        updateChatSendEnabled()
     }
 
     @objc private func sendChatMessage() {
-        guard let text = chatInputField.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let typed = (chatInputField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Sendable if the user typed something OR attached at least one file.
+        guard !typed.isEmpty || !pendingAttachments.isEmpty else { return }
+        // Attachment-only message gets a sensible default question.
+        let text = typed.isEmpty
+            ? "Please review the attached file\(pendingAttachments.count > 1 ? "s" : "")."
+            : typed
         chatInputField.text = ""
-        updateChatSendEnabled()      // back to disabled until the user types again
         chatInputField.resignFirstResponder()
 
-        addChatBubble(text: text, isUser: true)
+        // Snapshot + clear the queued attachments for this turn.
+        let attachments = pendingAttachments
+        pendingAttachments.removeAll()
+        refreshAttachmentChips()
+        updateChatSendEnabled()      // back to disabled until the user types again
+
+        // Show the user's message with the attached filenames noted.
+        let bubbleText = attachments.isEmpty
+            ? text
+            : text + "\n📎 " + attachments.map { $0.name }.joined(separator: ", ")
+        addChatBubble(text: bubbleText, isUser: true)
 
         let code = codeTextView.text ?? ""
         let langName = currentLanguage.title.lowercased()
-        let prompt = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\n\nUser question: \(text)"
+        // Bundle each attachment as a fenced block the model can read.
+        var attachmentBlock = ""
+        for att in attachments {
+            attachmentBlock += "\n\nAttached file `\(att.name)`:\n```\n\(att.text)\n```"
+        }
+        let prompt = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)\n\nUser question: \(text)"
 
         let messages: [ChatMessage] = [
             ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor. Keep responses under 300 words."),
@@ -4292,6 +4446,13 @@ except Exception:
             // to navigate elsewhere ("go to the Models tab"). Better:
             // surface the model picker right here, so picking a model
             // is one tap rather than a sidebar excursion.
+            // Restore the queued attachments so the user doesn't lose them
+            // — they can load a model and resend without re-picking files.
+            if !attachments.isEmpty {
+                pendingAttachments = attachments
+                refreshAttachmentChips()
+                updateChatSendEnabled()
+            }
             addInlineNoModelCTA()
             return
         }
@@ -8284,6 +8445,26 @@ extension CodeEditorViewController: UIDocumentPickerDelegate {
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         // No-op — user dismissed the picker without choosing a file.
+    }
+}
+
+// MARK: - DocumentImporterDelegate — AI-chat file attachments
+extension CodeEditorViewController: DocumentImporterDelegate {
+    func documentImporter(_ importer: DocumentImporter, didImportText text: String, filename: String) {
+        // Cap each attachment so one big file can't blow the model's
+        // limited context window (and starve the rest of the prompt).
+        let cap = 8000
+        let content: String = text.count > cap
+            ? String(text.prefix(cap)) + "\n…[truncated — file was \(text.count) characters]"
+            : text
+        pendingAttachments.append((name: filename, text: content))
+        refreshAttachmentChips()
+        updateChatSendEnabled()
+        showToast("Attached \(filename)", near: chatInputField)
+    }
+
+    func documentImporter(_ importer: DocumentImporter, didFailWith error: String) {
+        showToast(error, near: chatInputField)
     }
 }
 

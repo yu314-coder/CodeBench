@@ -1,6 +1,23 @@
 import UIKit
 import QuartzCore
 
+/// Long-press recognizer that also carries the launcher selector to run
+/// on release — lets `makeGameCard` give every card press a scale +
+/// haptic without a per-card UIControl subclass.
+private final class HGPressGesture: UILongPressGestureRecognizer {
+    var gameSelector: Selector?
+}
+
+/// UILabel with fixed horizontal padding, used for self-removing toasts.
+private final class PaddedLabel: UILabel {
+    var inset = UIEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: inset)) }
+    override var intrinsicContentSize: CGSize {
+        let s = super.intrinsicContentSize
+        return CGSize(width: s.width + inset.left + inset.right, height: s.height)
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Hidden games launcher
 // ════════════════════════════════════════════════════════════════════
@@ -19,12 +36,33 @@ enum HiddenGameScores {
     static func recordIfHigher(_ key: String, _ value: Int) {
         if value > best(key) { d.set(value, forKey: "hg.best.\(key)") }
     }
+    /// True only when `value` strictly beats the stored best. Lets a
+    /// caller record AND learn "is this a new record?" in one shot,
+    /// so games can fire a celebratory toast without a second lookup.
+    @discardableResult
+    static func recordIfHigherWasRecord(_ key: String, _ value: Int) -> Bool {
+        let isRecord = value > best(key)
+        if isRecord { d.set(value, forKey: "hg.best.\(key)") }
+        return isRecord
+    }
+    /// Per-game lifetime play counter, namespaced like the bests.
+    static func plays(_ key: String) -> Int { d.integer(forKey: "hg.plays.\(key)") }
+    static func bumpPlays(_ key: String) { d.set(plays(key) + 1, forKey: "hg.plays.\(key)") }
+    /// Wipe every hidden-game best + play count. Iterates the standard
+    /// domain so we never have to hard-code the per-game key list here.
+    static func resetAll() {
+        for k in d.dictionaryRepresentation().keys where k.hasPrefix("hg.best.") || k.hasPrefix("hg.plays.") {
+            d.removeObject(forKey: k)
+        }
+    }
 }
 
 final class HiddenGamesLauncher: UIViewController {
     private let bg = UIColor(red: 0.039, green: 0.039, blue: 0.059, alpha: 1.0)  // #0a0a0f
     private let fg = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)  // #f0f0f5
     private let muted = UIColor(red: 0.420, green: 0.420, blue: 0.502, alpha: 1.0)  // #6b6b80
+    private weak var cardsStackRef: UIStackView?
+    private var gameSlots: [GameSlot] = []
 
     private struct GameSlot {
         let key: String
@@ -129,6 +167,8 @@ final class HiddenGamesLauncher: UIViewController {
         cardsStack.axis = .vertical
         cardsStack.spacing = 14
 
+        gameSlots = games
+        cardsStackRef = cardsStack
         for g in games {
             cardsStack.addArrangedSubview(makeGameCard(g))
         }
@@ -145,6 +185,14 @@ final class HiddenGamesLauncher: UIViewController {
         view.addSubview(heroCard)
         view.addSubview(cardsStack)
         view.addSubview(footer)
+
+        let resetBtn = UIButton(type: .system)
+        resetBtn.translatesAutoresizingMaskIntoConstraints = false
+        resetBtn.setTitle("Reset high scores", for: .normal)
+        resetBtn.titleLabel?.font = .systemFont(ofSize: 11, weight: .semibold)
+        resetBtn.setTitleColor(UIColor(white: 0.45, alpha: 1), for: .normal)
+        resetBtn.addTarget(self, action: #selector(confirmResetScores), for: .touchUpInside)
+        view.addSubview(resetBtn)
 
         NSLayoutConstraint.activate([
             heroCard.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
@@ -167,12 +215,15 @@ final class HiddenGamesLauncher: UIViewController {
 
             footer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             footer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            footer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -14),
+            footer.bottomAnchor.constraint(equalTo: resetBtn.topAnchor, constant: -8),
+            resetBtn.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            resetBtn.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
         ])
 
         // Stash the hero glow + repaint frame when the layout settles.
         view.layoutIfNeeded()
         heroGlow.frame = heroCard.bounds
+        Self.addGlowPulse(to: heroGlow, lo: 0.7, hi: 1.0, duration: 3.4)
     }
 
     private func makeGameCard(_ g: GameSlot) -> UIView {
@@ -242,6 +293,15 @@ final class HiddenGamesLauncher: UIViewController {
         bestLbl.layer.borderWidth = 0.5
         bestLbl.clipsToBounds = true
 
+        // Secondary play-count chip (only once the game's been opened).
+        let playsCount = HiddenGameScores.plays(g.scoreKey)
+        let playsLbl = UILabel()
+        playsLbl.translatesAutoresizingMaskIntoConstraints = false
+        playsLbl.text = playsCount == 1 ? "1 PLAY" : "\(playsCount) PLAYS"
+        playsLbl.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
+        playsLbl.textColor = muted
+        playsLbl.isHidden = (playsCount == 0)
+
         let textCol = UIStackView(arrangedSubviews: [titleLbl, blurbLbl])
         textCol.translatesAutoresizingMaskIntoConstraints = false
         textCol.axis = .vertical
@@ -256,10 +316,17 @@ final class HiddenGamesLauncher: UIViewController {
         card.addSubview(iconWrap)
         card.addSubview(textCol)
         card.addSubview(bestLbl)
+        card.addSubview(playsLbl)
         card.addSubview(chev)
 
-        let tap = UITapGestureRecognizer(target: self, action: g.selector)
-        card.addGestureRecognizer(tap)
+        // Press feedback via a 0-duration long-press: scale the card down
+        // on touch-down, restore + fire the game's selector on release.
+        // Selector still runs once per tap, so push behavior is unchanged.
+        let press = HGPressGesture(target: self, action: #selector(cardPressed(_:)))
+        press.minimumPressDuration = 0
+        press.cancelsTouchesInView = false
+        press.gameSelector = g.selector
+        card.addGestureRecognizer(press)
 
         NSLayoutConstraint.activate([
             card.heightAnchor.constraint(equalToConstant: 84),
@@ -279,8 +346,10 @@ final class HiddenGamesLauncher: UIViewController {
             textCol.trailingAnchor.constraint(lessThanOrEqualTo: bestLbl.leadingAnchor, constant: -10),
 
             bestLbl.trailingAnchor.constraint(equalTo: chev.leadingAnchor, constant: -10),
-            bestLbl.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            bestLbl.centerYAnchor.constraint(equalTo: card.centerYAnchor, constant: playsCount == 0 ? 0 : -10),
             bestLbl.heightAnchor.constraint(equalToConstant: 18),
+            playsLbl.trailingAnchor.constraint(equalTo: bestLbl.trailingAnchor, constant: -2),
+            playsLbl.topAnchor.constraint(equalTo: bestLbl.bottomAnchor, constant: 2),
 
             chev.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
             chev.centerYAnchor.constraint(equalTo: card.centerYAnchor),
@@ -290,13 +359,75 @@ final class HiddenGamesLauncher: UIViewController {
 
         // Resize the glow once layout settles.
         DispatchQueue.main.async { glow.frame = card.bounds }
+        Self.addGlowPulse(to: glow, lo: 0.55, hi: 1.0, duration: 4.0)
         return card
     }
 
+    @objc private func cardPressed(_ g: HGPressGesture) {
+        guard let card = g.view else { return }
+        switch g.state {
+        case .began:
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            UIView.animate(withDuration: 0.10, delay: 0, options: [.allowUserInteraction, .curveEaseOut]) {
+                card.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
+                card.alpha = 0.92
+            }
+        case .ended:
+            UIView.animate(withDuration: 0.16, delay: 0,
+                           usingSpringWithDamping: 0.6, initialSpringVelocity: 0.5,
+                           options: [.allowUserInteraction]) {
+                card.transform = .identity
+                card.alpha = 1
+            }
+            // Only fire if the touch lifted inside the card (a real tap).
+            let p = g.location(in: card)
+            if card.bounds.contains(p), let sel = g.gameSelector {
+                perform(sel, with: nil, afterDelay: 0.02)
+            }
+        case .cancelled, .failed:
+            UIView.animate(withDuration: 0.16) { card.transform = .identity; card.alpha = 1 }
+        default: break
+        }
+    }
+
+    @objc private func confirmResetScores() {
+        let a = UIAlertController(
+            title: "Reset high scores?",
+            message: "This clears the best score and play count for all hidden games.",
+            preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        a.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
+            HiddenGameScores.resetAll()
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            self?.rebuildCards()
+        })
+        present(a, animated: true)
+    }
+    private func rebuildCards() {
+        guard let stack = cardsStackRef else { return }
+        for v in stack.arrangedSubviews { v.removeFromSuperview() }
+        for g in gameSlots { stack.addArrangedSubview(makeGameCard(g)) }
+    }
+
+    /// Gentle autoreversing opacity pulse for a decorative glow layer.
+    /// Animation-only: never changes the layer's model opacity, so if it
+    /// were stripped the glow just reverts to its original static look.
+    private static func addGlowPulse(to layer: CALayer, lo: Float, hi: Float, duration: CFTimeInterval) {
+        let a = CABasicAnimation(keyPath: "opacity")
+        a.fromValue = hi
+        a.toValue = lo
+        a.duration = duration
+        a.autoreverses = true
+        a.repeatCount = .infinity
+        a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        a.isRemovedOnCompletion = false
+        layer.add(a, forKey: "glowPulse")
+    }
+
     @objc private func close()        { dismiss(animated: true) }
-    @objc private func open2048()     { navigationController?.pushViewController(Game2048ViewController(), animated: true) }
-    @objc private func openDungeon()  { navigationController?.pushViewController(DungeonViewController(), animated: true) }
-    @objc private func openInvaders() { navigationController?.pushViewController(SpaceInvadersViewController(), animated: true) }
+    @objc private func open2048()     { HiddenGameScores.bumpPlays("g2048.bestTile");   navigationController?.pushViewController(Game2048ViewController(), animated: true) }
+    @objc private func openDungeon()  { HiddenGameScores.bumpPlays("dungeon.maxDepth"); navigationController?.pushViewController(DungeonViewController(), animated: true) }
+    @objc private func openInvaders() { HiddenGameScores.bumpPlays("invaders.bestScore"); navigationController?.pushViewController(SpaceInvadersViewController(), animated: true) }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -321,10 +452,19 @@ final class Game2048ViewController: UIViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "Reset", style: .plain, target: self, action: #selector(reset))
 
-        scoreLabel.font = .monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
-        scoreLabel.textColor = .white
+        scoreLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        scoreLabel.textColor = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)
         scoreLabel.textAlignment = .center
         scoreLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Pill chrome to match the launcher cards. Padding via insets so
+        // the existing center-X constraint + intrinsic size still place it.
+        scoreLabel.backgroundColor = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1.0)
+        scoreLabel.layer.cornerRadius = 11
+        scoreLabel.layer.cornerCurve = .continuous
+        scoreLabel.layer.borderColor = UIColor(red: 0.93, green: 0.76, blue: 0.18, alpha: 0.30).cgColor
+        scoreLabel.layer.borderWidth = 1
+        scoreLabel.clipsToBounds = true
+        scoreLabel.setContentHuggingPriority(.required, for: .horizontal)
         view.addSubview(scoreLabel)
 
         grid.backgroundColor = gridBg
@@ -349,8 +489,9 @@ final class Game2048ViewController: UIViewController {
         }
 
         NSLayoutConstraint.activate([
-            scoreLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            scoreLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             scoreLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            scoreLabel.heightAnchor.constraint(equalToConstant: 30),
             grid.topAnchor.constraint(equalTo: scoreLabel.bottomAnchor, constant: 16),
             grid.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             grid.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.82),
@@ -395,6 +536,7 @@ final class Game2048ViewController: UIViewController {
 
     @objc private func swiped(_ g: UISwipeGestureRecognizer) {
         let before = board
+        let scoreBefore = score
         switch g.direction {
         case .left:  for r in 0..<size { board[r] = merge(board[r]) }
         case .right: for r in 0..<size { board[r] = merge(board[r].reversed()).reversed() }
@@ -411,15 +553,16 @@ final class Game2048ViewController: UIViewController {
         default: break
         }
         if board != before {
-            // Tiny "punch" haptic on every successful slide — fires
-            // regardless of whether anything new merged, so the player
-            // gets feedback for the gesture itself.
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            // Heavier "thunk" when a merge happened (score rose), else a
+            // tiny "punch" for a plain slide — gives merges a distinct feel.
+            let merged = score > scoreBefore
+            UIImpactFeedbackGenerator(style: merged ? .medium : .light).impactOccurred()
             spawn()
             render()
             if isLost() {
                 HiddenGameScores.recordIfHigher("g2048.bestTile",
                     board.flatMap { $0 }.max() ?? 0)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
                 let a = UIAlertController(title: "Game over",
                                           message: "Score \(score). Try again?",
                                           preferredStyle: .alert)
@@ -473,8 +616,8 @@ final class Game2048ViewController: UIViewController {
     private func render() {
         let best = HiddenGameScores.best("g2048.bestTile")
         scoreLabel.text = best > 0
-            ? "Score \(score)    ·    Best tile \(best)"
-            : "Score \(score)"
+            ? "  Score \(score)    ·    Best tile \(best)  "
+            : "  Score \(score)  "
         for r in 0..<size { for c in 0..<size {
             let n = board[r][c]
             let t = tiles[r][c]
@@ -744,12 +887,14 @@ final class DungeonViewController: UIViewController {
             enemies[i].hp -= dmg
             let name = enemyName(enemies[i].kind)
             addLog("You hit \(name) for \(dmg).")
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             if enemies[i].hp <= 0 {
                 let reward = goldReward(for: enemies[i].kind)
                 addLog("\(name.capitalized) slain! +\(reward) gold")
                 gold += reward
                 hp = min(maxHp, hp + 1)
                 enemies.remove(at: i)
+                UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
             }
             enemyTurn(); render(); return
         }
@@ -775,6 +920,11 @@ final class DungeonViewController: UIViewController {
             maxHp += 2
             hp = min(maxHp, hp + 2)
             addLog("Descending to depth \(depth)…")
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            // Live-record toast the moment you beat your deepest run.
+            if HiddenGameScores.recordIfHigherWasRecord("dungeon.maxDepth", depth) {
+                showDungeonToast("NEW RECORD · DEPTH \(depth)")
+            }
             generateLevel(); render(); return
         }
         px = nx; py = ny
@@ -804,6 +954,7 @@ final class DungeonViewController: UIViewController {
             }
         }
         if hp <= 0 {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
             // Persist max depth reached before resetting.
             HiddenGameScores.recordIfHigher("dungeon.maxDepth", depth)
             let a = UIAlertController(title: "You died",
@@ -887,6 +1038,36 @@ final class DungeonViewController: UIViewController {
         if log.count > 50 { log.removeFirst(log.count - 50) }
     }
 
+    /// Brief, auto-dismissing banner for milestones (e.g. new depth
+    /// record). Self-contained: builds, animates, and removes its own
+    /// view — touches no existing subview or constraint.
+    private func showDungeonToast(_ text: String) {
+        let toast = PaddedLabel()
+        toast.text = text
+        toast.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
+        toast.textColor = UIColor(red: 0.66, green: 0.55, blue: 0.95, alpha: 1)
+        toast.textAlignment = .center
+        toast.backgroundColor = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 0.96)
+        toast.layer.cornerRadius = 10
+        toast.layer.cornerCurve = .continuous
+        toast.layer.borderColor = UIColor(red: 0.66, green: 0.55, blue: 0.95, alpha: 0.45).cgColor
+        toast.layer.borderWidth = 1
+        toast.clipsToBounds = true
+        toast.alpha = 0
+        toast.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(toast)
+        NSLayoutConstraint.activate([
+            toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            toast.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 60),
+            toast.heightAnchor.constraint(equalToConstant: 34),
+        ])
+        UIView.animate(withDuration: 0.25, animations: { toast.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.4, delay: 1.1, options: []) {
+                toast.alpha = 0
+            } completion: { _ in toast.removeFromSuperview() }
+        }
+    }
+
     private func enemyName(_ kind: Character) -> String {
         switch kind {
         case "T": return "troll"
@@ -957,8 +1138,10 @@ final class SpaceInvadersViewController: UIViewController {
     private var score = 0
     private var lives = 3
     private var wave = 1
+    private var frameCount = 0
     private var moveLeft = false, moveRight = false
     private let canvas = CALayer()
+    private let hitFlash = CALayer()   // red overlay pulsed when hit; sibling of canvas so draw()'s sublayer wipe never clears it
     private let scoreLabel = UILabel()
     private let livesLabel = UILabel()
     private let waveLabel = UILabel()
@@ -970,6 +1153,10 @@ final class SpaceInvadersViewController: UIViewController {
 
         canvas.frame = .zero
         view.layer.addSublayer(canvas)
+        hitFlash.frame = .zero
+        hitFlash.backgroundColor = UIColor.systemRed.cgColor
+        hitFlash.opacity = 0
+        view.layer.addSublayer(hitFlash)   // sits above the game canvas
 
         scoreLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .bold)
         scoreLabel.textColor = .systemGreen
@@ -1037,6 +1224,7 @@ final class SpaceInvadersViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         canvas.frame = view.bounds
+        hitFlash.frame = view.bounds
         if aliens.isEmpty { resetWave() }
         player.y = view.bounds.height - 180
     }
@@ -1085,6 +1273,7 @@ final class SpaceInvadersViewController: UIViewController {
     }
 
     @objc private func tick() {
+        frameCount += 1
         // Move player
         let speed: CGFloat = 5
         if moveLeft  { player.x = max(20, player.x - speed) }
@@ -1157,6 +1346,8 @@ final class SpaceInvadersViewController: UIViewController {
             if abs(b.x - player.x) < 24 && abs(b.y - player.y) < 12 {
                 enemyBullets.remove(at: ebi)
                 lives -= 1
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                flashHit()
                 if lives <= 0 { gameOver(); return }
             }
         }
@@ -1190,7 +1381,10 @@ final class SpaceInvadersViewController: UIViewController {
             let s = CAShapeLayer()
             let seed = Double(i)
             let sx = (seed * 197.3).truncatingRemainder(dividingBy: Double(view.bounds.width))
-            let sy = (seed * 89.7).truncatingRemainder(dividingBy: Double(view.bounds.height - 220)) + 30
+            // Slow parallax drift: nearer (bigger) stars fall faster.
+            let fieldH = Double(view.bounds.height - 220)
+            let drift = Double(frameCount) * ((seed.truncatingRemainder(dividingBy: 3) == 0) ? 0.35 : 0.18)
+            let sy = ((seed * 89.7 + drift).truncatingRemainder(dividingBy: fieldH)) + 30
             let size = (seed.truncatingRemainder(dividingBy: 3) == 0) ? 1.4 : 0.8
             s.path = UIBezierPath(ovalIn: CGRect(x: sx, y: sy, width: size, height: size)).cgPath
             s.fillColor = UIColor.white.withAlphaComponent(0.18).cgColor
@@ -1298,6 +1492,18 @@ final class SpaceInvadersViewController: UIViewController {
         if bullets.count < 3 {
             bullets.append(CGPoint(x: player.x, y: player.y - 10))
         }
+    }
+
+    /// Quick red veil when the player is hit. Drives `hitFlash.opacity`
+    /// with an explicit CAAnimation so it's immune to the per-frame
+    /// sublayer wipe in draw() (hitFlash is a sibling of canvas).
+    private func flashHit() {
+        let a = CABasicAnimation(keyPath: "opacity")
+        a.fromValue = 0.32
+        a.toValue = 0.0
+        a.duration = 0.32
+        a.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        hitFlash.add(a, forKey: "hitFlash")
     }
 
     private func gameOver() {

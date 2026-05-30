@@ -11,6 +11,18 @@ import QuartzCore
 // 1. Performance HUD — 7 taps on Run button toggles
 // ════════════════════════════════════════════════════════════════════
 
+/// Small namespace for shared helpers used by the secret-features VCs.
+enum SecretFeatures {
+    /// The foreground active window's root view, used as a HUD host when
+    /// no presenting-VC view is available. Read-only; touches no shared VC.
+    static func keyHostView() -> UIView? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })?
+            .windows.first(where: { $0.isKeyWindow })
+    }
+}
+
 final class PerformanceHUD: UIView {
     static let shared = PerformanceHUD()
     private let label = UILabel()
@@ -393,7 +405,7 @@ final class SecretCreditsViewController: UIViewController {
 
 final class DeveloperPanelViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
 
-    private struct Section { let title: String; let rows: [DevRow] }
+    private struct Section { let title: String; var icon: String? = nil; let rows: [DevRow] }
     private enum DevRow {
         case info(key: String, value: () -> String)               // read-only display, re-evaluated on refresh
         case action(title: String, subtitle: String, handler: (DeveloperPanelViewController) -> Void)
@@ -402,6 +414,11 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
     private var sections: [Section] = []
     private let table = UITableView(frame: .zero, style: .insetGrouped)
     private var refreshTimer: Timer?
+    private let launchUptime = ProcessInfo.processInfo.systemUptime  // for "panel uptime" delta
+    private var fpsLink: CADisplayLink?
+    private var fpsFrames = 0
+    private var fpsWindowStart: CFTimeInterval = 0
+    private var liveFPS: Double = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -445,9 +462,39 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        // Footer credit — version/build, tappable hint mirrors "Copy diagnostics".
+        let footer = UILabel()
+        let fInfo = Bundle.main.infoDictionary ?? [:]
+        footer.text = "CodeBench \((fInfo["CFBundleShortVersionString"] as? String) ?? "?") "
+            + "(\((fInfo["CFBundleVersion"] as? String) ?? "?")) · developer tools"
+        footer.font = .systemFont(ofSize: 11, weight: .regular)
+        footer.textColor = Self.muted
+        footer.textAlignment = .center
+        footer.numberOfLines = 2
+        footer.frame = CGRect(x: 0, y: 0, width: table.bounds.width, height: 56)
+        table.tableFooterView = footer
+
         // Refresh memory/info rows every second while visible.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.table.reloadData()
+        }
+
+        // Lightweight FPS sampler owned by this VC (does not couple to the
+        // shared PerformanceHUD). Torn down in viewWillDisappear.
+        fpsWindowStart = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(fpsTick))
+        link.add(to: .main, forMode: .common)
+        fpsLink = link
+    }
+
+    @objc private func fpsTick() {
+        fpsFrames += 1
+        let now = CACurrentMediaTime()
+        let dt = now - fpsWindowStart
+        if dt >= 0.5 {
+            liveFPS = Double(fpsFrames) / dt
+            fpsFrames = 0
+            fpsWindowStart = now
         }
     }
 
@@ -519,6 +566,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         refreshTimer?.invalidate(); refreshTimer = nil
+        fpsLink?.invalidate(); fpsLink = nil
     }
 
     @objc private func close()  { dismiss(animated: true) }
@@ -530,20 +578,31 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         let info = Bundle.main.infoDictionary ?? [:]
         sections = [
             // ── App identity ──────────────────────────────────────
-            Section(title: "App", rows: [
+            Section(title: "App", icon: "info.circle", rows: [
                 .info(key: "Version",   value: { (info["CFBundleShortVersionString"] as? String) ?? "?" }),
                 .info(key: "Build",     value: { (info["CFBundleVersion"] as? String) ?? "?" }),
                 .info(key: "Bundle id", value: { Bundle.main.bundleIdentifier ?? "?" }),
                 .info(key: "Device",    value: { "\(UIDevice.current.model) · iOS \(UIDevice.current.systemVersion)" }),
                 .info(key: "Locale",    value: { Locale.current.identifier }),
+                .info(key: "Thermal",   value: { Self.thermalString() }),
+                .info(key: "Low power", value: { ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off" }),
+                .info(key: "Free disk", value: { Self.formatBytes(Self.freeDiskBytes()) }),
             ]),
 
             // ── Live memory ───────────────────────────────────────
-            Section(title: "Memory (live)", rows: [
+            Section(title: "Memory (live)", icon: "memorychip", rows: [
                 .info(key: "phys_footprint", value: { Self.formatBytes(Self.physFootprint()) }),
                 .info(key: "resident_size",  value: { Self.formatBytes(Self.residentSize()) }),
                 .info(key: "available",      value: { Self.formatBytes(Self.osAvailable()) }),
                 .info(key: "device RAM",     value: { Self.formatBytes(Int(ProcessInfo.processInfo.physicalMemory)) }),
+                .info(key: "uptime (panel)", value: { [weak self] in
+                    guard let self else { return "—" }
+                    return Self.formatDuration(ProcessInfo.processInfo.systemUptime - self.launchUptime)
+                }),
+                .info(key: "FPS (display)", value: { [weak self] in
+                    guard let self else { return "—" }
+                    return self.liveFPS > 0 ? String(format: "%.0f fps", self.liveFPS) : "—"
+                }),
                 .action(title: "Force GC + malloc release",
                         subtitle: "Trigger gc.collect ×3 + malloc_zone_pressure_relief on every zone") { vc in
                     vc.runPython(
@@ -558,7 +617,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             ]),
 
             // ── Python runtime ────────────────────────────────────
-            Section(title: "Python", rows: [
+            Section(title: "Python", icon: "chevron.left.forwardslash.chevron.right", rows: [
                 .info(key: "Version", value: { Self.pythonVersion() }),
                 .info(key: "sys.path entries", value: { String(Self.sysPathCount()) }),
                 .action(title: "Print sys.path",
@@ -585,7 +644,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             ]),
 
             // ── Visual extras (direct toggles) ─────────────────────
-            Section(title: "Visual extras", rows: [
+            Section(title: "Visual extras", icon: "paintbrush", rows: [
                 .info(key: "Theme", value: { SecretThemeManager.shared.current.name }),
                 .action(title: "Cycle theme",
                         subtitle: "default → amber → matrix → dracula") { _ in
@@ -600,6 +659,16 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                         PerformanceHUD.shared.toggle(in: win)
                     }
                 },
+                .toggle(title: "Performance HUD",
+                        getter: { !PerformanceHUD.shared.isHidden },
+                        setter: { on in
+                            // Route through the existing toggle(in:) so the
+                            // display-link start/stop logic still runs. Only
+                            // act when the desired state differs from current.
+                            guard let host = SecretFeatures.keyHostView() else { return }
+                            let currentlyShown = !PerformanceHUD.shared.isHidden
+                            if on != currentlyShown { PerformanceHUD.shared.toggle(in: host) }
+                        }),
                 .action(title: "Confetti burst",
                         subtitle: "Just for fun — tests the particle emitter") { vc in
                     let host = vc.view!
@@ -618,7 +687,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             ]),
 
             // ── State management ──────────────────────────────────
-            Section(title: "State", rows: [
+            Section(title: "State", icon: "internaldrive", rows: [
                 .action(title: "Reset onboarding",
                         subtitle: "Show onboarding again on next launch") { vc in
                     UserDefaults.standard.removeObject(forKey: "onboarding.completed")
@@ -648,10 +717,31 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                         "import os; p = os.path.expanduser('~/Documents/log.txt'); " +
                         "print(open(p).read()[-4000:] if os.path.exists(p) else 'no crash log yet')")
                 },
+                .action(title: "Copy diagnostics",
+                        subtitle: "App + memory + Python summary → clipboard") { vc in
+                    let info = Bundle.main.infoDictionary ?? [:]
+                    let lines = [
+                        "CodeBench diagnostics",
+                        "version      \((info["CFBundleShortVersionString"] as? String) ?? "?") (\((info["CFBundleVersion"] as? String) ?? "?"))",
+                        "bundle id    \(Bundle.main.bundleIdentifier ?? "?")",
+                        "device       \(UIDevice.current.model) · iOS \(UIDevice.current.systemVersion)",
+                        "thermal      \(Self.thermalString())",
+                        "low power    \(ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off")",
+                        "phys_foot    \(Self.formatBytes(Self.physFootprint()))",
+                        "resident     \(Self.formatBytes(Self.residentSize()))",
+                        "available    \(Self.formatBytes(Self.osAvailable()))",
+                        "device RAM   \(Self.formatBytes(Int(ProcessInfo.processInfo.physicalMemory)))",
+                        "free disk    \(Self.formatBytes(Self.freeDiskBytes()))",
+                        "python       \(Self.pythonVersion())",
+                        "fps          \(vc.liveFPS > 0 ? String(format: "%.0f", vc.liveFPS) : "—")",
+                    ]
+                    UIPasteboard.general.string = lines.joined(separator: "\n")
+                    vc.toast("diagnostics copied")
+                },
             ]),
 
             // ── Webview / pywebview ───────────────────────────────
-            Section(title: "Webview", rows: [
+            Section(title: "Webview", icon: "globe", rows: [
                 // When ON, pywebview WKWebViews use an ephemeral data
                 // store (.nonPersistent()) → every page loads fresh, the
                 // disk cache is never read or written. The existing
@@ -664,7 +754,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             ]),
 
             // ── Easter eggs (direct triggers) ─────────────────────
-            Section(title: "Easter eggs (direct)", rows: [
+            Section(title: "Easter eggs (direct)", icon: "gift", rows: [
                 .action(title: "Open Hidden Games",
                         subtitle: "2048 · Dungeon · Space Invaders") { vc in
                     let games = HiddenGamesLauncher()
@@ -785,6 +875,31 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         return count
     }
 
+    private static func thermalString() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal:  return "nominal"
+        case .fair:     return "fair"
+        case .serious:  return "serious"
+        case .critical: return "critical"
+        @unknown default: return "?"
+        }
+    }
+    private static func freeDiskBytes() -> Int {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if let v = try? url?.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let cap = v.volumeAvailableCapacityForImportantUsage {
+            return Int(cap)
+        }
+        return 0
+    }
+    private static func formatDuration(_ s: TimeInterval) -> String {
+        let t = Int(max(0, s))
+        let h = t / 3600, m = (t % 3600) / 60, sec = t % 60
+        if h > 0 { return String(format: "%dh %02dm", h, m) }
+        if m > 0 { return String(format: "%dm %02ds", m, sec) }
+        return "\(sec)s"
+    }
+
     // MARK: - UITableView
 
     private static let fg = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)
@@ -792,6 +907,9 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
     private static let actionTint = UIColor(red: 0.659, green: 0.333, blue: 0.969, alpha: 1.0) // violet
     private static let monoVal = UIColor(red: 0.776, green: 0.788, blue: 1.0, alpha: 1.0)       // soft indigo
     private static let cardBg = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1.0)
+    private static let gaugeWarn = UIColor(red: 0.984, green: 0.749, blue: 0.141, alpha: 1.0) // amber #fbbf24
+    private static let gaugeCrit = UIColor(red: 0.937, green: 0.267, blue: 0.267, alpha: 1.0) // red   #ef4444
+    private static let okGreen   = UIColor(red: 0.20,  green: 0.83,  blue: 0.60,  alpha: 1.0)  // #34d399 (matches toggle ON)
 
     func numberOfSections(in t: UITableView) -> Int { sections.count }
     func tableView(_ t: UITableView, numberOfRowsInSection s: Int) -> Int { sections[s].rows.count }
@@ -810,11 +928,33 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                 .kern: kern,
             ])
         container.addSubview(lbl)
-        NSLayoutConstraint.activate([
-            lbl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 32),
-            lbl.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
-            lbl.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-        ])
+        // Optional leading SF Symbol, tinted to the violet accent. Falls
+        // back to the original flush-left label layout when icon == nil,
+        // so the look is unchanged for any section without an icon.
+        if let symbol = sections[s].icon,
+           let img = UIImage(systemName: symbol,
+               withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)) {
+            let iv = UIImageView(image: img)
+            iv.translatesAutoresizingMaskIntoConstraints = false
+            iv.tintColor = Self.actionTint.withAlphaComponent(0.85)
+            iv.contentMode = .scaleAspectFit
+            iv.setContentHuggingPriority(.required, for: .horizontal)
+            container.addSubview(iv)
+            NSLayoutConstraint.activate([
+                iv.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 32),
+                iv.firstBaselineAnchor.constraint(equalTo: lbl.firstBaselineAnchor),
+                iv.widthAnchor.constraint(equalToConstant: 15),
+                lbl.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 7),
+                lbl.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+                lbl.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                lbl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 32),
+                lbl.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+                lbl.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            ])
+        }
         return container
     }
     func tableView(_ t: UITableView, heightForHeaderInSection s: Int) -> CGFloat { 38 }

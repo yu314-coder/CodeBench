@@ -24,6 +24,13 @@ final class SystemInfoViewController: UIViewController {
     private let textColor = UIColor(red: 0.820, green: 0.835, blue: 0.870, alpha: 1)
     private let dimColor  = UIColor(red: 0.520, green: 0.540, blue: 0.580, alpha: 1)
     private let accentColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1)
+    // Additional file-local accents for gauges / per-section icon tints.
+    // Kept local (mirrors the L22 palette block) so no shared theme file
+    // is touched. Used by progress bars, the memory sparkline, and the
+    // optional per-card icon tint.
+    private let goodColor  = UIColor(red: 0.36, green: 0.85, blue: 0.55, alpha: 1.0)
+    private let amberColor = UIColor(red: 0.98, green: 0.74, blue: 0.36, alpha: 1.0)
+    private let badColor   = UIColor(red: 0.95, green: 0.45, blue: 0.45, alpha: 1.0)
 
     /// One row in a card. Either an info pair (`.kv`) or a tappable
     /// action button (`.action`). Letting cards mix the two means
@@ -55,6 +62,17 @@ final class SystemInfoViewController: UIViewController {
     /// visible so the user sees a moving footprint. Suspended in
     /// viewWillDisappear so we don't waste CPU when the tab is hidden.
     private var memoryTimer: Timer?
+
+    /// Live memory visuals hosted in the Memory card's header (above the
+    /// kv rows). Held as refs so the existing memoryTimer tick can push
+    /// new samples WITHOUT going through rebuildRows (which only swaps
+    /// the kv rows, not the header). nil until the Memory card is built.
+    private weak var memoryCeilingBar: SysInfoProgressBar?
+    private weak var memorySparkline: SysInfoSparkline?
+
+    /// Static used/total disk fill bar in the Storage card header.
+    /// Held weakly so the size-probe completion can refresh it in place.
+    private weak var storageBar: SysInfoProgressBar?
 
     /// Process-state card needs to react to thermal / foreground
     /// notifications. We hold the observers so we can unregister
@@ -155,6 +173,7 @@ final class SystemInfoViewController: UIViewController {
         refresh()
         startMemoryTimer()
         registerStateObservers()
+        UIDevice.current.isBatteryMonitoringEnabled = true
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -163,11 +182,13 @@ final class SystemInfoViewController: UIViewController {
         memoryTimer = nil
         stateObservers.forEach { NotificationCenter.default.removeObserver($0) }
         stateObservers.removeAll()
+        UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
     deinit {
         memoryTimer?.invalidate()
         stateObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
     private func setupUI() {
@@ -233,6 +254,7 @@ final class SystemInfoViewController: UIViewController {
             ("Memory",             "memorychip",            memoryRows()),
             ("Storage",            "internaldrive",         storageRows().map(Row.kvFromTuple)),
             ("Process",            "cpu",                   processRows()),
+            ("Battery",            "battery.100",           batteryRows()),
             ("SSL trust",          "lock.shield",           sslRows(pythonInfo).map(Row.kvFromTuple)),
             ("Runtimes available", "hammer",                runtimesRows().map(Row.kvFromTuple)),
             ("Diagnostics",        "stethoscope",           diagnosticsRows()),
@@ -242,9 +264,15 @@ final class SystemInfoViewController: UIViewController {
             if let existing = cards[def.title] {
                 rebuildRows(existing.rowsStack, rows: def.rows)
             } else {
-                let card = makeCard(title: def.title, icon: def.icon, rows: def.rows)
+                let card = makeCard(title: def.title, icon: def.icon, rows: def.rows,
+                                    tint: tintForCard(def.title))
                 cards[def.title] = card
                 contentStack.addArrangedSubview(card.view)
+                if def.title == "Memory" {
+                    attachMemoryHeader(to: card)
+                } else if def.title == "Storage" {
+                    attachStorageHeader(to: card)
+                }
             }
         }
     }
@@ -268,6 +296,84 @@ final class SystemInfoViewController: UIViewController {
         for row in rows {
             stack.addArrangedSubview(buildRowView(row))
         }
+    }
+
+    // MARK: - Live card visuals (sparkline + gauges)
+
+    /// Inserts the live memory sparkline + jetsam-ceiling bar into the
+    /// Memory card, positioned between the card header and its kv rows.
+    /// Called once, on the Memory card's first build. The existing
+    /// memoryTimer tick (updateCardRows(named:"Memory")) refreshes the
+    /// kv rows; updateMemoryVisuals() (called from the same tick) drives
+    /// these two views in place — no rebuildRows, no lifecycle change.
+    private func attachMemoryHeader(to card: Card) {
+        guard let cardStack = card.rowsStack.superview as? UIStackView,
+              let rowsIndex = cardStack.arrangedSubviews.firstIndex(of: card.rowsStack)
+        else { return }
+
+        let spark = SysInfoSparkline()
+        let bar = SysInfoProgressBar()
+
+        let caption = UILabel()
+        caption.text = "Footprint vs jetsam ceiling"
+        caption.font = UIFont.systemFont(ofSize: 10, weight: .medium).rounded
+        caption.textColor = dimColor
+
+        let block = UIStackView(arrangedSubviews: [spark, caption, bar])
+        block.axis = .vertical
+        block.spacing = 6
+        block.setCustomSpacing(8, after: spark)
+
+        // Insert just before the rowsStack so visuals sit under the title.
+        cardStack.insertArrangedSubview(block, at: rowsIndex)
+
+        memorySparkline = spark
+        memoryCeilingBar = bar
+        updateMemoryVisuals()   // seed immediately so it isn't empty pre-first-tick
+    }
+
+    /// Push one fresh sample into the Memory card's sparkline + ceiling
+    /// bar. Reuses the same mach reads as memoryRows(); colors the bar
+    /// green→amber→red by pressure. Safe to call when the views are nil
+    /// (card not built / tab off-screen) — it just no-ops.
+    private func updateMemoryVisuals() {
+        let footprint = appPhysFootprint()
+        let avail = osProcAvailableMemory()
+        let ceiling = footprint + UInt64(max(0, avail))
+        let frac = ceiling > 0 ? Double(footprint) / Double(ceiling) : 0
+        let color: UIColor = frac < 0.6 ? goodColor : (frac < 0.85 ? amberColor : badColor)
+        memoryCeilingBar?.setProgress(frac, color: color)
+        memorySparkline?.addSample(CGFloat(frac), color: color)
+    }
+
+    /// Adds a disk used/total fill bar to the Storage card header.
+    private func attachStorageHeader(to card: Card) {
+        guard let cardStack = card.rowsStack.superview as? UIStackView,
+              let rowsIndex = cardStack.arrangedSubviews.firstIndex(of: card.rowsStack)
+        else { return }
+        let bar = SysInfoProgressBar()
+        let caption = UILabel()
+        caption.text = "Disk used"
+        caption.font = UIFont.systemFont(ofSize: 10, weight: .medium).rounded
+        caption.textColor = dimColor
+        let block = UIStackView(arrangedSubviews: [caption, bar])
+        block.axis = .vertical; block.spacing = 6
+        cardStack.insertArrangedSubview(block, at: rowsIndex)
+        storageBar = bar
+        updateStorageBar()
+    }
+
+    /// Refresh the Storage card's used/total fill bar from the live
+    /// filesystem attributes (same source as storageRows()).
+    private func updateStorageBar() {
+        let docs = NSHomeDirectory() + "/Documents"
+        let attrs = (try? FileManager.default.attributesOfFileSystem(forPath: docs)) ?? [:]
+        let total = (attrs[.systemSize] as? NSNumber)?.int64Value ?? 0
+        let free  = (attrs[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        let used  = max(0, total - free)
+        let frac  = total > 0 ? Double(used) / Double(total) : 0
+        let color: UIColor = frac < 0.8 ? accentColor : (frac < 0.92 ? amberColor : badColor)
+        storageBar?.setProgress(frac, color: color)
     }
 
     // MARK: - Hero Header
@@ -345,7 +451,9 @@ final class SystemInfoViewController: UIViewController {
 
     // MARK: - Card factory
 
-    private func makeCard(title: String, icon: String, rows: [Row]) -> Card {
+    private func makeCard(title: String, icon: String, rows: [Row],
+                          tint: UIColor? = nil) -> Card {
+        let chipColor = tint ?? accentColor
         let card = UIView()
         card.backgroundColor = surfaceColor
         card.layer.cornerRadius = 14
@@ -362,7 +470,7 @@ final class SystemInfoViewController: UIViewController {
 
         // Header with icon + title (rounded SF Pro for the title).
         let iconBg = UIView()
-        iconBg.backgroundColor = accentColor.withAlphaComponent(0.15)
+        iconBg.backgroundColor = chipColor.withAlphaComponent(0.15)
         iconBg.layer.cornerRadius = 8
         iconBg.translatesAutoresizingMaskIntoConstraints = false
         iconBg.widthAnchor.constraint(equalToConstant: 28).isActive = true
@@ -370,7 +478,7 @@ final class SystemInfoViewController: UIViewController {
 
         let iconView = UIImageView(image: UIImage(systemName: icon,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)))
-        iconView.tintColor = accentColor
+        iconView.tintColor = chipColor
         iconView.contentMode = .center
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconBg.addSubview(iconView)
@@ -525,6 +633,19 @@ final class SystemInfoViewController: UIViewController {
 
     // MARK: - Row builders
 
+    /// Optional per-card icon-chip tint. Returns accentColor for any
+    /// card not explicitly themed, so passing this everywhere is a
+    /// no-op for un-themed cards.
+    private func tintForCard(_ title: String) -> UIColor {
+        switch title {
+        case "Memory":  return goodColor
+        case "Storage": return accentColor
+        case "Battery": return goodColor
+        case "Process": return amberColor
+        default:        return accentColor
+        }
+    }
+
     private func deviceRows() -> [(String, String)] {
         let device = UIDevice.current
         let processInfo = ProcessInfo.processInfo
@@ -602,8 +723,18 @@ final class SystemInfoViewController: UIViewController {
             SystemInfoViewController.sizeProbeStarted = true
             startSizeProbe()
         }
+        // iOS's "important usage" capacity is the realistic bytes your
+        // app may consume (often larger than systemFreeSize, which
+        // excludes purgeable space). Additive — no existing row changes.
+        let importantFree: Int64 = {
+            let u = URL(fileURLWithPath: docs)
+            let v = try? u.resourceValues(
+                forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            return Int64(v?.volumeAvailableCapacityForImportantUsage ?? 0)
+        }()
         return [
             ("Disk free",    formatBytes(free)),
+            ("Free for app", importantFree > 0 ? formatBytes(importantFree) : formatBytes(free)),
             ("Disk used",    formatBytes(used)),
             ("Disk total",   formatBytes(total)),
             ("App bundle",   bundleSize > 0 ? formatBytes(bundleSize) : "measuring…"),
@@ -630,6 +761,7 @@ final class SystemInfoViewController: UIViewController {
                 // every other card's data alone.
                 self.updateCardRows(named: "Storage",
                                     rows: self.storageRows().map(Row.kvFromTuple))
+                self.updateStorageBar()
                 // Diagnostics' subtitle includes the latest sizes,
                 // refresh it too so "Recompute storage" reflects the
                 // freshly-measured bytes.
@@ -658,6 +790,7 @@ final class SystemInfoViewController: UIViewController {
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.updateCardRows(named: "Memory", rows: self.memoryRows())
+            self.updateMemoryVisuals()
         }
         if let t = memoryTimer {
             // Run during scroll so the user can watch the footprint
@@ -740,12 +873,15 @@ final class SystemInfoViewController: UIViewController {
             UIApplication.willResignActiveNotification,
             UIApplication.didBecomeActiveNotification,
             Notification.Name.NSProcessInfoPowerStateDidChange,
+            UIDevice.batteryLevelDidChangeNotification,
+            UIDevice.batteryStateDidChangeNotification,
         ]
         for name in names {
             let token = nc.addObserver(forName: name, object: nil,
                                        queue: .main) { [weak self] _ in
                 guard let self = self else { return }
                 self.updateCardRows(named: "Process", rows: self.processRows())
+                self.updateCardRows(named: "Battery", rows: self.batteryRows())
             }
             stateObservers.append(token)
         }
@@ -780,6 +916,29 @@ final class SystemInfoViewController: UIViewController {
             .kv("App uptime",    formatDuration(appUp)),
             .kv("Active CPUs",   "\(pi.activeProcessorCount)/\(pi.processorCount)"),
             .kv("OS version",    "\(pi.operatingSystemVersionString)"),
+        ]
+    }
+
+    private func batteryRows() -> [Row] {
+        let dev = UIDevice.current
+        let level = dev.batteryLevel   // -1 on Simulator / when monitoring off
+        guard level >= 0 else {
+            return [.kv("Status", "unavailable (Simulator or monitoring off)")]
+        }
+        let pct = Int((level * 100).rounded())
+        let state: String
+        switch dev.batteryState {
+        case .charging:    state = "✓ charging"
+        case .full:        state = "✓ full"
+        case .unplugged:   state = "unplugged"
+        case .unknown:     state = "unknown"
+        @unknown default:  state = "unknown"
+        }
+        let lp = ProcessInfo.processInfo.isLowPowerModeEnabled ? "— ON" : "✓ off"
+        return [
+            .kv("Level",     "\(pct)%"),
+            .kv("State",     state),
+            .kv("Low-power", lp),
         ]
     }
 
@@ -940,6 +1099,7 @@ final class SystemInfoViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self = self else { return }
             self.updateCardRows(named: "Memory", rows: self.memoryRows())
+            self.updateMemoryVisuals()
         }
     }
 
@@ -1257,5 +1417,122 @@ private final class GradientResizeView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         target.frame = bounds
+    }
+}
+
+/// Thin rounded horizontal fill bar (0…1). Used for the Memory jetsam
+/// ceiling and Storage usage gauges on the System tab. Self-contained —
+/// does not touch MemoryGraphView (which other VCs depend on).
+final class SysInfoProgressBar: UIView {
+    private let track = UIView()
+    private let fill = UIView()
+    private var fillWidth: NSLayoutConstraint!
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 6).isActive = true
+
+        track.backgroundColor = UIColor(white: 1, alpha: 0.10)
+        track.layer.cornerRadius = 3
+        track.clipsToBounds = true
+        track.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(track)
+
+        fill.layer.cornerRadius = 3
+        fill.clipsToBounds = true
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        track.addSubview(fill)
+
+        fillWidth = fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: 0)
+        NSLayoutConstraint.activate([
+            track.topAnchor.constraint(equalTo: topAnchor),
+            track.bottomAnchor.constraint(equalTo: bottomAnchor),
+            track.leadingAnchor.constraint(equalTo: leadingAnchor),
+            track.trailingAnchor.constraint(equalTo: trailingAnchor),
+            fill.topAnchor.constraint(equalTo: track.topAnchor),
+            fill.bottomAnchor.constraint(equalTo: track.bottomAnchor),
+            fill.leadingAnchor.constraint(equalTo: track.leadingAnchor),
+            fillWidth,
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// `fraction` is clamped to 0…1. `color` tints the fill.
+    func setProgress(_ fraction: Double, color: UIColor) {
+        let f = CGFloat(max(0, min(1, fraction)))
+        fill.backgroundColor = color
+        fillWidth.isActive = false
+        fillWidth = fill.widthAnchor.constraint(equalTo: track.widthAnchor,
+                                                multiplier: max(0.0001, f))
+        fillWidth.isActive = true
+    }
+}
+
+/// Tiny fixed-height sparkline of recent memory-pressure samples (0…1),
+/// drawn as a filled line. Independent of MemoryGraphView (which other
+/// view controllers own) so the System tab can evolve its graph freely.
+/// Keeps a small ring of samples; redraws on each addSample.
+final class SysInfoSparkline: UIView {
+    private var samples: [CGFloat] = []
+    private let maxSamples = 60
+    private var lineColor: UIColor = UIColor(red: 0.36, green: 0.85, blue: 0.55, alpha: 1)
+    private let shape = CAShapeLayer()
+    private let area = CAShapeLayer()
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 44).isActive = true
+        backgroundColor = UIColor(white: 1, alpha: 0.04)
+        layer.cornerRadius = 8
+        clipsToBounds = true
+        area.fillColor = UIColor.clear.cgColor
+        area.strokeColor = UIColor.clear.cgColor
+        shape.fillColor = UIColor.clear.cgColor
+        shape.lineWidth = 1.5
+        shape.lineJoin = .round
+        layer.addSublayer(area)
+        layer.addSublayer(shape)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func addSample(_ value: CGFloat, color: UIColor) {
+        lineColor = color
+        samples.append(max(0, min(1, value)))
+        if samples.count > maxSamples { samples.removeFirst(samples.count - maxSamples) }
+        redraw()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        redraw()
+    }
+
+    private func redraw() {
+        let w = bounds.width, h = bounds.height
+        guard w > 1, h > 1, samples.count > 1 else {
+            shape.path = nil; area.path = nil; return
+        }
+        let n = samples.count
+        let stepX = w / CGFloat(n - 1)
+        let pad: CGFloat = 3
+        let usableH = h - pad * 2
+        func pt(_ i: Int) -> CGPoint {
+            CGPoint(x: CGFloat(i) * stepX, y: pad + (1 - samples[i]) * usableH)
+        }
+        let line = UIBezierPath()
+        line.move(to: pt(0))
+        for i in 1..<n { line.addLine(to: pt(i)) }
+
+        let filled = line.copy() as! UIBezierPath
+        filled.addLine(to: CGPoint(x: w, y: h))
+        filled.addLine(to: CGPoint(x: 0, y: h))
+        filled.close()
+
+        shape.strokeColor = lineColor.cgColor
+        shape.path = line.cgPath
+        area.fillColor = lineColor.withAlphaComponent(0.18).cgColor
+        area.path = filled.cgPath
     }
 }

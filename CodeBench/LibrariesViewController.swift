@@ -1,5 +1,233 @@
 import UIKit
 
+/// Small rounded tile with a diagonal gradient fill, used for library icons.
+final class GradientTileView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+    private var grad: CAGradientLayer { layer as! CAGradientLayer }
+    func configure(tint: UIColor, corner: CGFloat) {
+        grad.colors = [
+            tint.withAlphaComponent(0.95).cgColor,
+            tint.withAlphaComponent(0.55).cgColor,
+        ]
+        grad.startPoint = CGPoint(x: 0, y: 0)
+        grad.endPoint = CGPoint(x: 1, y: 1)
+        grad.cornerRadius = corner
+        layer.cornerRadius = corner
+        layer.masksToBounds = true
+    }
+}
+
+/// Inset label used as a pill (version / badge). Replaces the prior
+/// detail-view makePill for list use; the detail view keeps its own.
+final class PaddedLabel: UILabel {
+    var inset = UIEdgeInsets(top: 2, left: 7, bottom: 2, right: 7)
+    func configure(font: UIFont) {
+        self.font = font
+        layer.cornerRadius = 5
+        layer.masksToBounds = true
+        textAlignment = .center
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+    func setColors(text: UIColor, background: UIColor) {
+        textColor = text
+        backgroundColor = background
+    }
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: inset)) }
+    override var intrinsicContentSize: CGSize {
+        let s = super.intrinsicContentSize
+        return CGSize(width: s.width + inset.left + inset.right,
+                      height: s.height + inset.top + inset.bottom)
+    }
+}
+
+/// Rich library card: gradient icon tile, name, version pill, one-line
+/// blurb, and an origin badge. Replaces the prior tagged-subview cell.
+final class LibraryCardCell: UICollectionViewCell {
+    static let reuseID = "LibraryCardCell"
+
+    private let card = UIView()
+    private let accent = UIView()
+    private var tileHost = UIView()
+    private let nameLabel = UILabel()
+    private let blurbLabel = UILabel()
+    private let versionPill = PaddedLabel()
+    private let badgePill = PaddedLabel()
+    private let chevron = UIImageView()
+    private let textStack: UIStackView
+
+    override init(frame: CGRect) {
+        let pillRow = UIStackView(arrangedSubviews: [versionPill, badgePill, UIView()])
+        pillRow.axis = .horizontal
+        pillRow.spacing = 6
+        pillRow.alignment = .center
+        textStack = UIStackView(arrangedSubviews: [nameLabel, blurbLabel, pillRow])
+        super.init(frame: frame)
+        contentView.addSubview(card)
+        card.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        accent.layer.cornerRadius = 2
+        accent.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(accent)
+
+        nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        nameLabel.textColor = UIColor(white: 0.96, alpha: 1)
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        blurbLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        blurbLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        blurbLabel.numberOfLines = 2
+        blurbLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        versionPill.configure(font: .monospacedSystemFont(ofSize: 10, weight: .medium))
+        badgePill.configure(font: .systemFont(ofSize: 9, weight: .bold))
+
+        chevron.image = UIImage(systemName: "chevron.right")?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        chevron.tintColor = UIColor(white: 0.40, alpha: 1)
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        textStack.axis = .vertical
+        textStack.spacing = 4
+        textStack.alignment = .fill
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(textStack)
+        card.addSubview(chevron)
+
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: contentView.topAnchor),
+            card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+
+            accent.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
+            accent.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            accent.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            accent.widthAnchor.constraint(equalToConstant: 4),
+
+            chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+
+            textStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            textStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            textStack.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
+            // textStack.leading set in configure() relative to the tile
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var tileLeadingConstraint: NSLayoutConstraint?
+
+    func configure(pkg: InstalledLibsViewController.Pkg) {
+        let (symbol, tint) = InstalledLibsViewController.iconForPackage(name: pkg.name, origin: pkg.origin)
+        accent.backgroundColor = tint
+
+        // Rebuild the gradient tile (cheap; avoids stale-state on reuse).
+        tileHost.removeFromSuperview()
+        let tile = InstalledLibsViewController.makeIconTile(
+            symbol: symbol, tint: tint, side: 40, corner: 11, pointSize: 19)
+        tileHost = tile
+        card.addSubview(tile)
+        NSLayoutConstraint.activate([
+            tile.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 12),
+            tile.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+        ])
+        // Link text stack to the tile's trailing edge.
+        tileLeadingConstraint?.isActive = false
+        tileLeadingConstraint = textStack.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 12)
+        tileLeadingConstraint?.isActive = true
+
+        nameLabel.text = pkg.name
+        blurbLabel.text = InstalledLibsViewController.shortBlurb(name: pkg.name, origin: pkg.origin)
+
+        versionPill.text = pkg.version == "-" ? "—" : "v\(pkg.version)"
+        let vTint: UIColor = pkg.origin == "User"
+            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
+            : UIColor(white: 0.6, alpha: 1)
+        versionPill.setColors(text: vTint, background: vTint.withAlphaComponent(0.14))
+
+        if pkg.origin == "User" {
+            badgePill.text = "PIP"
+            badgePill.setColors(text: UIColor(white: 0.08, alpha: 1),
+                                background: UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1))
+        } else {
+            badgePill.text = "BUNDLED"
+            badgePill.setColors(text: tint, background: tint.withAlphaComponent(0.16))
+        }
+    }
+
+    override var isHighlighted: Bool {
+        didSet { card.alpha = isHighlighted ? 0.6 : 1.0 }
+    }
+}
+
+/// Bold section header: tinted dot + category name + count.
+final class LibrarySectionHeaderView: UICollectionReusableView {
+    static let reuseID = "LibrarySectionHeaderView"
+    private let dot = UIView()
+    private let titleLabel = UILabel()
+    private let countLabel = PaddedLabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(dot)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .bold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+        countLabel.configure(font: .systemFont(ofSize: 11, weight: .semibold))
+        addSubview(countLabel)
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+            titleLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 9),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
+            countLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// `title` is the existing Section.title (e.g. "Bundled — Machine Learning  (8)").
+    func configure(title: String) {
+        let isPip = title.hasPrefix("Pip installed")
+        // Re-derive the bare category name exactly as the old header did.
+        let catName: String = {
+            if isPip { return "Pip installed" }
+            var t = title
+            if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
+            if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
+            return t
+        }()
+        let (_, tint) = InstalledLibsViewController.iconForCategory(catName)
+        dot.backgroundColor = tint
+        // Split "<name>  (N)" into label + count pill.
+        if let r = title.range(of: "  (") {
+            titleLabel.text = String(title[..<r.lowerBound]).uppercased()
+            let n = title[r.upperBound...].dropLast()   // strip ")"
+            countLabel.text = String(n)
+        } else {
+            titleLabel.text = title.uppercased()
+            countLabel.text = ""
+        }
+        titleLabel.textColor = isPip
+            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
+            : UIColor(white: 0.78, alpha: 1)
+        countLabel.setColors(text: tint, background: tint.withAlphaComponent(0.16))
+    }
+}
+
 /// Libraries tab — live view of every Python package the running
 /// interpreter can see, grouped into:
 ///   • Pip installed                            (user's Documents/site-packages)
@@ -53,17 +281,32 @@ final class LibrariesViewController: UIViewController {
 
 // MARK: - InstalledLibsViewController
 
-final class InstalledLibsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate {
+final class InstalledLibsViewController: UIViewController, UICollectionViewDelegate {
 
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private let searchBar = UISearchBar()
+    // ── Collection view (replaces the prior insetGrouped UITableView) ──
+    private var collectionView: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Int, Pkg.ID>!
+
+    // Header zone
+    private let headerContainer = UIView()
+    private let titleLabel = UILabel()
+    private let countLabel = UILabel()
+    private let searchField = UISearchTextField()
+    private let chipScroll = UIScrollView()
+    private let chipStack = UIStackView()
+
     private let emptyLabel = UILabel()
     private let refreshControl = UIRefreshControl()
 
-    struct Pkg {
+    // Filter state
+    private var searchText = ""
+    private var activeCategory: String? = nil   // nil == "All"; else a Section.title
+
+    struct Pkg: Hashable {
         let name: String
         let version: String
         let origin: String  // "Bundled" | "User"
+        var id: String { "\(origin)|\(name)" }   // stable identity for diffable data source
     }
 
     struct Section {
@@ -322,43 +565,57 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         return iconForCategory(categorize(name))
     }
 
+    /// First sentence of a package's curated summary, for the card subtitle.
+    /// Reuses the existing PACKAGE_INFO data — no new content source.
+    static func shortBlurb(name: String, origin: String) -> String {
+        if origin == "User" { return "Installed via pip" }
+        guard let summary = PackageDetailViewController.blurbSummary(for: name) else {
+            return "Bundled dependency"
+        }
+        // Take up to the first sentence-ending period followed by a space.
+        if let dot = summary.range(of: ". ") {
+            return String(summary[..<dot.lowerBound])
+        }
+        // Or up to the first period at the very end.
+        if summary.hasSuffix(".") { return String(summary.dropLast()) }
+        return summary
+    }
+
+    /// Builds the small gradient icon tile used on each card and header.
+    static func makeIconTile(symbol: String, tint: UIColor, side: CGFloat,
+                             corner: CGFloat, pointSize: CGFloat) -> UIView {
+        let tile = GradientTileView()
+        tile.translatesAutoresizingMaskIntoConstraints = false
+        tile.configure(tint: tint, corner: corner)
+
+        let icon = UIImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = UIImage(systemName: symbol)?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold))
+        icon.tintColor = .white
+        icon.contentMode = .scaleAspectFit
+        tile.addSubview(icon)
+
+        NSLayoutConstraint.activate([
+            tile.widthAnchor.constraint(equalToConstant: side),
+            tile.heightAnchor.constraint(equalToConstant: side),
+            icon.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: tile.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: side * 0.56),
+            icon.heightAnchor.constraint(equalToConstant: side * 0.56),
+        ])
+        return tile
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
 
-        // Search bar
-        searchBar.translatesAutoresizingMaskIntoConstraints = false
-        searchBar.placeholder = "Search installed packages"
-        searchBar.delegate = self
-        searchBar.searchBarStyle = .minimal
-        searchBar.backgroundColor = .clear
-        searchBar.tintColor = .systemBlue
-        if let field = searchBar.value(forKey: "searchField") as? UITextField {
-            field.textColor = UIColor(white: 0.95, alpha: 1)
-            field.backgroundColor = UIColor(white: 0.15, alpha: 1)
-            field.attributedPlaceholder = NSAttributedString(
-                string: "Search installed packages",
-                attributes: [.foregroundColor: UIColor(white: 0.55, alpha: 1)])
-        }
-        view.addSubview(searchBar)
+        buildHeader()
+        buildCollectionView()
+        configureDataSource()
 
-        // Table
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.backgroundColor = .clear
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 52
-        tableView.sectionHeaderHeight = UITableView.automaticDimension
-        tableView.estimatedSectionHeaderHeight = 38
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
-        tableView.separatorInsetReference = .fromCellEdges
-        refreshControl.tintColor = UIColor(white: 0.65, alpha: 1)
-        refreshControl.addTarget(self, action: #selector(pullToRefresh), for: .valueChanged)
-        tableView.refreshControl = refreshControl
-        view.addSubview(tableView)
-
-        // Empty label
+        // Empty / loading label (unchanged behavior)
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.text = "Loading…"
         emptyLabel.textColor = UIColor(white: 0.55, alpha: 1)
@@ -368,21 +625,155 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         view.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            searchBar.topAnchor.constraint(equalTo: view.topAnchor),
-            searchBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
-            searchBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            headerContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
-            tableView.topAnchor.constraint(equalTo: searchBar.bottomAnchor, constant: 4),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            collectionView.topAnchor.constraint(equalTo: headerContainer.bottomAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
             emptyLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             emptyLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
         ])
 
         refresh()
+    }
+
+    private func buildHeader() {
+        headerContainer.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.backgroundColor = .clear
+        view.addSubview(headerContainer)
+
+        titleLabel.text = "Libraries"
+        titleLabel.font = .systemFont(ofSize: 28, weight: .bold)
+        titleLabel.textColor = UIColor(white: 0.97, alpha: 1)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.addSubview(titleLabel)
+
+        countLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        countLabel.textColor = UIColor(white: 0.50, alpha: 1)
+        countLabel.text = " "
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.addSubview(countLabel)
+
+        // Modern search field (no private-API KVC).
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.placeholder = "Search installed packages"
+        searchField.backgroundColor = UIColor(white: 0.14, alpha: 1)
+        searchField.textColor = UIColor(white: 0.95, alpha: 1)
+        searchField.tintColor = .systemBlue
+        searchField.attributedPlaceholder = NSAttributedString(
+            string: "Search installed packages",
+            attributes: [.foregroundColor: UIColor(white: 0.5, alpha: 1)])
+        searchField.layer.cornerRadius = 10
+        searchField.clipsToBounds = true
+        searchField.returnKeyType = .search
+        searchField.clearButtonMode = .whileEditing
+        searchField.addTarget(self, action: #selector(searchChanged(_:)), for: .editingChanged)
+        headerContainer.addSubview(searchField)
+
+        // Category chip strip
+        chipScroll.translatesAutoresizingMaskIntoConstraints = false
+        chipScroll.showsHorizontalScrollIndicator = false
+        chipScroll.backgroundColor = .clear
+        headerContainer.addSubview(chipScroll)
+
+        chipStack.axis = .horizontal
+        chipStack.spacing = 8
+        chipStack.alignment = .center
+        chipStack.translatesAutoresizingMaskIntoConstraints = false
+        chipScroll.addSubview(chipStack)
+
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 18),
+
+            countLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            countLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 10),
+            countLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerContainer.trailingAnchor, constant: -18),
+
+            searchField.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 12),
+            searchField.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 16),
+            searchField.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
+            searchField.heightAnchor.constraint(equalToConstant: 40),
+
+            chipScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            chipScroll.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
+            chipScroll.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor),
+            chipScroll.heightAnchor.constraint(equalToConstant: 34),
+            chipScroll.bottomAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -10),
+
+            chipStack.topAnchor.constraint(equalTo: chipScroll.topAnchor),
+            chipStack.bottomAnchor.constraint(equalTo: chipScroll.bottomAnchor),
+            chipStack.leadingAnchor.constraint(equalTo: chipScroll.leadingAnchor, constant: 16),
+            chipStack.trailingAnchor.constraint(equalTo: chipScroll.trailingAnchor, constant: -16),
+            chipStack.heightAnchor.constraint(equalTo: chipScroll.heightAnchor),
+        ])
+    }
+
+    private func buildCollectionView() {
+        let layout = UICollectionViewCompositionalLayout { [weak self] _, env in
+            let item = NSCollectionLayoutItem(layoutSize: .init(
+                widthDimension: .fractionalWidth(1.0),
+                heightDimension: .estimated(76)))
+            let group = NSCollectionLayoutGroup.vertical(layoutSize: .init(
+                widthDimension: .fractionalWidth(1.0),
+                heightDimension: .estimated(76)), subitems: [item])
+            let section = NSCollectionLayoutSection(group: group)
+            section.interGroupSpacing = 10
+            section.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 16, bottom: 16, trailing: 16)
+            let header = NSCollectionLayoutBoundarySupplementaryItem(
+                layoutSize: .init(widthDimension: .fractionalWidth(1.0),
+                                  heightDimension: .absolute(34)),
+                elementKind: UICollectionView.elementKindSectionHeader,
+                alignment: .top)
+            header.pinToVisibleBounds = false
+            section.boundarySupplementaryItems = [header]
+            _ = self
+            _ = env
+            return section
+        }
+
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.backgroundColor = .clear
+        collectionView.alwaysBounceVertical = true
+        collectionView.keyboardDismissMode = .onDrag
+        collectionView.delegate = self
+        collectionView.register(LibraryCardCell.self,
+                                forCellWithReuseIdentifier: LibraryCardCell.reuseID)
+        collectionView.register(LibrarySectionHeaderView.self,
+                                forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader,
+                                withReuseIdentifier: LibrarySectionHeaderView.reuseID)
+        refreshControl.tintColor = UIColor(white: 0.65, alpha: 1)
+        refreshControl.addTarget(self, action: #selector(pullToRefresh), for: .valueChanged)
+        collectionView.refreshControl = refreshControl
+        view.addSubview(collectionView)
+    }
+
+    private func configureDataSource() {
+        dataSource = UICollectionViewDiffableDataSource<Int, Pkg.ID>(
+            collectionView: collectionView
+        ) { [weak self] cv, indexPath, _ in
+            let cell = cv.dequeueReusableCell(
+                withReuseIdentifier: LibraryCardCell.reuseID, for: indexPath) as! LibraryCardCell
+            if let pkg = self?.sections[indexPath.section].rows[indexPath.row] {
+                cell.configure(pkg: pkg)
+            }
+            return cell
+        }
+        dataSource.supplementaryViewProvider = { [weak self] cv, kind, indexPath in
+            let header = cv.dequeueReusableSupplementaryView(
+                ofKind: kind, withReuseIdentifier: LibrarySectionHeaderView.reuseID,
+                for: indexPath) as! LibrarySectionHeaderView
+            if let title = self?.sections[indexPath.section].title {
+                header.configure(title: title)
+            }
+            return header
+        }
     }
 
     @objc private func pullToRefresh() { refresh() }
@@ -398,13 +789,10 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.allPackages = pkgs
-                self.sections = Self.buildSections(from: pkgs, search: "")
-                self.tableView.reloadData()
+                self.searchText = self.searchField.text ?? ""
+                self.applyAndSync(animatingDifferences: false)
                 self.isLoading = false
                 self.refreshControl.endRefreshing()
-                let totalRows = self.sections.reduce(0) { $0 + $1.rows.count }
-                self.emptyLabel.isHidden = totalRows > 0
-                if totalRows == 0 { self.emptyLabel.text = "No packages found." }
             }
         }
     }
@@ -516,166 +904,108 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         return out
     }
 
-    // MARK: - UITableView
+    // MARK: - Snapshot + category chips
 
-    func numberOfSections(in tv: UITableView) -> Int { sections.count }
+    /// Rebuild `sections` from the current search, honor the active
+    /// category chip, push a diffable snapshot, refresh chips + empty state.
+    private func applyAndSync(animatingDifferences: Bool = false) {
+        // Same call the old code used — search semantics unchanged.
+        var built = Self.buildSections(from: allPackages, search: searchText)
 
-    func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
-        return sections[s].rows.count
+        // Reconcile the active-category chip against the current search
+        // universe *before* filtering: if a search has narrowed results
+        // so the active category no longer matches, fall back to "All"
+        // (so the list never goes empty just because a filter went stale).
+        if let active = activeCategory, !built.contains(where: { $0.title == active }) {
+            activeCategory = nil
+        }
+
+        // Layer the category chip on top (browsing affordance only).
+        if let active = activeCategory {
+            built = built.filter { $0.title == active }
+        }
+        sections = built
+
+        var snap = NSDiffableDataSourceSnapshot<Int, Pkg.ID>()
+        for (idx, sec) in sections.enumerated() {
+            snap.appendSections([idx])
+            snap.appendItems(sec.rows.map { $0.id }, toSection: idx)
+        }
+        dataSource.apply(snap, animatingDifferences: animatingDifferences)
+
+        rebuildChips()
+        updateEmptyState()
     }
 
-    func tableView(_ tv: UITableView, titleForHeaderInSection s: Int) -> String? {
-        return sections[s].title
+    private func updateEmptyState() {
+        let total = sections.reduce(0) { $0 + $1.rows.count }
+        emptyLabel.isHidden = total > 0
+        if total == 0 {
+            emptyLabel.text = searchText.trimmingCharacters(in: .whitespaces).isEmpty
+                ? "No packages found."
+                : "No matches for \"\(searchText)\""
+        }
+        // Summary count in the header.
+        let shown = allPackages.count
+        countLabel.text = shown == 0 ? " " : "\(shown) packages"
     }
 
-    func tableView(_ tv: UITableView, viewForHeaderInSection s: Int) -> UIView? {
-        // Custom header: category icon + title, color-coded by category.
-        // Gives each section a clear visual identity instead of stock-iOS
-        // text headers.
-        let title = sections[s].title
-        let isPip = title.hasPrefix("Pip installed")
-
-        // Extract the bare category name for icon lookup.
-        // "Bundled — Machine Learning  (8)"  →  "Machine Learning"
-        // "Pip installed  (3)"               →  "Pip installed"
-        let catName: String = {
-            if isPip { return "Pip installed" }
-            var t = title
-            if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
-            if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
-            return t
-        }()
-        let (symbol, tint) = Self.iconForCategory(catName)
-
-        let container = UIView()
-        container.backgroundColor = .clear
-
-        // Tinted icon disc
-        let iconBg = UIView()
-        iconBg.translatesAutoresizingMaskIntoConstraints = false
-        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
-        iconBg.layer.cornerRadius = 9
-        container.addSubview(iconBg)
-
-        let icon = UIImageView()
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.image = UIImage(systemName: symbol)?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
-        icon.tintColor = tint
-        icon.contentMode = .scaleAspectFit
-        container.addSubview(icon)
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = title
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = isPip
-            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
-            : UIColor(white: 0.75, alpha: 1)
-        container.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            iconBg.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            iconBg.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
-            iconBg.widthAnchor.constraint(equalToConstant: 18),
-            iconBg.heightAnchor.constraint(equalToConstant: 18),
-            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 12),
-            icon.heightAnchor.constraint(equalToConstant: 12),
-            label.leadingAnchor.constraint(equalTo: iconBg.trailingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-            label.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 1),
-            container.heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
-        ])
-        return container
+    /// Chips reflect the categories present for the *current search*
+    /// (ignoring the active-category filter), so users can switch among
+    /// whatever matched. "All" clears the category filter.
+    private func rebuildChips() {
+        chipStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // `activeCategory` is already reconciled against this same universe
+        // in applyAndSync (our only caller) before we get here.
+        let universe = Self.buildSections(from: allPackages, search: searchText)
+        chipStack.addArrangedSubview(makeChip(title: "All", category: nil,
+                                              selected: activeCategory == nil, tint: .systemBlue))
+        for sec in universe {
+            let isPip = sec.title.hasPrefix("Pip installed")
+            let catName: String = {
+                if isPip { return "Pip installed" }
+                var t = sec.title
+                if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
+                if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
+                return t
+            }()
+            let (_, tint) = Self.iconForCategory(catName)
+            chipStack.addArrangedSubview(
+                makeChip(title: catName, category: sec.title,
+                         selected: activeCategory == sec.title, tint: tint))
+        }
     }
 
-    func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-        let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: ip)
-        let pkg = sections[ip.section].rows[ip.row]
-        let (symbol, tint) = Self.iconForPackage(name: pkg.name, origin: pkg.origin)
-
-        cell.backgroundColor = UIColor(white: 0.12, alpha: 1)
-        cell.selectionStyle = .default
-        cell.accessoryType = .disclosureIndicator
-
-        // Strip any prior custom subviews from reused cells (cellForRowAt
-        // gets called with recycled instances; without this the icon
-        // accumulates).
-        cell.contentView.subviews
-            .filter { $0.tag == 9101 || $0.tag == 9102 || $0.tag == 9103 }
-            .forEach { $0.removeFromSuperview() }
-
-        // Left-edge category accent stripe — 3px tall colored bar that
-        // matches the section's tint. Distinct from default iOS table
-        // rows, gives the user a quick category cue without reading
-        // the section header again.
-        let stripe = UIView()
-        stripe.tag = 9101
-        stripe.translatesAutoresizingMaskIntoConstraints = false
-        stripe.backgroundColor = tint
-        stripe.layer.cornerRadius = 1.5
-        cell.contentView.addSubview(stripe)
-
-        // Tinted icon disc on the left
-        let iconBg = UIView()
-        iconBg.tag = 9102
-        iconBg.translatesAutoresizingMaskIntoConstraints = false
-        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
-        iconBg.layer.cornerRadius = 8
-        cell.contentView.addSubview(iconBg)
-
-        let icon = UIImageView()
-        icon.tag = 9103
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.image = UIImage(systemName: symbol)?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        icon.tintColor = tint
-        icon.contentMode = .scaleAspectFit
-        cell.contentView.addSubview(icon)
-
-        NSLayoutConstraint.activate([
-            stripe.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 6),
-            stripe.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 6),
-            stripe.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -6),
-            stripe.widthAnchor.constraint(equalToConstant: 3),
-            iconBg.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 14),
-            iconBg.centerYAnchor.constraint(equalTo: cell.contentView.centerYAnchor),
-            iconBg.widthAnchor.constraint(equalToConstant: 30),
-            iconBg.heightAnchor.constraint(equalToConstant: 30),
-            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 18),
-            icon.heightAnchor.constraint(equalToConstant: 18),
-        ])
-
-        var cfg = cell.defaultContentConfiguration()
-        cfg.text = pkg.name
-        cfg.textProperties.color = UIColor(white: 0.95, alpha: 1)
-        cfg.textProperties.font = .systemFont(ofSize: 15, weight: .semibold)
-        cfg.secondaryText = pkg.version
-        cfg.secondaryTextProperties.color = pkg.origin == "User"
-            ? UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1)
-            : UIColor(white: 0.55, alpha: 1)
-        cfg.secondaryTextProperties.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        // Indent text past the icon disc.
-        cfg.directionalLayoutMargins.leading = 50
-        cell.contentConfiguration = cfg
-        return cell
+    private func makeChip(title: String, category: String?, selected: Bool, tint: UIColor) -> UIButton {
+        var cfg = UIButton.Configuration.plain()
+        cfg.baseForegroundColor = selected ? UIColor(white: 0.05, alpha: 1) : tint
+        cfg.background.backgroundColor = selected ? tint : tint.withAlphaComponent(0.16)
+        cfg.background.cornerRadius = 16
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
+        var ac = AttributeContainer()
+        ac.font = .systemFont(ofSize: 12, weight: .semibold)
+        cfg.attributedTitle = AttributedString(title, attributes: ac)
+        let btn = UIButton(configuration: cfg)
+        btn.addAction(UIAction { [weak self] _ in
+            guard let self = self else { return }
+            self.activeCategory = (self.activeCategory == category) ? nil : category
+            self.applyAndSync(animatingDifferences: true)
+        }, for: .touchUpInside)
+        return btn
     }
 
-    /// Tap a row:
-    ///   - Bundled package → open in-app detail view with summary,
-    ///     iOS-specific notes, example code, and import helper. We
-    ///     own this content so we can call out iPad-specific gotchas.
-    ///   - Pip-installed package → action sheet with PyPI link (we
-    ///     don't know what arbitrary user-installed packages do).
-    func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
-        tv.deselectRow(at: ip, animated: true)
-        let pkg = sections[ip.section].rows[ip.row]
+    // MARK: - Selection (ported verbatim from didSelectRowAt)
+    //
+    //   - Bundled package → open in-app detail view with summary,
+    //     iOS-specific notes, example code, and import helper. We
+    //     own this content so we can call out iPad-specific gotchas.
+    //   - Pip-installed package → action sheet with PyPI link (we
+    //     don't know what arbitrary user-installed packages do).
+    func collectionView(_ cv: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        cv.deselectItem(at: indexPath, animated: true)
+        let pkg = sections[indexPath.section].rows[indexPath.row]
         if pkg.origin == "User" {
-            presentPyPIActionSheet(for: pkg, anchor: tv.cellForRow(at: ip))
+            presentPyPIActionSheet(for: pkg, anchor: cv.cellForItem(at: indexPath))
         } else {
             presentBundledDetail(for: pkg)
         }
@@ -718,17 +1048,11 @@ final class InstalledLibsViewController: UIViewController, UITableViewDataSource
         present(alert, animated: true)
     }
 
-    // MARK: - Search
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-        sections = Self.buildSections(from: allPackages, search: searchText)
-        let totalRows = sections.reduce(0) { $0 + $1.rows.count }
-        emptyLabel.isHidden = totalRows > 0
-        if totalRows == 0 {
-            emptyLabel.text = searchText.trimmingCharacters(in: .whitespaces).isEmpty
-                ? "No packages found."
-                : "No matches for \"\(searchText)\""
-        }
-        tableView.reloadData()
+    // MARK: - Search (same semantics as the old searchBar delegate)
+
+    @objc private func searchChanged(_ field: UISearchTextField) {
+        searchText = field.text ?? ""
+        applyAndSync(animatingDifferences: false)
     }
 }
 
@@ -839,73 +1163,54 @@ final class PackageDetailViewController: UIViewController {
     // MARK: - View builders
 
     private func makeMetaRow() -> UIView {
-        // Hero header: big category-tinted icon on the left + version
-        // text + category name pill on the right. Replaces the prior
-        // plain "version + BUNDLED" row with something visually
-        // distinctive that anchors the detail view.
+        // Hero banner: large gradient category tile on the left + the
+        // package name, version, and category / BUNDLED pills on the
+        // right. Replaces the prior flat-disc row with a gradient tile
+        // and surfaces the name in-banner (previously only the nav title).
         let row = UIView()
         let category = InstalledLibsViewController.categorize(pkg.name)
         let (symbol, tint) = InstalledLibsViewController.iconForCategory(category)
 
-        // Hero icon disc (60×60, tinted background)
-        let iconBg = UIView()
-        iconBg.translatesAutoresizingMaskIntoConstraints = false
-        iconBg.backgroundColor = tint.withAlphaComponent(0.18)
-        iconBg.layer.cornerRadius = 12
-        iconBg.layer.borderWidth = 1
-        iconBg.layer.borderColor = tint.withAlphaComponent(0.35).cgColor
-        row.addSubview(iconBg)
+        let tile = InstalledLibsViewController.makeIconTile(
+            symbol: symbol, tint: tint, side: 60, corner: 16, pointSize: 28)
+        row.addSubview(tile)
 
-        let icon = UIImageView()
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.image = UIImage(systemName: symbol)?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 28, weight: .semibold))
-        icon.tintColor = tint
-        icon.contentMode = .scaleAspectFit
-        row.addSubview(icon)
+        let nameLabel = UILabel()
+        nameLabel.text = pkg.name
+        nameLabel.font = .systemFont(ofSize: 22, weight: .bold)
+        nameLabel.textColor = UIColor(white: 0.97, alpha: 1)
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Right side: stack of version + category pill
-        let textStack = UIStackView()
+        let version = UILabel()
+        version.text = "v\(pkg.version)"
+        version.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        version.textColor = UIColor(white: 0.6, alpha: 1)
+        version.translatesAutoresizingMaskIntoConstraints = false
+
+        let pillRow = UIStackView()
+        pillRow.axis = .horizontal
+        pillRow.spacing = 6
+        pillRow.alignment = .center
+        pillRow.addArrangedSubview(Self.makePill(text: category, tint: tint, filled: false))
+        pillRow.addArrangedSubview(Self.makePill(text: "BUNDLED",
+                                                 tint: UIColor(white: 0.65, alpha: 1), filled: true))
+        pillRow.addArrangedSubview(UIView())
+
+        let textStack = UIStackView(arrangedSubviews: [nameLabel, version, pillRow])
         textStack.axis = .vertical
         textStack.spacing = 6
         textStack.alignment = .leading
         textStack.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(textStack)
 
-        let version = UILabel()
-        version.text = "v\(pkg.version)"
-        version.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
-        version.textColor = UIColor(white: 0.92, alpha: 1)
-        textStack.addArrangedSubview(version)
-
-        // Pill row: category name + BUNDLED tag
-        let pillRow = UIStackView()
-        pillRow.axis = .horizontal
-        pillRow.spacing = 6
-        pillRow.alignment = .center
-        textStack.addArrangedSubview(pillRow)
-
-        let catPill = Self.makePill(text: category, tint: tint, filled: false)
-        pillRow.addArrangedSubview(catPill)
-        let bundledPill = Self.makePill(text: "BUNDLED",
-                                        tint: UIColor(white: 0.65, alpha: 1),
-                                        filled: true)
-        pillRow.addArrangedSubview(bundledPill)
-        pillRow.addArrangedSubview(UIView())   // flexible spacer
-
         NSLayoutConstraint.activate([
-            iconBg.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            iconBg.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            iconBg.widthAnchor.constraint(equalToConstant: 60),
-            iconBg.heightAnchor.constraint(equalToConstant: 60),
-            icon.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 34),
-            icon.heightAnchor.constraint(equalToConstant: 34),
-            textStack.leadingAnchor.constraint(equalTo: iconBg.trailingAnchor, constant: 14),
+            tile.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            tile.topAnchor.constraint(equalTo: row.topAnchor),
+            textStack.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 14),
             textStack.trailingAnchor.constraint(equalTo: row.trailingAnchor),
-            textStack.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            row.heightAnchor.constraint(equalToConstant: 64),
+            textStack.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
+            textStack.bottomAnchor.constraint(lessThanOrEqualTo: row.bottomAnchor),
+            row.heightAnchor.constraint(greaterThanOrEqualTo: tile.heightAnchor),
         ])
         return row
     }
@@ -946,14 +1251,40 @@ final class PackageDetailViewController: UIViewController {
                              accentColor: UIColor? = nil) -> UIView {
         let v = UIStackView()
         v.axis = .vertical
-        v.spacing = 6
+        v.spacing = 8
 
+        // Header row: section title + (for code blocks) a trailing Copy button.
         let header = UILabel()
         header.text = title.uppercased()
         header.font = .systemFont(ofSize: 11, weight: .semibold)
         header.textColor = accentColor ?? UIColor(white: 0.5, alpha: 1)
         header.setContentCompressionResistancePriority(.required, for: .vertical)
-        v.addArrangedSubview(header)
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerRow = UIStackView()
+        headerRow.axis = .horizontal
+        headerRow.alignment = .center
+        headerRow.spacing = 8
+        headerRow.addArrangedSubview(header)
+        headerRow.addArrangedSubview(UIView())   // flexible spacer
+        if mono {
+            var copyCfg = UIButton.Configuration.plain()
+            var ac = AttributeContainer()
+            ac.font = .systemFont(ofSize: 11, weight: .semibold)
+            copyCfg.attributedTitle = AttributedString("Copy", attributes: ac)
+            copyCfg.image = UIImage(systemName: "doc.on.doc")?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+            copyCfg.imagePadding = 4
+            copyCfg.baseForegroundColor = .systemBlue
+            copyCfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6)
+            let copyBtn = UIButton(configuration: copyCfg)
+            copyBtn.setContentHuggingPriority(.required, for: .horizontal)
+            copyBtn.addAction(UIAction { _ in
+                UIPasteboard.general.string = body
+            }, for: .touchUpInside)
+            headerRow.addArrangedSubview(copyBtn)
+        }
+        v.addArrangedSubview(headerRow)
 
         let text = UILabel()
         text.text = body
@@ -961,36 +1292,46 @@ final class PackageDetailViewController: UIViewController {
         if mono {
             text.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
             text.textColor = UIColor(red: 0.78, green: 0.95, blue: 0.78, alpha: 1)
-            text.backgroundColor = UIColor(white: 0.13, alpha: 1)
-            text.layer.cornerRadius = 6
-            text.layer.masksToBounds = true
-            text.layer.borderColor = UIColor(white: 0.25, alpha: 1).cgColor
-            text.layer.borderWidth = 1
-            // Pad the text inside the label by inserting newlines/spaces is ugly.
-            // Use an attributed string + NSTextContainer? Simpler: wrap in a
-            // container with insets.
+            // Code block: inset label inside a bordered card.
             let pad = UIView()
             pad.backgroundColor = UIColor(white: 0.13, alpha: 1)
-            pad.layer.cornerRadius = 6
+            pad.layer.cornerRadius = 10
+            pad.layer.cornerCurve = .continuous
             pad.layer.masksToBounds = true
             pad.layer.borderColor = UIColor(white: 0.25, alpha: 1).cgColor
             pad.layer.borderWidth = 1
             pad.translatesAutoresizingMaskIntoConstraints = false
-            text.backgroundColor = .clear
-            text.layer.borderWidth = 0
             text.translatesAutoresizingMaskIntoConstraints = false
             pad.addSubview(text)
             NSLayoutConstraint.activate([
-                text.topAnchor.constraint(equalTo: pad.topAnchor, constant: 10),
-                text.leadingAnchor.constraint(equalTo: pad.leadingAnchor, constant: 12),
-                text.trailingAnchor.constraint(equalTo: pad.trailingAnchor, constant: -12),
-                text.bottomAnchor.constraint(equalTo: pad.bottomAnchor, constant: -10),
+                text.topAnchor.constraint(equalTo: pad.topAnchor, constant: 12),
+                text.leadingAnchor.constraint(equalTo: pad.leadingAnchor, constant: 14),
+                text.trailingAnchor.constraint(equalTo: pad.trailingAnchor, constant: -14),
+                text.bottomAnchor.constraint(equalTo: pad.bottomAnchor, constant: -12),
             ])
             v.addArrangedSubview(pad)
         } else {
             text.font = .systemFont(ofSize: 15, weight: .regular)
             text.textColor = UIColor(white: 0.92, alpha: 1)
-            v.addArrangedSubview(text)
+            // Prose: wrap the body in a subtle rounded card for hierarchy.
+            let card = UIView()
+            card.backgroundColor = UIColor(white: 0.10, alpha: 1)
+            card.layer.cornerRadius = 12
+            card.layer.cornerCurve = .continuous
+            card.layer.masksToBounds = true
+            card.layer.borderColor = (accentColor ?? UIColor(white: 1, alpha: 0.06))
+                .withAlphaComponent(accentColor == nil ? 0.06 : 0.30).cgColor
+            card.layer.borderWidth = 1
+            card.translatesAutoresizingMaskIntoConstraints = false
+            text.translatesAutoresizingMaskIntoConstraints = false
+            card.addSubview(text)
+            NSLayoutConstraint.activate([
+                text.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+                text.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                text.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                text.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            ])
+            v.addArrangedSubview(card)
         }
         return v
     }
@@ -1001,14 +1342,16 @@ final class PackageDetailViewController: UIViewController {
         stack.spacing = 10
         stack.distribution = .fillEqually
 
-        let copyBtn = UIButton(type: .system)
         let modName = pkg.name.replacingOccurrences(of: "-", with: "_").lowercased()
-        copyBtn.setTitle("Copy  import \(modName)", for: .normal)
-        copyBtn.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        copyBtn.backgroundColor = UIColor(white: 0.18, alpha: 1)
-        copyBtn.setTitleColor(UIColor(white: 0.95, alpha: 1), for: .normal)
-        copyBtn.layer.cornerRadius = 8
-        copyBtn.contentEdgeInsets = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        var copyCfg = UIButton.Configuration.gray()
+        copyCfg.baseBackgroundColor = UIColor(white: 0.18, alpha: 1)
+        copyCfg.baseForegroundColor = UIColor(white: 0.95, alpha: 1)
+        copyCfg.cornerStyle = .medium
+        copyCfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        var copyAC = AttributeContainer()
+        copyAC.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        copyCfg.attributedTitle = AttributedString("Copy  import \(modName)", attributes: copyAC)
+        let copyBtn = UIButton(configuration: copyCfg)
         copyBtn.addAction(UIAction { [weak self] _ in
             UIPasteboard.general.string = "import \(modName)"
             // Confirm with brief title flash
@@ -1020,13 +1363,15 @@ final class PackageDetailViewController: UIViewController {
         }, for: .touchUpInside)
         stack.addArrangedSubview(copyBtn)
 
-        let pypiBtn = UIButton(type: .system)
-        pypiBtn.setTitle("Open on PyPI", for: .normal)
-        pypiBtn.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
-        pypiBtn.backgroundColor = UIColor(white: 0.18, alpha: 1)
-        pypiBtn.setTitleColor(.systemBlue, for: .normal)
-        pypiBtn.layer.cornerRadius = 8
-        pypiBtn.contentEdgeInsets = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        var pypiCfg = UIButton.Configuration.gray()
+        pypiCfg.baseBackgroundColor = UIColor(white: 0.18, alpha: 1)
+        pypiCfg.baseForegroundColor = .systemBlue
+        pypiCfg.cornerStyle = .medium
+        pypiCfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        var pypiAC = AttributeContainer()
+        pypiAC.font = .systemFont(ofSize: 13, weight: .semibold)
+        pypiCfg.attributedTitle = AttributedString("Open on PyPI", attributes: pypiAC)
+        let pypiBtn = UIButton(configuration: pypiCfg)
         let slug = pkg.name
             .replacingOccurrences(of: " ", with: "-")
             .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pkg.name
@@ -1046,6 +1391,13 @@ final class PackageDetailViewController: UIViewController {
     // hyphens→underscores. Anything not in the table falls into the
     // generic "transitive dep" bucket — still gets the import helper
     // and a working PyPI link.
+
+    /// Read-only peek at a curated summary (for the list's card subtitle).
+    /// Returns nil when the package has no curated entry.
+    fileprivate static func blurbSummary(for name: String) -> String? {
+        let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
+        return PACKAGE_INFO[key]?.summary
+    }
 
     private static func lookup(_ name: String) -> Info {
         let key = name.lowercased().replacingOccurrences(of: "-", with: "_")

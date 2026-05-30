@@ -7872,24 +7872,40 @@ except Exception:
     /// WKWebView's `websiteDataStore` is immutable after init, so the
     /// toggle can't swap the store on the live view — clearing before each
     /// load is what actually makes the toggle take effect mid-session.
-    private func loadInOutputWebView(_ load: @escaping () -> Void) {
+    private func loadInOutputWebView(host: String?, _ load: @escaping () -> Void) {
         guard PywebviewBridge.disableCache else { load(); return }
-        // Clear CACHE types only (not cookies/localStorage) — the output
-        // view shares the default store with the in-app browser, so wiping
-        // everything would log the user out there. This targets exactly
-        // the "loads the cache from before" symptom: the HTTP disk/memory
-        // cache, the offline app cache, and service-worker response caches.
-        let cacheTypes: Set<String> = [
-            WKWebsiteDataTypeDiskCache,
-            WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeOfflineWebApplicationCache,
-            WKWebsiteDataTypeServiceWorkerRegistrations,
-        ]
-        outputWebView.configuration.websiteDataStore.removeData(
-            ofTypes: cacheTypes,
-            modifiedSince: Date(timeIntervalSince1970: 0)) {
-            // completionHandler is delivered on the main queue
-            load()
+        let store = outputWebView.configuration.websiteDataStore
+        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+
+        guard let host = host?.lowercased(), !host.isEmpty else {
+            // Local file:// page (no host) — clear CACHE types globally.
+            // We avoid wiping cookies/localStorage store-wide because the
+            // output view shares the default store with the in-app browser.
+            let cacheTypes: Set<String> = [
+                WKWebsiteDataTypeDiskCache,
+                WKWebsiteDataTypeMemoryCache,
+                WKWebsiteDataTypeOfflineWebApplicationCache,
+                WKWebsiteDataTypeServiceWorkerRegistrations,
+            ]
+            store.removeData(ofTypes: cacheTypes,
+                             modifiedSince: Date(timeIntervalSince1970: 0)) { load() }
+            return
+        }
+
+        // URL page (e.g. a Slido poll): wipe ALL website data — cookies,
+        // localStorage, sessionStorage, IndexedDB, cache, service workers —
+        // but ONLY for this site's records. That makes every run a fresh
+        // session there ("you already voted" state is cleared), while the
+        // in-app browser's OTHER sites keep their cookies/logins.
+        // (The wipe before run N+1 erases what run N saved, so re-running
+        // never restores the previous session — no using, no carrying-over.)
+        store.fetchDataRecords(ofTypes: allTypes) { records in
+            let victims = records.filter { rec in
+                let d = rec.displayName.lowercased()
+                return host == d || host.hasSuffix("." + d)
+            }
+            guard !victims.isEmpty else { load(); return }
+            store.removeData(ofTypes: allTypes, for: victims) { load() }
         }
     }
 
@@ -7964,7 +7980,7 @@ except Exception:
             // has already wiped stored data for this load).
             let cachePolicy: NSURLRequest.CachePolicy = PywebviewBridge.disableCache
                 ? .reloadIgnoringLocalAndRemoteCacheData : .useProtocolCachePolicy
-            loadInOutputWebView { [weak self] in
+            loadInOutputWebView(host: urlForLoad.host) { [weak self] in
                 self?.outputWebView.load(URLRequest(
                     url: urlForLoad, cachePolicy: cachePolicy, timeoutInterval: 60))
             }
@@ -8000,7 +8016,8 @@ except Exception:
             // When "pywebview: no cache" is ON, loadInOutputWebView wipes
             // prior web data first so a re-run starts clean (no stale
             // localStorage / service-worker / cache from the last run).
-            loadInOutputWebView { [weak self] in
+            // host: nil → local file page, cache-only clear.
+            loadInOutputWebView(host: nil) { [weak self] in
                 guard let self = self else { return }
                 if fileSize > 0 && fileSize < 20 * 1024 * 1024,
                    let html = try? String(contentsOf: url, encoding: .utf8) {

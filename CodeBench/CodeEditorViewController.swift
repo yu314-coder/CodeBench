@@ -4547,7 +4547,7 @@ except Exception:
                         }
                         thinkPill.label.text = "Thinking..."
                         thinkPill.container.isHidden = false
-                        self.scrollChatToBottom()
+                        self.scrollChatToBottom(animated: false)
                         return
                     }
                 }
@@ -4580,7 +4580,7 @@ except Exception:
                         let elapsed = Int(Date().timeIntervalSince(startTime))
                         thinkPill.label.text = "Thinking... \(elapsed)s"
                     }
-                    self.scrollChatToBottom()
+                    self.scrollChatToBottom(animated: false)
                     return
                 }
 
@@ -4591,7 +4591,7 @@ except Exception:
                     answerText = rawBuffer
                 }
                 answerLabel.text = answerText.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.scrollChatToBottom()
+                self.scrollChatToBottom(animated: false)
             }
         }, completion: { [weak self] result in
             DispatchQueue.main.async {
@@ -4612,6 +4612,9 @@ except Exception:
 
                     // Render with markdown
                     self.renderMarkdownText(finalAnswer, into: answerLabel)
+                    for block in self.extractCodeBlocksWithLang(finalAnswer) {
+                        self.makeCodeCard(code: block.code, lang: block.lang)
+                    }
 
                     // Finalize thinking pill
                     if sawThink {
@@ -4777,7 +4780,7 @@ except Exception:
                 guard let self else { return }
                 buf += tok
                 followLabel.text = buf.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.scrollChatToBottom()
+                self.scrollChatToBottom(animated: false)
             }
         }, completion: { [weak self] result in
             DispatchQueue.main.async {
@@ -4790,6 +4793,9 @@ except Exception:
                     }
                     finalAnswer = finalAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
                     self.renderMarkdownText(finalAnswer, into: followLabel)
+                    for block in self.extractCodeBlocksWithLang(finalAnswer) {
+                        self.makeCodeCard(code: block.code, lang: block.lang)
+                    }
                     self.addApplyButtonIfCodeBlock(finalAnswer, below: followLabel)
                     // Recurse: run any new python it wrote, at depth+1.
                     self.maybeAutoRunPython(from: finalAnswer,
@@ -4812,6 +4818,131 @@ except Exception:
 
     // Stable key for objc_setAssociatedObject
     private static var codeBlockKey: UInt8 = 0
+
+    /// All fenced code blocks in `text`, each as (language, body). Language is
+    /// "" when the fence had no tag. Used to render dedicated code cards with a
+    /// Copy button (the inline renderMarkdownText path remains as a fallback).
+    private func extractCodeBlocksWithLang(_ text: String) -> [(lang: String, code: String)] {
+        let pattern = "```([A-Za-z0-9_+-]*)[ \\t]*\\r?\\n([\\s\\S]*?)```"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        var out: [(String, String)] = []
+        re.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            guard let m = m, m.numberOfRanges >= 3 else { return }
+            let lang = ns.substring(with: m.range(at: 1))
+            let body = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !body.isEmpty { out.append((lang, body)) }
+        }
+        return out
+    }
+
+    // Stable key to stash a code-card's body on its Copy button.
+    private static var copyCodeKey: UInt8 = 0
+
+    /// A rounded, dark code card: optional language tag header + "Copy" button,
+    /// monospaced body in a horizontally-scrolling text view. Appended to the
+    /// chat stack. Purely additive presentation of an existing code block.
+    private func makeCodeCard(code: String, lang: String) {
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = UIColor(white: 0.12, alpha: 1)
+        card.layer.cornerRadius = 10
+        card.layer.borderWidth = 0.5
+        card.layer.borderColor = UIColor(white: 1, alpha: 0.08).cgColor
+        card.clipsToBounds = true
+
+        let langLabel = UILabel()
+        langLabel.text = lang.isEmpty ? "code" : lang.lowercased()
+        langLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        langLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        langLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let copyButton = UIButton(type: .system)
+        var ccfg = UIButton.Configuration.plain()
+        ccfg.image = UIImage(systemName: "doc.on.doc")
+        ccfg.title = "Copy"
+        ccfg.imagePadding = 4
+        ccfg.baseForegroundColor = UIColor(white: 0.7, alpha: 1)
+        ccfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6)
+        var cattr = AttributeContainer()
+        cattr.font = .systemFont(ofSize: 11, weight: .medium)
+        ccfg.attributedTitle = AttributedString("Copy", attributes: cattr)
+        copyButton.configuration = ccfg
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        objc_setAssociatedObject(copyButton, &Self.copyCodeKey, code, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        copyButton.addTarget(self, action: #selector(copyCodeCardTapped(_:)), for: .touchUpInside)
+
+        // Horizontally-scrolling monospaced body (no wrapping for long lines).
+        let bodyScroll = UIScrollView()
+        bodyScroll.showsVerticalScrollIndicator = false
+        bodyScroll.alwaysBounceVertical = false
+        bodyScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let bodyView = UITextView()
+        bodyView.text = code
+        bodyView.isEditable = false
+        bodyView.isScrollEnabled = false
+        bodyView.backgroundColor = .clear
+        bodyView.textContainerInset = .zero
+        bodyView.textContainer.lineFragmentPadding = 0
+        bodyView.textContainer.lineBreakMode = .byClipping
+        bodyView.textContainer.widthTracksTextView = false
+        bodyView.textContainer.size = CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                             height: CGFloat.greatestFiniteMagnitude)
+        bodyView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        bodyView.textColor = UIColor(red: 0.55, green: 0.85, blue: 0.65, alpha: 1)
+        bodyView.translatesAutoresizingMaskIntoConstraints = false
+
+        bodyScroll.addSubview(bodyView)
+        card.addSubview(langLabel)
+        card.addSubview(copyButton)
+        card.addSubview(bodyScroll)
+
+        NSLayoutConstraint.activate([
+            langLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
+            langLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+
+            copyButton.centerYAnchor.constraint(equalTo: langLabel.centerYAnchor),
+            copyButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -6),
+            copyButton.leadingAnchor.constraint(greaterThanOrEqualTo: langLabel.trailingAnchor, constant: 8),
+
+            bodyScroll.topAnchor.constraint(equalTo: langLabel.bottomAnchor, constant: 6),
+            bodyScroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            bodyScroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            bodyScroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+
+            bodyView.topAnchor.constraint(equalTo: bodyScroll.topAnchor),
+            bodyView.leadingAnchor.constraint(equalTo: bodyScroll.leadingAnchor),
+            bodyView.trailingAnchor.constraint(equalTo: bodyScroll.trailingAnchor),
+            bodyView.bottomAnchor.constraint(equalTo: bodyScroll.bottomAnchor),
+            bodyView.heightAnchor.constraint(equalTo: bodyScroll.heightAnchor),
+        ])
+
+        let wrapper = UIView()
+        wrapper.translatesAutoresizingMaskIntoConstraints = false
+        wrapper.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 4),
+            card.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 4),
+            card.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -4),
+            card.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -4),
+        ])
+        chatStackView.addArrangedSubview(wrapper)
+        scrollChatToBottom()
+    }
+
+    @objc private func copyCodeCardTapped(_ sender: UIButton) {
+        guard let code = objc_getAssociatedObject(sender, &Self.copyCodeKey) as? String else { return }
+        UIPasteboard.general.string = code
+        let original = sender.configuration
+        var done = sender.configuration ?? UIButton.Configuration.plain()
+        done.image = UIImage(systemName: "checkmark")
+        var a = AttributeContainer(); a.font = .systemFont(ofSize: 11, weight: .medium)
+        done.attributedTitle = AttributedString("Copied", attributes: a)
+        done.baseForegroundColor = .systemGreen
+        sender.configuration = done
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { sender.configuration = original }
+    }
 
     private func addApplyButtonIfCodeBlock(_ text: String, below label: UILabel) {
         guard let code = extractCodeBlock(text) else { return }
@@ -6301,6 +6432,11 @@ except Exception:
 
     // MARK: - Thinking Pill (ChatGPT-style collapsible)
 
+    // Stable keys to attach the detail label + chevron to a thinking-pill
+    // container, so toggleThinkingPill never relies on subview index/order.
+    private static var thinkDetailKey: UInt8 = 0
+    private static var thinkChevronKey: UInt8 = 0
+
     private struct ThinkingPillViews {
         let container: UIView
         let label: UILabel       // "Thought for Xs >"
@@ -6310,39 +6446,75 @@ except Exception:
     private func makeThinkingPill() -> ThinkingPillViews {
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
+        container.backgroundColor = UIColor(white: 0.10, alpha: 1)
+        container.layer.cornerRadius = 10
+        container.layer.borderWidth = 0.5
+        container.layer.borderColor = UIColor(white: 1, alpha: 0.08).cgColor
+        container.clipsToBounds = true
 
-        // "Thought for Xs >" label — tappable to expand/collapse
+        // Leading "brain" glyph
+        let icon = UIImageView(image: UIImage(systemName: "brain"))
+        icon.tintColor = UIColor(white: 0.55, alpha: 1)
+        icon.contentMode = .scaleAspectFit
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        // "Thinking…" / "Thought for Xs" label
         let pillLabel = UILabel()
         pillLabel.text = "Thinking..."
         pillLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        pillLabel.textColor = UIColor(white: 0.50, alpha: 1)
+        pillLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        pillLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         pillLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Detail text (thinking content — hidden by default, shown on tap)
+        // Trailing chevron (rotates 90° on expand)
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+        chevron.tintColor = UIColor(white: 0.45, alpha: 1)
+        chevron.contentMode = .scaleAspectFit
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+
+        // Detail text (thinking content — collapsed by default)
         let detailLabel = UILabel()
         detailLabel.text = ""
         detailLabel.font = UIFont.systemFont(ofSize: 11, weight: .regular)
-        detailLabel.textColor = UIColor(white: 0.40, alpha: 1)
+        detailLabel.textColor = UIColor(white: 0.55, alpha: 1)
         detailLabel.numberOfLines = 0
         detailLabel.lineBreakMode = .byWordWrapping
-        detailLabel.isHidden = true  // Collapsed by default
+        detailLabel.isHidden = true
+        detailLabel.alpha = 0
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        container.addSubview(icon)
         container.addSubview(pillLabel)
+        container.addSubview(chevron)
         container.addSubview(detailLabel)
 
         NSLayoutConstraint.activate([
-            pillLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
-            pillLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
-            pillLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            icon.topAnchor.constraint(equalTo: container.topAnchor, constant: 9),
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            icon.heightAnchor.constraint(equalToConstant: 13),
 
-            detailLabel.topAnchor.constraint(equalTo: pillLabel.bottomAnchor, constant: 4),
-            detailLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            detailLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
-            detailLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
+            pillLabel.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+            pillLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+
+            chevron.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+            chevron.leadingAnchor.constraint(greaterThanOrEqualTo: pillLabel.trailingAnchor, constant: 6),
+            chevron.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            chevron.widthAnchor.constraint(equalToConstant: 10),
+            chevron.heightAnchor.constraint(equalToConstant: 10),
+
+            detailLabel.topAnchor.constraint(equalTo: pillLabel.bottomAnchor, constant: 6),
+            detailLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            detailLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            detailLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -9),
         ])
 
-        // Tap to expand/collapse thinking content
+        // Attach detail + chevron so toggleThinkingPill never indexes subviews.
+        objc_setAssociatedObject(container, &Self.thinkDetailKey, detailLabel, .OBJC_ASSOCIATION_ASSIGN)
+        objc_setAssociatedObject(container, &Self.thinkChevronKey, chevron, .OBJC_ASSOCIATION_ASSIGN)
+
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleThinkingPill(_:)))
         container.addGestureRecognizer(tap)
         container.isUserInteractionEnabled = true
@@ -6352,11 +6524,24 @@ except Exception:
 
     @objc private func toggleThinkingPill(_ gesture: UITapGestureRecognizer) {
         guard let container = gesture.view else { return }
-        // Find the detail label (second subview)
-        guard container.subviews.count >= 2 else { return }
-        let detailLabel = container.subviews[1]
-        UIView.animate(withDuration: 0.2) {
+        // Prefer the explicitly-attached detail label; fall back to the old
+        // subview[1] lookup so pre-existing pills (if any) still toggle.
+        let detail = (objc_getAssociatedObject(container, &Self.thinkDetailKey) as? UIView)
+            ?? (container.subviews.count >= 2 ? container.subviews[1] : nil)
+        guard let detailLabel = detail else { return }
+        let chevron = objc_getAssociatedObject(container, &Self.thinkChevronKey) as? UIImageView
+        let willExpand = detailLabel.isHidden   // about to become visible
+        UIView.animate(withDuration: 0.22,
+                       delay: 0,
+                       usingSpringWithDamping: 0.9,
+                       initialSpringVelocity: 0,
+                       options: [.curveEaseInOut]) {
             detailLabel.isHidden.toggle()
+            detailLabel.alpha = willExpand ? 1 : 0
+            // Rotate the trailing chevron 90° when expanded (ChatGPT-style).
+            chevron?.transform = willExpand
+                ? CGAffineTransform(rotationAngle: .pi / 2)
+                : .identity
             self.chatStackView.layoutIfNeeded()
         }
         scrollChatToBottom()
@@ -7063,6 +7248,26 @@ except Exception:
             return label
         } else {
             // ── AI message: full-width, no bubble background (ChatGPT style) ──
+            let header = UIStackView()
+            header.axis = .horizontal
+            header.alignment = .center
+            header.spacing = 5
+            header.translatesAutoresizingMaskIntoConstraints = false
+            let avatar = UIImageView(image: UIImage(systemName: "sparkles"))
+            avatar.tintColor = .systemPurple
+            avatar.contentMode = .scaleAspectFit
+            avatar.setContentHuggingPriority(.required, for: .horizontal)
+            NSLayoutConstraint.activate([
+                avatar.widthAnchor.constraint(equalToConstant: 13),
+                avatar.heightAnchor.constraint(equalToConstant: 13),
+            ])
+            let roleLabel = UILabel()
+            roleLabel.text = "Assistant"
+            roleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+            roleLabel.textColor = UIColor(white: 0.55, alpha: 1)
+            header.addArrangedSubview(avatar)
+            header.addArrangedSubview(roleLabel)
+
             let label = UILabel()
             label.text = text
             label.font = UIFont.systemFont(ofSize: 13, weight: .regular)
@@ -7073,9 +7278,13 @@ except Exception:
 
             let wrapper = UIView()
             wrapper.translatesAutoresizingMaskIntoConstraints = false
+            wrapper.addSubview(header)
             wrapper.addSubview(label)
             NSLayoutConstraint.activate([
-                label.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 6),
+                header.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 8),
+                header.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 4),
+
+                label.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
                 label.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 4),
                 label.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -4),
                 label.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -6)
@@ -7188,6 +7397,128 @@ except Exception:
         }
     }
 
+    // MARK: - Inline math (SwiftMath → NSTextAttachment)
+
+    /// Rasterize a LaTeX fragment to a baseline-aligned NSTextAttachment using
+    /// SwiftMath's self-sizing MTMathUILabel. `display == true` renders block
+    /// math (\[...\] / $$...$$); false renders inline ($...$ / \(...\)).
+    /// Returns nil on parse failure or zero-size layout so callers can fall
+    /// back to the raw text — never crashes, never produces a blank.
+    private func mathAttachment(latex: String, display: Bool, pointSize: CGFloat) -> NSTextAttachment? {
+        let trimmed = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        // Validate first — invalid LaTeX should fall back to raw text.
+        var perr: NSError?
+        guard MTMathListBuilder.build(fromString: trimmed, error: &perr) != nil, perr == nil else {
+            return nil
+        }
+
+        let mathLabel = MTMathUILabel()
+        mathLabel.latex = trimmed
+        mathLabel.labelMode = display ? .display : .text
+        mathLabel.fontSize = display ? pointSize * 1.25 : pointSize
+        mathLabel.textColor = UIColor(white: 0.92, alpha: 1)
+        mathLabel.backgroundColor = .clear
+        mathLabel.contentInsets = UIEdgeInsets(top: 1, left: 1, bottom: 1, right: 1)
+
+        // Force a layout pass so intrinsicContentSize is valid.
+        mathLabel.setNeedsLayout()
+        mathLabel.layoutIfNeeded()
+        var size = mathLabel.intrinsicContentSize
+        if size.width <= 0 || size.height <= 0 {
+            mathLabel.frame = CGRect(origin: .zero, size: CGSize(width: 1000, height: 1000))
+            mathLabel.layoutIfNeeded()
+            size = mathLabel.intrinsicContentSize
+        }
+        guard size.width > 0.5, size.height > 0.5,
+              size.width < 4096, size.height < 4096 else { return nil }
+        mathLabel.frame = CGRect(origin: .zero, size: size)
+        mathLabel.layoutIfNeeded()
+
+        // Rasterize at device scale (mirrors LaTeXEngine's renderer recipe).
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = UIScreen.main.scale
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            mathLabel.layer.render(in: ctx.cgContext)
+        }
+
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        // Baseline alignment: nudge the image down by ~descender so inline
+        // math sits on the text baseline instead of floating high.
+        let descenderGuess: CGFloat = display ? 0 : (pointSize * 0.22)
+        attachment.bounds = CGRect(x: 0, y: -descenderGuess, width: size.width, height: size.height)
+        return attachment
+    }
+
+    /// Replace inline/display math spans in `source` with rendered-math
+    /// attachments, returning a new attributed string. Non-math text keeps the
+    /// passed `baseAttrs`. Order of detection: \[...\] , $$...$$ (display) then
+    /// \(...\) , $...$ (inline). Unparseable spans are emitted as raw text.
+    private func attributedStringRenderingMath(_ source: String,
+                                               baseAttrs: [NSAttributedString.Key: Any],
+                                               pointSize: CGFloat) -> NSAttributedString {
+        // Fast path: nothing math-like → return plain styled string untouched.
+        guard source.contains("$") || source.contains("\\(") || source.contains("\\[") else {
+            return NSAttributedString(string: source, attributes: baseAttrs)
+        }
+
+        // (pattern, display, latexGroupIndex)
+        let specs: [(String, Bool)] = [
+            ("\\\\\\[((?:.|\\n)+?)\\\\\\]", true),      // \[ ... \]
+            ("\\$\\$((?:.|\\n)+?)\\$\\$", true),        // $$ ... $$
+            ("\\\\\\(((?:.|\\n)+?)\\\\\\)", false),     // \( ... \)
+            ("(?<![\\\\$])\\$([^$\\n]+?)\\$(?![\\d])", false) // $ ... $  (skip \$ and $123$ currency-ish)
+        ]
+
+        // Build a combined regex pass, longest-delimiter first, by scanning the
+        // string once per spec and recording non-overlapping match ranges.
+        struct MathHit { let range: NSRange; let latex: String; let display: Bool }
+        let ns = source as NSString
+        var hits: [MathHit] = []
+        var claimed = [Bool](repeating: false, count: ns.length)
+
+        for (pattern, display) in specs {
+            guard let re = try? NSRegularExpression(pattern: pattern, options: []) else { continue }
+            re.enumerateMatches(in: source, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                guard let m = m, m.numberOfRanges >= 2 else { return }
+                let full = m.range
+                // Skip if any char already claimed by a longer-delimiter spec.
+                for i in full.location..<(full.location + full.length) where claimed[i] { return }
+                let latex = ns.substring(with: m.range(at: 1))
+                hits.append(MathHit(range: full, latex: latex, display: display))
+                for i in full.location..<(full.location + full.length) { claimed[i] = true }
+            }
+        }
+        guard !hits.isEmpty else {
+            return NSAttributedString(string: source, attributes: baseAttrs)
+        }
+        hits.sort { $0.range.location < $1.range.location }
+
+        let out = NSMutableAttributedString()
+        var cursor = 0
+        for hit in hits {
+            if hit.range.location > cursor {
+                let plain = ns.substring(with: NSRange(location: cursor, length: hit.range.location - cursor))
+                out.append(NSAttributedString(string: plain, attributes: baseAttrs))
+            }
+            if let att = mathAttachment(latex: hit.latex, display: hit.display, pointSize: pointSize) {
+                if hit.display { out.append(NSAttributedString(string: "\n", attributes: baseAttrs)) }
+                out.append(NSAttributedString(attachment: att))
+                if hit.display { out.append(NSAttributedString(string: "\n", attributes: baseAttrs)) }
+            } else {
+                // Fallback: keep the original delimited text verbatim.
+                out.append(NSAttributedString(string: ns.substring(with: hit.range), attributes: baseAttrs))
+            }
+            cursor = hit.range.location + hit.range.length
+        }
+        if cursor < ns.length {
+            out.append(NSAttributedString(string: ns.substring(from: cursor), attributes: baseAttrs))
+        }
+        return out
+    }
+
     /// Render AI response text with basic markdown: **bold**, `code`, ```code blocks```
     private func renderMarkdownText(_ text: String, into label: UILabel) {
         let result = NSMutableAttributedString()
@@ -7213,7 +7544,7 @@ except Exception:
             let temp = NSMutableAttributedString()
             for match in matches {
                 let beforeRange = lastEnd..<(Range(match.range, in: remaining)?.lowerBound ?? remaining.endIndex)
-                temp.append(NSAttributedString(string: String(remaining[beforeRange]), attributes: [.font: normalFont, .foregroundColor: textColor]))
+                temp.append(self.attributedStringRenderingMath(String(remaining[beforeRange]), baseAttrs: [.font: normalFont, .foregroundColor: textColor], pointSize: 13))
                 if let codeRange = Range(match.range(at: 1), in: remaining) {
                     let codeStr = String(remaining[codeRange])
                     temp.append(NSAttributedString(string: "\n", attributes: [.font: normalFont, .foregroundColor: textColor]))
@@ -7222,10 +7553,10 @@ except Exception:
                 }
                 lastEnd = Range(match.range, in: remaining)?.upperBound ?? remaining.endIndex
             }
-            temp.append(NSAttributedString(string: String(remaining[lastEnd...]), attributes: [.font: normalFont, .foregroundColor: textColor]))
+            temp.append(self.attributedStringRenderingMath(String(remaining[lastEnd...]), baseAttrs: [.font: normalFont, .foregroundColor: textColor], pointSize: 13))
             result.append(temp)
         } else {
-            result.append(NSAttributedString(string: remaining, attributes: [.font: normalFont, .foregroundColor: textColor]))
+            result.append(self.attributedStringRenderingMath(remaining, baseAttrs: [.font: normalFont, .foregroundColor: textColor], pointSize: 13))
         }
 
         // Inline code
@@ -7255,10 +7586,10 @@ except Exception:
         label.attributedText = result
     }
 
-    private func scrollChatToBottom() {
+    private func scrollChatToBottom(animated: Bool = true) {
         chatScrollView.layoutIfNeeded()
         let bottomOffset = CGPoint(x: 0, y: max(0, chatScrollView.contentSize.height - chatScrollView.bounds.height))
-        chatScrollView.setContentOffset(bottomOffset, animated: true)
+        chatScrollView.setContentOffset(bottomOffset, animated: animated)
     }
 
     // MARK: - Line Numbers

@@ -22,9 +22,30 @@ final class SettingsViewController: UIViewController {
     private let dimColor     = UIColor(red: 0.520, green: 0.540, blue: 0.580, alpha: 1)
     private let accentColor  = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1)
 
+    // Redesign-only: a deeper "well" behind cards, an elevated card
+    // surface, and a per-section accent ramp. These are additive — the
+    // original bg/surface/text/dim/accent constants are untouched.
+    private let wellColor    = UIColor(red: 0.071, green: 0.075, blue: 0.086, alpha: 1)
+    private let cardColor    = UIColor(red: 0.140, green: 0.149, blue: 0.172, alpha: 1)
+    private let hairline     = UIColor(white: 1, alpha: 0.07)
+
+    /// Distinct accent per section, used on the card's icon chip + rail.
+    private enum Section { case editor, terminal, manim, workspace, models, privacy, about }
+    private func accent(_ s: Section) -> UIColor {
+        switch s {
+        case .editor:    return UIColor(red: 0.40, green: 0.59, blue: 0.93, alpha: 1) // blue
+        case .terminal:  return UIColor(red: 0.36, green: 0.78, blue: 0.55, alpha: 1) // green
+        case .manim:     return UIColor(red: 0.74, green: 0.52, blue: 0.96, alpha: 1) // violet
+        case .workspace: return UIColor(red: 0.96, green: 0.69, blue: 0.36, alpha: 1) // amber
+        case .models:    return UIColor(red: 0.40, green: 0.74, blue: 0.93, alpha: 1) // cyan
+        case .privacy:   return UIColor(red: 0.93, green: 0.49, blue: 0.55, alpha: 1) // rose
+        case .about:     return UIColor(red: 0.55, green: 0.58, blue: 0.64, alpha: 1) // slate
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = bgColor
+        view.backgroundColor = wellColor
         setupUI()
     }
 
@@ -39,13 +60,20 @@ final class SettingsViewController: UIViewController {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = true
         scrollView.indicatorStyle = .white
+        // Horizontal-drag controls (steppers/sliders) live inside this
+        // vertical scroll view. By default the scroll view delays and
+        // can cancel content touches, which steals a control's pan
+        // before it registers. Disable both so embedded controls track
+        // touches immediately and the scroll view never yanks them away.
+        scrollView.delaysContentTouches = false
+        scrollView.canCancelContentTouches = false
         view.addSubview(scrollView)
 
         contentStack.axis = .vertical
-        contentStack.spacing = 14
+        contentStack.spacing = 18
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.isLayoutMarginsRelativeArrangement = true
-        contentStack.layoutMargins = UIEdgeInsets(top: 16, left: 16, bottom: 24, right: 16)
+        contentStack.layoutMargins = UIEdgeInsets(top: 16, left: 16, bottom: 40, right: 16)
         scrollView.addSubview(contentStack)
 
         NSLayoutConstraint.activate([
@@ -73,11 +101,11 @@ final class SettingsViewController: UIViewController {
         contentStack.addArrangedSubview(makeHeader())
 
         // ── Editor ─────────────────────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "Editor",
+        contentStack.addArrangedSubview(makeCard(.editor, title: "Editor",
                                                  icon: "chevron.left.forwardslash.chevron.right",
                                                  footer: "Theme and font changes apply the next time the editor opens a file.",
                                                  rows: [
-            sliderRow(title: "Font size",
+            stepperRow(title: "Font size",
                       icon: "textformat.size",
                       value: Float(Settings.editorFontSize),
                       min: 9, max: 22, step: 1, unit: "pt") { v in
@@ -103,10 +131,10 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── Terminal ───────────────────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "Terminal",
+        contentStack.addArrangedSubview(makeCard(.terminal, title: "Terminal",
                                                  icon: "terminal",
                                                  rows: [
-            sliderRow(title: "Font size",
+            stepperRow(title: "Font size",
                       icon: "textformat.size",
                       value: Float(Settings.terminalFontSize),
                       min: 9, max: 22, step: 1, unit: "pt") { v in
@@ -127,7 +155,7 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── Manim render defaults ──────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "Manim render",
+        contentStack.addArrangedSubview(makeCard(.manim, title: "Manim render",
                                                  icon: "wand.and.stars",
                                                  footer: "Applies to new renders only — existing videos keep their original settings.",
                                                  rows: [
@@ -137,7 +165,7 @@ final class SettingsViewController: UIViewController {
                        selected: Settings.manimQualityIndex) { idx in
                 Settings.manimQualityIndex = idx
             },
-            sliderRow(title: "FPS",
+            stepperRow(title: "FPS",
                       icon: "speedometer",
                       value: Float(Settings.manimFPS),
                       min: 10, max: 60, step: 5, unit: "fps") { v in
@@ -146,7 +174,7 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── Workspace / maintenance ────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "Workspace",
+        contentStack.addArrangedSubview(makeCard(.workspace, title: "Workspace",
                                                  icon: "folder",
                                                  rows: [
             buttonRow(title: "Switch workspace",
@@ -193,7 +221,7 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── AI Models — install custom GGUFs ───────────────────
-        contentStack.addArrangedSubview(makeCard(title: "AI Models",
+        contentStack.addArrangedSubview(makeCard(.models, title: "AI Models",
                                                  icon: "cpu",
                                                  rows: [
             buttonRow(title: "Upload GGUF model",
@@ -214,7 +242,7 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── Privacy & Data ─────────────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "Privacy & Data",
+        contentStack.addArrangedSubview(makeCard(.privacy, title: "Privacy & Data",
                                                  icon: "lock.shield",
                                                  footer: "Browser data stays on this device and is never uploaded.",
                                                  rows: [
@@ -226,7 +254,7 @@ final class SettingsViewController: UIViewController {
         ]))
 
         // ── About ──────────────────────────────────────────────
-        contentStack.addArrangedSubview(makeCard(title: "About",
+        contentStack.addArrangedSubview(makeCard(.about, title: "About",
                                                  icon: "info.circle",
                                                  rows: [
             kvRow(key: "Version",   value: appVersion()),
@@ -234,16 +262,27 @@ final class SettingsViewController: UIViewController {
             kvRow(key: "Python",    value: pythonVersionString()),
             kvRow(key: "Workspace", value: workspaceShortPath()),
         ]))
+
+        // ── Footer signature ───────────────────────────────────────
+        contentStack.addArrangedSubview(makeFooter())
     }
 
     // MARK: - Row builders
 
-    private func sliderRow(title: String,
-                           icon: String? = nil,
-                           value: Float,
-                           min minV: Float, max maxV: Float, step: Float,
-                           unit: String,
-                           onChange: @escaping (Float) -> Void) -> UIView {
+    /// Tap-only numeric stepper rendered as a "−  value  +" pill.
+    ///
+    /// Replaces the old in-scroll-view UISlider, whose horizontal pan
+    /// fought the vertical scroll view and made it undraggable. Two
+    /// buttons step by `step`, clamped to [minV, maxV]; each change
+    /// snaps to the step grid, updates the value pill, and fires the
+    /// same `onChange` the slider used — so the persisted setter
+    /// (e.g. `Settings.editorFontSize = Int(v)`) is untouched.
+    private func stepperRow(title: String,
+                            icon: String? = nil,
+                            value: Float,
+                            min minV: Float, max maxV: Float, step: Float,
+                            unit: String,
+                            onChange: @escaping (Float) -> Void) -> UIView {
         let row = paddedRow()
 
         let titleLabel = UILabel()
@@ -251,34 +290,79 @@ final class SettingsViewController: UIViewController {
         titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
         titleLabel.textColor = textColor
 
+        // Snap the incoming value onto the step grid and clamp it.
+        var current: Float = Swift.min(maxV, Swift.max(minV,
+            (value / step).rounded() * step))
+
         let valueLabel = UILabel()
-        valueLabel.text = "\(Int(value)) \(unit)"
-        valueLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        valueLabel.textColor = dimColor
-        valueLabel.textAlignment = .right
-        valueLabel.setContentHuggingPriority(.required, for: .horizontal)
+        valueLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        valueLabel.textColor = textColor
+        valueLabel.textAlignment = .center
+        valueLabel.text = "\(Int(current)) \(unit)"
+        valueLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let topRow = UIStackView(arrangedSubviews: rowIcon(icon) + [titleLabel, valueLabel])
-        topRow.axis = .horizontal
-        topRow.spacing = 8
-        topRow.alignment = .center
+        func makeStepButton(_ symbol: String) -> UIButton {
+            let b = UIButton(type: .system)
+            let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+            b.setImage(UIImage(systemName: symbol, withConfiguration: cfg), for: .normal)
+            b.tintColor = accentColor
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            return b
+        }
 
-        let slider = UISlider()
-        slider.minimumValue = minV
-        slider.maximumValue = maxV
-        slider.value = value
-        slider.tintColor = accentColor
-        slider.addAction(UIAction { [weak valueLabel] _ in
-            // Snap to nearest step.
-            let snapped = (slider.value / step).rounded() * step
-            slider.value = snapped
-            valueLabel?.text = "\(Int(snapped)) \(unit)"
-            onChange(snapped)
-        }, for: .valueChanged)
+        let minus = makeStepButton("minus")
+        let plus  = makeStepButton("plus")
 
-        let stack = UIStackView(arrangedSubviews: [topRow, slider])
-        stack.axis = .vertical
-        stack.spacing = 6
+        // Capture labels weakly inside the closures; `current` is a local
+        // captured by reference (closures share the same var).
+        func refreshEnabled() {
+            minus.isEnabled = current > minV
+            plus.isEnabled  = current < maxV
+            minus.alpha = minus.isEnabled ? 1 : 0.35
+            plus.alpha  = plus.isEnabled  ? 1 : 0.35
+        }
+        func apply(_ next: Float) {
+            let clamped = Swift.min(maxV, Swift.max(minV, next))
+            guard clamped != current else { return }
+            current = clamped
+            valueLabel.text = "\(Int(current)) \(unit)"
+            refreshEnabled()
+            onChange(current)
+        }
+        minus.addAction(UIAction { _ in apply(current - step) }, for: .touchUpInside)
+        plus.addAction(UIAction  { _ in apply(current + step) }, for: .touchUpInside)
+        refreshEnabled()
+
+        // The pill: [ − | value | + ] on a recessed rounded background.
+        let pill = UIStackView(arrangedSubviews: [minus, valueLabel, plus])
+        pill.axis = .horizontal
+        pill.alignment = .center
+        pill.distribution = .fill
+        pill.spacing = 0
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.backgroundColor = UIColor(white: 1, alpha: 0.05)
+        pill.layer.cornerRadius = 9
+        pill.layer.borderWidth = 0.5
+        pill.layer.borderColor = UIColor(white: 1, alpha: 0.10).cgColor
+        pill.isLayoutMarginsRelativeArrangement = true
+        pill.layoutMargins = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        // Minimum width so the value never looks cramped at "9 pt".
+        valueLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true
+
+        let titleStack = UIStackView(arrangedSubviews: rowIcon(icon) + [titleLabel])
+        titleStack.axis = .horizontal
+        titleStack.spacing = 8
+        titleStack.alignment = .center
+
+        let stack = UIStackView(arrangedSubviews: [titleStack, UIView(), pill])
+        stack.axis = .horizontal
+        stack.spacing = 10
+        stack.alignment = .center
+        // The empty spacer view expands; title hugs left, pill hugs right.
+        titleStack.setContentHuggingPriority(.required, for: .horizontal)
         stack.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(stack)
         pin(stack, in: row)
@@ -463,40 +547,66 @@ final class SettingsViewController: UIViewController {
         ])
     }
 
-    private func makeCard(title: String, icon: String, footer: String? = nil, rows: [UIView]) -> UIView {
+    private func makeCard(_ section: Section,
+                          title: String,
+                          icon: String,
+                          footer: String? = nil,
+                          rows: [UIView]) -> UIView {
+        let tint = accent(section)
+
         let card = UIView()
-        card.backgroundColor = surfaceColor
-        card.layer.cornerRadius = 14
+        card.backgroundColor = cardColor
+        card.layer.cornerRadius = 18
         card.layer.borderWidth = 0.5
-        card.layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
+        card.layer.borderColor = hairline.cgColor
         card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = 0.18
-        card.layer.shadowRadius = 8
-        card.layer.shadowOffset = CGSize(width: 0, height: 2)
+        card.layer.shadowOpacity = 0.28
+        card.layer.shadowRadius = 12
+        card.layer.shadowOffset = CGSize(width: 0, height: 4)
         card.translatesAutoresizingMaskIntoConstraints = false
 
-        // Header: icon + title.
-        let iconView = UIImageView(image: UIImage(systemName: icon))
-        iconView.tintColor = accentColor
-        iconView.contentMode = .scaleAspectFit
-        iconView.translatesAutoresizingMaskIntoConstraints = false
+        // Left accent rail — a 3pt tinted bar pinned to the card's left
+        // edge, giving each section an at-a-glance identity colour.
+        let rail = UIView()
+        rail.backgroundColor = tint
+        rail.layer.cornerRadius = 1.5
+        rail.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(rail)
         NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
+            rail.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            rail.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
+            rail.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
+            rail.widthAnchor.constraint(equalToConstant: 3),
         ])
 
-        let titleLabel = UILabel()
-        titleLabel.attributedText = NSAttributedString(
-            string: title.uppercased(),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: dimColor,
-                .kern: 0.8,
-            ])
+        // Tinted icon "chip": rounded square, section colour at low alpha,
+        // glyph in full section colour. Replaces the bare accent glyph.
+        let chip = UIView()
+        chip.backgroundColor = tint.withAlphaComponent(0.16)
+        chip.layer.cornerRadius = 8
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        let iconView = UIImageView(image: UIImage(systemName: icon))
+        iconView.tintColor = tint
+        iconView.contentMode = .center
+        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(iconView)
+        NSLayoutConstraint.activate([
+            chip.widthAnchor.constraint(equalToConstant: 30),
+            chip.heightAnchor.constraint(equalToConstant: 30),
+            iconView.centerXAnchor.constraint(equalTo: chip.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        ])
 
-        let header = UIStackView(arrangedSubviews: [iconView, titleLabel])
+        // Bigger, mixed-case section title (was tiny uppercase kerned).
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.textColor = textColor
+
+        let header = UIStackView(arrangedSubviews: [chip, titleLabel])
         header.axis = .horizontal
-        header.spacing = 8
+        header.spacing = 10
         header.alignment = .center
         header.translatesAutoresizingMaskIntoConstraints = false
 
@@ -505,8 +615,9 @@ final class SettingsViewController: UIViewController {
         body.spacing = 0
         body.translatesAutoresizingMaskIntoConstraints = false
         body.isLayoutMarginsRelativeArrangement = true
-        body.layoutMargins = UIEdgeInsets(top: 12, left: 14, bottom: 4, right: 14)
-        body.setCustomSpacing(8, after: header)
+        // Left margin clears the rail; right/top/bottom give breathing room.
+        body.layoutMargins = UIEdgeInsets(top: 14, left: 18, bottom: 6, right: 16)
+        body.setCustomSpacing(10, after: header)
 
         if let footer = footer {
             let footerLabel = UILabel()
@@ -515,7 +626,7 @@ final class SettingsViewController: UIViewController {
             footerLabel.textColor = dimColor
             footerLabel.numberOfLines = 0
             let footerDivider = UIView()
-            footerDivider.backgroundColor = UIColor(white: 1, alpha: 0.05)
+            footerDivider.backgroundColor = hairline
             footerDivider.translatesAutoresizingMaskIntoConstraints = false
             footerDivider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
             body.addArrangedSubview(footerDivider)
@@ -550,13 +661,48 @@ final class SettingsViewController: UIViewController {
     }
 
     private func makeHeader() -> UIView {
+        // Full-bleed gradient banner. Uses a CAGradientLayer sized via a
+        // self-laying-out container subclass so it tracks bounds without
+        // needing viewDidLayoutSubviews plumbing on the VC.
+        let banner = GradientView()
+        banner.colors = [
+            accentColor.withAlphaComponent(0.30),
+            UIColor(red: 0.74, green: 0.52, blue: 0.96, alpha: 0.18), // violet
+            cardColor.withAlphaComponent(0.0),
+        ]
+        banner.startPoint = CGPoint(x: 0, y: 0)
+        banner.endPoint = CGPoint(x: 1, y: 1)
+        banner.layer.cornerRadius = 20
+        banner.layer.borderWidth = 0.5
+        banner.layer.borderColor = hairline.cgColor
+        banner.clipsToBounds = true
+        banner.translatesAutoresizingMaskIntoConstraints = false
+
+        // App glyph in a glassy circle.
+        let glyphWrap = UIView()
+        glyphWrap.backgroundColor = UIColor(white: 1, alpha: 0.10)
+        glyphWrap.layer.cornerRadius = 24
+        glyphWrap.layer.borderWidth = 0.5
+        glyphWrap.layer.borderColor = UIColor(white: 1, alpha: 0.16).cgColor
+        glyphWrap.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = UIImageView(image: UIImage(systemName: "slider.horizontal.3"))
+        glyph.tintColor = .white
+        glyph.contentMode = .center
+        glyph.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        glyph.translatesAutoresizingMaskIntoConstraints = false
+        glyphWrap.addSubview(glyph)
+        NSLayoutConstraint.activate([
+            glyphWrap.widthAnchor.constraint(equalToConstant: 48),
+            glyphWrap.heightAnchor.constraint(equalToConstant: 48),
+            glyph.centerXAnchor.constraint(equalTo: glyphWrap.centerXAnchor),
+            glyph.centerYAnchor.constraint(equalTo: glyphWrap.centerYAnchor),
+        ])
+
+        // Title — hosts the hidden 5-tap → openBrowserData gesture.
         let title = UILabel()
         title.text = "Settings"
-        title.font = .systemFont(ofSize: 26, weight: .bold)
-        title.textColor = textColor
-        // Hidden gesture: 5 quick taps on the title open the embedded
-        // browser data viewer (history + cookies). No menu surface; the
-        // user has to know it exists.
+        title.font = .systemFont(ofSize: 30, weight: .bold)
+        title.textColor = .white
         title.isUserInteractionEnabled = true
         let tap = UITapGestureRecognizer(target: self, action: #selector(openBrowserData))
         tap.numberOfTapsRequired = 5
@@ -565,28 +711,112 @@ final class SettingsViewController: UIViewController {
         let sub = UILabel()
         sub.text = "Tune the editor, terminal, render defaults, and storage."
         sub.font = .systemFont(ofSize: 13)
-        sub.textColor = dimColor
+        sub.textColor = UIColor(white: 1, alpha: 0.62)
         sub.numberOfLines = 0
 
-        let gear = UIImageView(image: UIImage(systemName: "slider.horizontal.3"))
-        gear.tintColor = accentColor
-        gear.contentMode = .scaleAspectFit
-        gear.translatesAutoresizingMaskIntoConstraints = false
-        gear.setContentHuggingPriority(.required, for: .horizontal)
-        NSLayoutConstraint.activate([
-            gear.widthAnchor.constraint(equalToConstant: 22),
-            gear.heightAnchor.constraint(equalToConstant: 22),
+        let titleText = UIStackView(arrangedSubviews: [title, sub])
+        titleText.axis = .vertical
+        titleText.spacing = 3
+
+        let topRow = UIStackView(arrangedSubviews: [glyphWrap, titleText])
+        topRow.axis = .horizontal
+        topRow.spacing = 14
+        topRow.alignment = .center
+
+        // Live status chips (read-only): active workspace + model count.
+        let chips = UIStackView(arrangedSubviews: [
+            statusChip(icon: "folder.fill",
+                       text: SessionRestore.lastWorkspace?.lastPathComponent ?? "default"),
+            statusChip(icon: "cpu.fill", text: modelCountChipText()),
         ])
+        chips.axis = .horizontal
+        chips.spacing = 8
+        chips.alignment = .center
+        chips.distribution = .fillProportionally
 
-        let titleRow = UIStackView(arrangedSubviews: [gear, title])
-        titleRow.axis = .horizontal
-        titleRow.spacing = 10
-        titleRow.alignment = .center
+        let content = UIStackView(arrangedSubviews: [topRow, chips])
+        content.axis = .vertical
+        content.spacing = 14
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.isLayoutMarginsRelativeArrangement = true
+        content.layoutMargins = UIEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
 
-        let stack = UIStackView(arrangedSubviews: [titleRow, sub])
-        stack.axis = .vertical
-        stack.spacing = 4
-        return stack
+        banner.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: banner.topAnchor),
+            content.leadingAnchor.constraint(equalTo: banner.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: banner.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: banner.bottomAnchor),
+        ])
+        return banner
+    }
+
+    /// Small rounded pill: tinted glyph + short label. Read-only — used
+    /// in the hero header to surface live workspace/model status without
+    /// adding any new persisted state.
+    private func statusChip(icon: String, text: String) -> UIView {
+        let wrap = UIView()
+        wrap.backgroundColor = UIColor(white: 1, alpha: 0.10)
+        wrap.layer.cornerRadius = 13
+        wrap.layer.borderWidth = 0.5
+        wrap.layer.borderColor = UIColor(white: 1, alpha: 0.14).cgColor
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+
+        let iv = UIImageView(image: UIImage(systemName: icon))
+        iv.tintColor = UIColor(white: 1, alpha: 0.85)
+        iv.contentMode = .scaleAspectFit
+        iv.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        iv.widthAnchor.constraint(equalToConstant: 13).isActive = true
+
+        let lbl = UILabel()
+        lbl.text = text
+        lbl.font = .systemFont(ofSize: 12, weight: .medium)
+        lbl.textColor = UIColor(white: 1, alpha: 0.85)
+        lbl.lineBreakMode = .byTruncatingTail
+
+        let s = UIStackView(arrangedSubviews: [iv, lbl])
+        s.axis = .horizontal
+        s.spacing = 6
+        s.alignment = .center
+        s.translatesAutoresizingMaskIntoConstraints = false
+        s.isLayoutMarginsRelativeArrangement = true
+        s.layoutMargins = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        wrap.addSubview(s)
+        NSLayoutConstraint.activate([
+            s.topAnchor.constraint(equalTo: wrap.topAnchor),
+            s.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
+            s.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
+            s.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
+        ])
+        return wrap
+    }
+
+    /// "N models" / "No models" for the hero chip. Reuses the same on-disk
+    /// scan the AI Models card already performs — purely informational.
+    private func modelCountChipText() -> String {
+        let dir = modelsDir()
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        let n = urls.filter { $0.pathExtension.lowercased() == "gguf" }.count
+        return n == 0 ? "No models" : "\(n) model\(n == 1 ? "" : "s")"
+    }
+
+    private func makeFooter() -> UIView {
+        let label = UILabel()
+        label.text = "CodeBench · v\(appVersion()) (\(appBuild()))"
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.textColor = dimColor
+        label.textAlignment = .center
+        label.numberOfLines = 0
+
+        let wrap = UIStackView(arrangedSubviews: [label])
+        wrap.axis = .vertical
+        wrap.alignment = .center
+        wrap.isLayoutMarginsRelativeArrangement = true
+        wrap.layoutMargins = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        return wrap
     }
 
     @objc private func openBrowserData() {
@@ -1238,5 +1468,26 @@ enum Settings {
 
     private static func post() {
         NotificationCenter.default.post(name: didChange, object: nil)
+    }
+}
+
+
+// MARK: - Gradient helper (redesign)
+
+/// A UIView backed by a CAGradientLayer that resizes itself, so callers
+/// don't need to override the VC's layout pass. Used by the Settings
+/// hero header banner.
+private final class GradientView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+    private var gradient: CAGradientLayer { layer as! CAGradientLayer }
+
+    var colors: [UIColor] = [] {
+        didSet { gradient.colors = colors.map { $0.cgColor } }
+    }
+    var startPoint: CGPoint = CGPoint(x: 0, y: 0) {
+        didSet { gradient.startPoint = startPoint }
+    }
+    var endPoint: CGPoint = CGPoint(x: 1, y: 1) {
+        didSet { gradient.endPoint = endPoint }
     }
 }

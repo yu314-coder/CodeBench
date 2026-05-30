@@ -285,7 +285,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
     // ── Collection view (replaces the prior insetGrouped UITableView) ──
     private var collectionView: UICollectionView!
-    private var dataSource: UICollectionViewDiffableDataSource<Int, Pkg.ID>!
+    private var dataSource: UICollectionViewDiffableDataSource<Int, String>!
 
     // Header zone
     private let headerContainer = UIView()
@@ -755,9 +755,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     }
 
     private func configureDataSource() {
-        dataSource = UICollectionViewDiffableDataSource<Int, Pkg.ID>(
+        dataSource = UICollectionViewDiffableDataSource<Int, String>(
             collectionView: collectionView
-        ) { [weak self] cv, indexPath, _ in
+        ) { [weak self] (cv: UICollectionView, indexPath: IndexPath, _: String) in
             let cell = cv.dequeueReusableCell(
                 withReuseIdentifier: LibraryCardCell.reuseID, for: indexPath) as! LibraryCardCell
             if let pkg = self?.sections[indexPath.section].rows[indexPath.row] {
@@ -926,7 +926,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         }
         sections = built
 
-        var snap = NSDiffableDataSourceSnapshot<Int, Pkg.ID>()
+        var snap = NSDiffableDataSourceSnapshot<Int, String>()
         for (idx, sec) in sections.enumerated() {
             snap.appendSections([idx])
             snap.appendItems(sec.rows.map { $0.id }, toSection: idx)

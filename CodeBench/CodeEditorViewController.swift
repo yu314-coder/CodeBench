@@ -337,6 +337,21 @@ final class CodeEditorViewController: UIViewController {
 
     private var currentLanguage: Language = .python
     private var chatMessages: [(role: String, text: String)] = []
+
+    // MARK: - AI Assist auto-run state
+    /// Per-VC re-entrancy latch for the AI auto-run / ReAct loop. While true,
+    /// no new auto-run turn may start (prevents overlap & run-away recursion).
+    private var chatAutoRunInFlight = false
+    /// Hard cap on ReAct follow-up turns (initial answer is depth 0).
+    private let chatMaxReActDepth = 3
+    /// UserDefaults key for the user-visible auto-run toggle. Absent = default.
+    private static let aiAutoRunDefaultsKey = "ai_autorun_enabled"
+    /// Current auto-run setting. Default OFF (safety: AI-initiated execution is opt-in).
+    private var aiAutoRunEnabled: Bool {
+        get { (UserDefaults.standard.object(forKey: Self.aiAutoRunDefaultsKey) as? Bool) ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: Self.aiAutoRunDefaultsKey) }
+    }
+
     // AI chat panel starts HIDDEN — the user explicitly toggles it on via the
     // "AI Assist" pill in the editor header bar.
     private var isAIChatVisible = false
@@ -495,6 +510,9 @@ final class CodeEditorViewController: UIViewController {
     private let chatStackView = UIStackView()
     private let chatInputField = UITextField()
     private let chatSendButton = UIButton(type: .system)
+    /// Header toggle exposing AI auto-run (so the user always knows the AI may
+    /// execute the python it writes). Default reflects aiAutoRunEnabled (OFF).
+    private let aiAutoRunSwitch = UISwitch()
     private var aiChatWidthConstraint: NSLayoutConstraint!
 
     // ── AI-chat file attachments ──────────────────────────────────────
@@ -2344,7 +2362,26 @@ final class CodeEditorViewController: UIViewController {
         closeChatButton.addTarget(self, action: #selector(toggleAIChat), for: .touchUpInside)
         closeChatButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let chatHeaderRow = UIStackView(arrangedSubviews: [chatTitleLabel, modelSelectorButton, closeChatButton])
+        // Auto-run toggle — visible so the user always knows the AI may
+        // execute the python it writes. Default reflects aiAutoRunEnabled (OFF).
+        // Placed in the chat header (a self-sizing horizontal stack) so there
+        // are no fragile manual constraints to break.
+        aiAutoRunSwitch.translatesAutoresizingMaskIntoConstraints = false
+        aiAutoRunSwitch.onTintColor = EditorTheme.accent
+        aiAutoRunSwitch.isOn = aiAutoRunEnabled
+        aiAutoRunSwitch.addTarget(self, action: #selector(aiAutoRunSwitchChanged(_:)), for: .valueChanged)
+        // Shrink the (chunky) UISwitch so it fits the narrow header without
+        // crowding the title.
+        aiAutoRunSwitch.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
+        aiAutoRunSwitch.accessibilityLabel = "Auto-run AI code"
+        let autoRunLabel = UILabel()
+        autoRunLabel.translatesAutoresizingMaskIntoConstraints = false
+        autoRunLabel.text = "Auto-run"
+        autoRunLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        autoRunLabel.textColor = UIColor(white: 0.7, alpha: 1.0)
+        autoRunLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let chatHeaderRow = UIStackView(arrangedSubviews: [chatTitleLabel, modelSelectorButton, autoRunLabel, aiAutoRunSwitch, closeChatButton])
         chatHeaderRow.axis = .horizontal
         chatHeaderRow.spacing = 8
         chatHeaderRow.alignment = .center
@@ -3931,7 +3968,8 @@ except Exception:
         _runWithCodeAndScene(code, scene: nil)
     }
 
-    private func _runWithCodeAndScene(_ code: String, scene: String?) {
+    private func _runWithCodeAndScene(_ code: String, scene: String?,
+                                      completion: ((_ output: String, _ imagePath: String?, _ hadError: Bool) -> Void)? = nil) {
         // Reset ANSI state so a color leaked by a previous crash can't
         // recolor the next run's output.
         terminalANSIState = ANSI.State()
@@ -4103,6 +4141,12 @@ except Exception:
                 let status = hasError ? "completed with errors" : "completed"
                 self.appendToTerminal("$ Execution \(status) in \(String(format: "%.3f", elapsed))s\n", isError: false)
                 self.setTerminalStatus(hasError ? .failure : .success)
+
+                // Hand the captured result back to any observer (the AI Assist
+                // auto-run path). Already on main; chart already shown above via
+                // showImageOutput when resultImagePath != nil — no extra preview
+                // call needed here.
+                completion?(output, resultImagePath, hasError)
             }
         }
     }
@@ -4445,7 +4489,7 @@ except Exception:
         let prompt = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)\n\nUser question: \(text)"
 
         let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor. Keep responses under 300 words."),
+            ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun." : "") Keep responses under 300 words."),
             ChatMessage(role: .user, content: prompt)
         ]
 
@@ -4579,6 +4623,16 @@ except Exception:
 
                     // Add Apply button if code block present
                     self.addApplyButtonIfCodeBlock(finalAnswer, below: answerLabel)
+
+                    // AI auto-run: if enabled and this answer contains a python
+                    // block, run it through the editor's own Run path and show
+                    // the result in the preview box. `messages` is the array
+                    // that produced this answer — pass it so the ReAct loop can
+                    // thread a follow-up turn. depth 0 = the initial answer.
+                    self.maybeAutoRunPython(from: finalAnswer,
+                                            answerLabel: answerLabel,
+                                            priorMessages: messages,
+                                            depth: 0)
                 case .failure(let error):
                     answerLabel.text = "❌ \(error.localizedDescription)"
                     answerLabel.textColor = EditorTheme.terminalError
@@ -4604,6 +4658,156 @@ except Exception:
             return nil
         }
         return String(text[codeRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Extract the body of the FIRST ```python / ```py / ```python3 / ```py3
+    /// fenced block in `text`. Returns nil if there is no python-tagged block
+    /// (ignores other languages). Tolerant of an absent trailing newline
+    /// before the closing fence.
+    private func extractPythonCodeBlock(_ text: String) -> String? {
+        // ```python / ```py / ```python3 / ```py3  (case-insensitive),
+        // then body, then ```
+        let pattern = "```(?:python3?|py3?)[ \\t]*\\r?\\n([\\s\\S]*?)```"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let codeRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        let code = String(text[codeRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return code.isEmpty ? nil : code
+    }
+
+    // MARK: - AI Assist: run the python the model wrote
+
+    /// If auto-run is enabled and `answer` contains a ```python block, run it
+    /// through the SAME path the Run button uses, show in-chat status, and
+    /// (if the loop is clean) feed the captured output back for one more turn.
+    private func maybeAutoRunPython(from answer: String,
+                                    answerLabel: UILabel,
+                                    priorMessages: [ChatMessage],
+                                    depth: Int) {
+        guard aiAutoRunEnabled else { return }
+        guard !chatAutoRunInFlight else { return }          // re-entrancy guard
+        guard let code = extractPythonCodeBlock(answer) else { return }
+        // Don't fight a manual Run: PythonRuntime.queue is serial so state is
+        // safe, but two pollers on the same _stream_stdout.txt interleave.
+        guard runButton.isEnabled else { return }
+
+        chatAutoRunInFlight = true
+        let status = self.addRunStatusLabel(below: answerLabel)  // "Running…"
+
+        // Reuse the editor's Run path (terminal streaming + preview + guards).
+        _runWithCodeAndScene(code, scene: nil) { [weak self] output, imagePath, hadError in
+            // completion already on main (see _runWithCodeAndScene).
+            guard let self else { return }
+            self.chatAutoRunInFlight = false
+
+            if hadError {
+                status.text = "✗ error"
+                status.textColor = EditorTheme.terminalError
+            } else {
+                status.text = imagePath != nil ? "✓ ran — chart in preview" : "✓ ran"
+                status.textColor = EditorTheme.terminalSuccess
+            }
+            self.scrollChatToBottom()
+
+            // --- ENHANCEMENT (ReAct): add-if-clean ---
+            self.continueReActIfEnabled(answer: answer,
+                                        priorMessages: priorMessages,
+                                        output: output,
+                                        producedChart: imagePath != nil,
+                                        hadError: hadError,
+                                        depth: depth)
+        }
+    }
+
+    /// Small status line ("Running…" → "✓ ran" / "✗ error") appended to the
+    /// chat under an assistant bubble. Returns the label so the caller can
+    /// mutate it when the run finishes.
+    @discardableResult
+    private func addRunStatusLabel(below label: UILabel) -> UILabel {
+        let status = UILabel()
+        status.translatesAutoresizingMaskIntoConstraints = false
+        status.font = .systemFont(ofSize: 12, weight: .medium)
+        status.textColor = UIColor(white: 0.6, alpha: 1.0)
+        status.text = "Running…"
+        status.numberOfLines = 1
+        chatStackView.addArrangedSubview(status)
+        scrollChatToBottom()
+        return status
+    }
+
+    /// ENHANCEMENT: feed run output back to the model for up to
+    /// `chatMaxReActDepth` corrective/explanatory turns. Guarded by depth +
+    /// `chatAutoRunInFlight`. Re-invokes the SAME runner.generate path.
+    private func continueReActIfEnabled(answer: String,
+                                        priorMessages: [ChatMessage],
+                                        output: String,
+                                        producedChart: Bool,
+                                        hadError: Bool,
+                                        depth: Int) {
+        guard aiAutoRunEnabled else { return }
+        guard depth + 1 < chatMaxReActDepth else { return }
+        guard let runner = llamaRunner else { return }
+        // Only spend a follow-up turn when there's something to act on:
+        // an error to fix, or output/chart to explain.
+        guard hadError || !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || producedChart else { return }
+
+        // Truncate captured output so we never blow the context window.
+        let cap = 4000
+        let captured = output.count > cap
+            ? String(output.suffix(cap)) + "\n…(truncated)…"
+            : output
+
+        var next = priorMessages
+        next.append(ChatMessage(role: .assistant, content: answer))
+        next.append(ChatMessage(role: .user, content:
+            "I ran your code. Output:\n```\n\(captured)\n```\n" +
+            "A chart was \(producedChart ? "produced and is shown in the preview" : "not produced"). " +
+            (hadError
+                ? "There appears to be an error — fix it and give the complete corrected ```python block."
+                : "Briefly explain the result. Only include a ```python block if you want to run something further.")))
+
+        // Fresh streaming bubble for the follow-up answer.
+        let followLabel = addChatBubble(text: "", isUser: false)
+        var buf = ""
+
+        runner.generate(messages: next, maxTokens: 2048, onToken: { [weak self] tok in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                buf += tok
+                followLabel.text = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.scrollChatToBottom()
+            }
+        }, completion: { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let full):
+                    var finalAnswer = full
+                    if let p = try? NSRegularExpression(pattern: "<think(?:ing)?>([\\s\\S]*?)</think(?:ing)?>", options: .caseInsensitive) {
+                        finalAnswer = p.stringByReplacingMatches(in: finalAnswer, range: NSRange(finalAnswer.startIndex..., in: finalAnswer), withTemplate: "")
+                    }
+                    finalAnswer = finalAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.renderMarkdownText(finalAnswer, into: followLabel)
+                    self.addApplyButtonIfCodeBlock(finalAnswer, below: followLabel)
+                    // Recurse: run any new python it wrote, at depth+1.
+                    self.maybeAutoRunPython(from: finalAnswer,
+                                            answerLabel: followLabel,
+                                            priorMessages: next,
+                                            depth: depth + 1)
+                case .failure(let error):
+                    // LlamaError.busy => another caller grabbed the runner; just stop.
+                    followLabel.text = "❌ \(error.localizedDescription)"
+                    followLabel.textColor = EditorTheme.terminalError
+                }
+                self.scrollChatToBottom()
+            }
+        })
+    }
+
+    @objc private func aiAutoRunSwitchChanged(_ sender: UISwitch) {
+        aiAutoRunEnabled = sender.isOn
     }
 
     // Stable key for objc_setAssociatedObject

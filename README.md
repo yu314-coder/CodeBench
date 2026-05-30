@@ -37,6 +37,20 @@ Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** —
 
 ## What's new
 
+### AI Assist chat — ChatGPT-style UI
+
+The in-editor AI chat was rebuilt around a streaming, conversational UI (open it from the editor toolbar):
+
+- **Collapsible "thinking"** — a reasoning model's `<think>` output folds into a pill you can expand; the final answer renders beneath it.
+- **Compiled LaTeX / math** — `$…$` and `$$…$$` in replies render as native vector glyphs via **SwiftMath**, inline in the chat bubble (no web view).
+- **Code cards** — fenced code blocks become titled cards with copy + an inline **Run** button.
+- **File attachments** — a 📎 in the composer attaches PDFs / text / source files (shown as chips above the input) for the model to read.
+- **Run Python from chat** — with *Auto-run AI code* enabled, Python the assistant emits is executed automatically and its output (text, charts, tables) flows straight into the preview pane.
+
+### IntelliSense — full module & member completion
+
+Autocomplete now indexes **every importable module** (not a hardcoded shortlist) and lazily fetches each module's members / attributes on demand from the live Python daemon — so typing a module name and `.` lists its real API surface, with kind-aware icons and signature help.
+
 ### Jupyter notebook editor (`.ipynb`)
 
 Tap any `.ipynb` file in the file browser → opens **directly in the editor box** as a cell-stacked notebook (not raw JSON in Monaco). Each cell has its own toolbar (Run ▶, move ↑/↓, insert +, delete 🗑, code↔markdown toggle 🅼/ƒ). Per-cell Run uses a **persistent in-process Python kernel** so variables defined in cell 1 are reachable from cell 2.
@@ -150,12 +164,12 @@ User-edited copies are detected by file-head SHA comparison and **never overwrit
 
 | Capability | How |
 |---|---|
-| **Monaco code editor** (real VS-Code editor) | WKWebView-hosted, Python IntelliSense, ~70-entry signature DB, hover docs, auto-resolve from Python daemon for numpy / scipy / sklearn / matplotlib / sympy. **Vim mode** (NORMAL/INSERT/VISUAL/V-LINE), inline AI completion (ghost text, 350 ms debounced) |
+| **Monaco code editor** (real VS-Code editor) | WKWebView-hosted Python IntelliSense — indexes **every importable module** with lazy member/attribute completion, ~70-entry signature DB, hover docs, auto-resolve from a Python daemon for numpy / scipy / sklearn / matplotlib / sympy. **Vim mode** (NORMAL/INSERT/VISUAL/V-LINE), inline AI completion (ghost text, 350 ms debounced) |
 | **Jupyter notebook editor** | Cell-stacked `.ipynb` editor embedded inline in the editor box. Per-cell Run + persistent in-process kernel, output capture (stdout/stderr/PNG/HTML/error), markdown cells with GFM + KaTeX, save back to nbformat v4 |
 | **Visual debugger** | Floating toolbar (Continue / Step Over / Step Into / Step Out / Stop) + variable inspector + call stack + golden current-line arrow in gutter. Driven by a Pdb subclass over signal files. Persisted breakpoints |
 | **Integrated terminal** | [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) backed by a PTY master/slave pair piping into the embedded CPython REPL |
 | **pdflatex on-device** | [busytex](https://github.com/busytex/busytex) WASM (pdftex 1.40.25 + xetex + luatex + bibtex8 + xdvipdfmx) running in a hidden WKWebView with TeX Live 2023 packages preloaded into MEMFS. A custom 23 MB overlay adds pgf / tikz / beamer / hyperref / mathtools / microtype / cleveref / fancyhdr / bbm / CJKutf8 / fontspec / ctex and ls-R index |
-| **Local + remote LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch + OpenAI / Anthropic / OpenAI-compat (Ollama, vLLM) HTTP streaming. Chat UI with streaming, conversation export. API keys in Keychain. Provider switchable via `⌘,` |
+| **Local + remote LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch + OpenAI / Anthropic / OpenAI-compat (Ollama, vLLM) HTTP streaming. ChatGPT-style UI: streaming, collapsible thinking, compiled LaTeX, code cards, 📎 file attachments, optional auto-run of AI-generated Python into the preview. Conversation export. API keys in Keychain. Provider switchable via `⌘,` |
 | **RAG engine** | In-process vector store for RAG over user-imported docs |
 | **Image generation** | Offline image models via ExecuTorch |
 | **Inline rich output** | `plt.show()` / `display(df)` / `Image.show()` etc. render in the output panel with append semantics — figures, DataFrames, plotly all flow through |
@@ -199,7 +213,7 @@ Every library below is bundled natively on-device. Click the library name to jum
 
 | Library | Type | Doc |
 |---|---|---|
-| **PyTorch 2.1.0** (patched) | Native iOS (arm64) — full `import torch`, tensors, autograd, nn, optim, JIT, FFT, distributions. Accelerate-backed linalg | [docs/libs/pytorch.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/pytorch.md) |
+| **PyTorch 2.1.2** (patched) | Native iOS (arm64) — full `import torch`, tensors, autograd, nn, optim, JIT, FFT, distributions. Accelerate-backed linalg | [docs/libs/pytorch.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/pytorch.md) |
 | **transformers 4.41.2** | Pure Python — HuggingFace BERT / GPT-2 / T5 / BART, train + generate on-device | [docs/libs/transformers.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/transformers.md) |
 | **tokenizers 0.19.1** | Native iOS (Rust) — first public iOS build, real BPE/WordPiece/Unigram trainers, PyO3 bindings | [docs/libs/tokenizers.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/tokenizers.md) |
 | **scikit-learn** | Pure NumPy (12k+ LOC, 40 modules, 38 metrics) | [docs/sklearn.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/sklearn.md) · [docs/libs/sklearn.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/sklearn.md) |
@@ -267,6 +281,8 @@ The AI subsystem (chat, `ai` builtin, inline code-completion) routes to one of f
 | **OpenAI-compat** | Any endpoint that speaks `chat/completions` SSE — Ollama, vLLM, llama.cpp server, LM Studio |
 
 API keys live in **Keychain** (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), one slot per provider. Ctrl-C in the terminal cancels in-flight HTTP requests and local generations symmetrically. Inline AI code-completion (ghost text, 350 ms debounced) uses whichever provider is configured.
+
+The chat surface is a **ChatGPT-style conversational UI**: streaming replies, a collapsible "thinking" pill for reasoning models, inline-compiled LaTeX/math (SwiftMath), copyable code cards with a Run button, 📎 file attachments (PDF / text / source), and — when *Auto-run AI code* is enabled — automatic execution of the Python the assistant writes, with its output (text, charts, tables) routed into the preview pane.
 
 - **GGUF models** via `llama.cpp` integrated as an XCFramework. Load any Llama / Mistral / Qwen / Phi model, chat with streaming tokens.
 - **ExecuTorch** backends for Apple-Core-ML / XNNPACK / kernel-optimized inference of PyTorch models.

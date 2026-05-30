@@ -75,22 +75,27 @@ final class SettingsViewController: UIViewController {
         // ── Editor ─────────────────────────────────────────────
         contentStack.addArrangedSubview(makeCard(title: "Editor",
                                                  icon: "chevron.left.forwardslash.chevron.right",
+                                                 footer: "Theme and font changes apply the next time the editor opens a file.",
                                                  rows: [
             sliderRow(title: "Font size",
+                      icon: "textformat.size",
                       value: Float(Settings.editorFontSize),
                       min: 9, max: 22, step: 1, unit: "pt") { v in
                 Settings.editorFontSize = Int(v)
             },
             segmentRow(title: "Theme",
                        options: ["Dark", "Light", "Auto"],
+                       subtitle: "Auto follows the iOS system appearance.",
                        selected: Settings.editorThemeIndex) { idx in
                 Settings.editorThemeIndex = idx
             },
             switchRow(title: "Word wrap",
+                      icon: "arrow.turn.down.right",
                       isOn: Settings.editorWordWrap) { on in
                 Settings.editorWordWrap = on
             },
             switchRow(title: "Auto-save",
+                      icon: "square.and.arrow.down",
                       subtitle: "Save current file every 5 seconds",
                       isOn: Settings.autoSaveEnabled) { on in
                 Settings.autoSaveEnabled = on
@@ -102,27 +107,38 @@ final class SettingsViewController: UIViewController {
                                                  icon: "terminal",
                                                  rows: [
             sliderRow(title: "Font size",
+                      icon: "textformat.size",
                       value: Float(Settings.terminalFontSize),
                       min: 9, max: 22, step: 1, unit: "pt") { v in
                 Settings.terminalFontSize = Int(v)
             },
             switchRow(title: "Visual bell",
+                      icon: "bell",
                       subtitle: "Flash on Ctrl+G instead of beep",
                       isOn: Settings.terminalVisualBell) { on in
                 Settings.terminalVisualBell = on
+            },
+            switchRow(title: "Confirm paste",
+                      icon: "doc.on.clipboard",
+                      subtitle: "Ask before pasting clipboard text into the shell",
+                      isOn: Settings.terminalConfirmPaste) { on in
+                Settings.terminalConfirmPaste = on
             },
         ]))
 
         // ── Manim render defaults ──────────────────────────────
         contentStack.addArrangedSubview(makeCard(title: "Manim render",
                                                  icon: "wand.and.stars",
+                                                 footer: "Applies to new renders only — existing videos keep their original settings.",
                                                  rows: [
             segmentRow(title: "Quality",
                        options: ["Low (480p)", "Med (720p)", "High (1080p)"],
+                       subtitle: "Higher quality renders slower and uses more storage.",
                        selected: Settings.manimQualityIndex) { idx in
                 Settings.manimQualityIndex = idx
             },
             sliderRow(title: "FPS",
+                      icon: "speedometer",
                       value: Float(Settings.manimFPS),
                       min: 10, max: 60, step: 5, unit: "fps") { v in
                 Settings.manimFPS = Int(v)
@@ -169,6 +185,11 @@ final class SettingsViewController: UIViewController {
                       destructive: false) { [weak self] in
                 self?.openCrashLog()
             },
+            buttonRow(title: "Reset all settings",
+                      subtitle: "Restore editor, terminal, and render defaults",
+                      destructive: true) { [weak self] in
+                self?.confirmResetSettings()
+            },
         ]))
 
         // ── AI Models — install custom GGUFs ───────────────────
@@ -192,6 +213,18 @@ final class SettingsViewController: UIViewController {
             },
         ]))
 
+        // ── Privacy & Data ─────────────────────────────────────
+        contentStack.addArrangedSubview(makeCard(title: "Privacy & Data",
+                                                 icon: "lock.shield",
+                                                 footer: "Browser data stays on this device and is never uploaded.",
+                                                 rows: [
+            buttonRow(title: "Browser history & cookies",
+                      subtitle: "Review or clear data saved by the in-app browser",
+                      destructive: false) { [weak self] in
+                self?.openBrowserData()
+            },
+        ]))
+
         // ── About ──────────────────────────────────────────────
         contentStack.addArrangedSubview(makeCard(title: "About",
                                                  icon: "info.circle",
@@ -206,6 +239,7 @@ final class SettingsViewController: UIViewController {
     // MARK: - Row builders
 
     private func sliderRow(title: String,
+                           icon: String? = nil,
                            value: Float,
                            min minV: Float, max maxV: Float, step: Float,
                            unit: String,
@@ -224,9 +258,10 @@ final class SettingsViewController: UIViewController {
         valueLabel.textAlignment = .right
         valueLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        let topRow = UIStackView(arrangedSubviews: [titleLabel, valueLabel])
+        let topRow = UIStackView(arrangedSubviews: rowIcon(icon) + [titleLabel, valueLabel])
         topRow.axis = .horizontal
         topRow.spacing = 8
+        topRow.alignment = .center
 
         let slider = UISlider()
         slider.minimumValue = minV
@@ -251,6 +286,7 @@ final class SettingsViewController: UIViewController {
     }
 
     private func switchRow(title: String,
+                           icon: String? = nil,
                            subtitle: String? = nil,
                            isOn: Bool,
                            onChange: @escaping (Bool) -> Void) -> UIView {
@@ -281,7 +317,7 @@ final class SettingsViewController: UIViewController {
         toggle.addAction(UIAction { _ in onChange(toggle.isOn) },
                          for: .valueChanged)
 
-        let stack = UIStackView(arrangedSubviews: [labelStack, toggle])
+        let stack = UIStackView(arrangedSubviews: rowIcon(icon) + [labelStack, toggle])
         stack.axis = .horizontal
         stack.spacing = 12
         stack.alignment = .center
@@ -293,6 +329,7 @@ final class SettingsViewController: UIViewController {
 
     private func segmentRow(title: String,
                             options: [String],
+                            subtitle: String? = nil,
                             selected: Int,
                             onChange: @escaping (Int) -> Void) -> UIView {
         let row = paddedRow()
@@ -311,7 +348,19 @@ final class SettingsViewController: UIViewController {
             onChange(segment.selectedSegmentIndex)
         }, for: .valueChanged)
 
-        let stack = UIStackView(arrangedSubviews: [titleLabel, segment])
+        let labelStack = UIStackView(arrangedSubviews: [titleLabel])
+        labelStack.axis = .vertical
+        labelStack.spacing = 2
+        if let subtitle = subtitle {
+            let sub = UILabel()
+            sub.text = subtitle
+            sub.font = .systemFont(ofSize: 12)
+            sub.textColor = dimColor
+            sub.numberOfLines = 0
+            labelStack.addArrangedSubview(sub)
+        }
+
+        let stack = UIStackView(arrangedSubviews: [labelStack, segment])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -385,6 +434,26 @@ final class SettingsViewController: UIViewController {
         return v
     }
 
+    /// Optional 16×16 accent glyph for a row's leading edge. Returns an
+    /// empty array when `name` is nil so call sites can splat it into a
+    /// stack with `rowIcon(icon) + [...]` and get today's layout back
+    /// unchanged. Tinted dim (not full accent) so it stays a quiet
+    /// affordance rather than competing with controls.
+    private func rowIcon(_ name: String?) -> [UIView] {
+        guard let name = name,
+              let img = UIImage(systemName: name) else { return [] }
+        let iv = UIImageView(image: img)
+        iv.tintColor = dimColor
+        iv.contentMode = .scaleAspectFit
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        iv.setContentHuggingPriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            iv.widthAnchor.constraint(equalToConstant: 16),
+            iv.heightAnchor.constraint(equalToConstant: 16),
+        ])
+        return [iv]
+    }
+
     private func pin(_ inner: UIView, in row: UIView) {
         NSLayoutConstraint.activate([
             inner.topAnchor.constraint(equalTo: row.topAnchor, constant: 12),
@@ -394,7 +463,7 @@ final class SettingsViewController: UIViewController {
         ])
     }
 
-    private func makeCard(title: String, icon: String, rows: [UIView]) -> UIView {
+    private func makeCard(title: String, icon: String, footer: String? = nil, rows: [UIView]) -> UIView {
         let card = UIView()
         card.backgroundColor = surfaceColor
         card.layer.cornerRadius = 14
@@ -417,9 +486,13 @@ final class SettingsViewController: UIViewController {
         ])
 
         let titleLabel = UILabel()
-        titleLabel.text = title
-        titleLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.textColor = dimColor
+        titleLabel.attributedText = NSAttributedString(
+            string: title.uppercased(),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: dimColor,
+                .kern: 0.8,
+            ])
 
         let header = UIStackView(arrangedSubviews: [iconView, titleLabel])
         header.axis = .horizontal
@@ -434,6 +507,22 @@ final class SettingsViewController: UIViewController {
         body.isLayoutMarginsRelativeArrangement = true
         body.layoutMargins = UIEdgeInsets(top: 12, left: 14, bottom: 4, right: 14)
         body.setCustomSpacing(8, after: header)
+
+        if let footer = footer {
+            let footerLabel = UILabel()
+            footerLabel.text = footer
+            footerLabel.font = .systemFont(ofSize: 12)
+            footerLabel.textColor = dimColor
+            footerLabel.numberOfLines = 0
+            let footerDivider = UIView()
+            footerDivider.backgroundColor = UIColor(white: 1, alpha: 0.05)
+            footerDivider.translatesAutoresizingMaskIntoConstraints = false
+            footerDivider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            body.addArrangedSubview(footerDivider)
+            body.addArrangedSubview(footerLabel)
+            body.setCustomSpacing(10, after: footerDivider)
+            body.setCustomSpacing(8, after: body.arrangedSubviews[body.arrangedSubviews.count - 3])
+        }
 
         card.addSubview(body)
         NSLayoutConstraint.activate([
@@ -479,7 +568,22 @@ final class SettingsViewController: UIViewController {
         sub.textColor = dimColor
         sub.numberOfLines = 0
 
-        let stack = UIStackView(arrangedSubviews: [title, sub])
+        let gear = UIImageView(image: UIImage(systemName: "slider.horizontal.3"))
+        gear.tintColor = accentColor
+        gear.contentMode = .scaleAspectFit
+        gear.translatesAutoresizingMaskIntoConstraints = false
+        gear.setContentHuggingPriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            gear.widthAnchor.constraint(equalToConstant: 22),
+            gear.heightAnchor.constraint(equalToConstant: 22),
+        ])
+
+        let titleRow = UIStackView(arrangedSubviews: [gear, title])
+        titleRow.axis = .horizontal
+        titleRow.spacing = 10
+        titleRow.alignment = .center
+
+        let stack = UIStackView(arrangedSubviews: [titleRow, sub])
         stack.axis = .vertical
         stack.spacing = 4
         return stack
@@ -605,6 +709,20 @@ final class SettingsViewController: UIViewController {
         for p in paths {
             try? FileManager.default.removeItem(atPath: p)
         }
+    }
+
+    private func confirmResetSettings() {
+        let alert = UIAlertController(
+            title: "Reset all settings?",
+            message: "Editor, terminal, and Manim render preferences return to their defaults. Your files, models, and caches are not affected.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
+            Settings.resetToDefaults()
+            self?.rebuild()
+            self?.showToast("Settings reset to defaults")
+        })
+        present(alert, animated: true)
     }
 
     private func openCrashLog() {
@@ -1096,6 +1214,26 @@ enum Settings {
     static var cachedPythonVersion: String {
         get { d.string(forKey: "settings.about.pythonVersion") ?? "Loading…" }
         set { d.set(newValue, forKey: "settings.about.pythonVersion") }
+    }
+
+    /// Clear the user-tunable keys so the computed getters fall back to
+    /// their in-code defaults. Deliberately scoped to settings this tab
+    /// owns — does NOT touch `settings.about.pythonVersion` (a launch
+    /// cache, not a preference). Posts once so observers refresh.
+    static func resetToDefaults() {
+        let keys = [
+            "settings.editor.fontSize",
+            "settings.editor.theme",
+            "settings.editor.wordWrap",
+            "settings.editor.autoSave",
+            "settings.terminal.fontSize",
+            "settings.terminal.visualBell",
+            "settings.terminal.confirmPaste",
+            "manim_quality",
+            "manim_fps",
+        ]
+        for k in keys { d.removeObject(forKey: k) }
+        post()
     }
 
     private static func post() {

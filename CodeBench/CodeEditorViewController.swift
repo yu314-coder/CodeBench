@@ -528,7 +528,15 @@ final class CodeEditorViewController: UIViewController {
     private let outputPlaymarkIcon = UIImageView()
     private let outputMetaLabel = UILabel()
     private weak var outputPlaceholderGridLayer: CALayer?
-    private let outputWebView: WKWebView = {
+    private lazy var outputWebView: WKWebView = self.makeOutputWebView()
+
+    /// Build a fresh output WKWebView. Used for the initial lazy creation
+    /// and by `rebuildOutputWebView()` when the pywebview "no cache" toggle
+    /// needs a brand-new browsing session. `PywebviewBridge.configure()`
+    /// selects the website data store: `.nonPersistent()` (ephemeral —
+    /// nothing is read or written) when no-cache is ON, `.default()`
+    /// (persistent) otherwise.
+    private func makeOutputWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
         // iOS 14+: per-navigation JS toggle on WKWebpagePreferences. The
         // older `preferences.javaScriptEnabled` is deprecated.
@@ -686,7 +694,7 @@ final class CodeEditorViewController: UIViewController {
         wv.clipsToBounds = true
         wv.translatesAutoresizingMaskIntoConstraints = false
         return wv
-    }()
+    }
     private let outputImageView: UIImageView = {
         let iv = UIImageView()
         iv.contentMode = .scaleAspectFit
@@ -7860,53 +7868,69 @@ except Exception:
         present(ac, animated: true)
     }
 
-    /// Gate output-webview loads through the "pywebview: no cache" dev
-    /// toggle. When the toggle is ON, wipe ALL website data (HTTP disk +
-    /// memory cache, localStorage / sessionStorage / IndexedDB, service
-    /// workers, cookies) from the web view's store *before* running
-    /// `load`, so nothing from a previous run is ever read back — every
-    /// pywebview run starts clean and nothing persists across runs. When
-    /// OFF, loads immediately and the cache behaves normally (kept + reused).
+    /// Prepare `outputWebView` for a pywebview page load according to the
+    /// "pywebview: no cache" dev toggle.
     ///
-    /// This is needed because `outputWebView` is built once and a
-    /// WKWebView's `websiteDataStore` is immutable after init, so the
-    /// toggle can't swap the store on the live view — clearing before each
-    /// load is what actually makes the toggle take effect mid-session.
-    private func loadInOutputWebView(host: String?, _ load: @escaping () -> Void) {
-        guard PywebviewBridge.disableCache else { load(); return }
-        let store = outputWebView.configuration.websiteDataStore
-        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-
-        guard let host = host?.lowercased(), !host.isEmpty else {
-            // Local file:// page (no host) — clear CACHE types globally.
-            // We avoid wiping cookies/localStorage store-wide because the
-            // output view shares the default store with the in-app browser.
-            let cacheTypes: Set<String> = [
-                WKWebsiteDataTypeDiskCache,
-                WKWebsiteDataTypeMemoryCache,
-                WKWebsiteDataTypeOfflineWebApplicationCache,
-                WKWebsiteDataTypeServiceWorkerRegistrations,
-            ]
-            store.removeData(ofTypes: cacheTypes,
-                             modifiedSince: Date(timeIntervalSince1970: 0)) { load() }
-            return
+    /// The previous "clear the store before each load" approach couldn't
+    /// fully work: a WKWebView's `websiteDataStore` is immutable after init,
+    /// the live WebContent process keeps localStorage/cookies in memory
+    /// (so clearing the store on the same instance doesn't take effect until
+    /// the process is replaced), and an ephemeral store still accumulates
+    /// state across runs within one webview instance.
+    ///
+    /// So when the toggle is ON we **rebuild a brand-new webview every run**.
+    /// `makeOutputWebView()` → `PywebviewBridge.configure()` gives it a fresh
+    /// `.nonPersistent()` (ephemeral) store, which reads nothing from before
+    /// and writes nothing to disk; a new instance per run also means run N+1
+    /// can't inherit run N's in-memory session. So Slido (and anything else)
+    /// opens as a clean browser each run. When OFF, we keep the persistent
+    /// webview (pages remember across runs) — rebuilding only to restore the
+    /// persistent store if the previous run left an ephemeral one behind.
+    ///
+    /// MUST be called before `PywebviewBridge.shared.bind(outputWebView)` and
+    /// the load, so the bridge binds (and the page loads into) the new view.
+    private func prepareOutputWebViewForLoad() {
+        let wantEphemeral = PywebviewBridge.disableCache
+        let isEphemeral = !outputWebView.configuration.websiteDataStore.isPersistent
+        if wantEphemeral {
+            rebuildOutputWebView()          // fresh, empty session every run
+            // Visible confirmation the toggle fired. If a site STILL
+            // remembers state after this prints, it's tracking server-side
+            // (IP / account), which no client-side reset can change.
+            appendToTerminal("$ [pywebview] no-cache ON — fresh private session (no cookies/cache from before)\n",
+                             isError: false)
+        } else if isEphemeral {
+            rebuildOutputWebView()          // toggle went OFF → restore persistent store
         }
+        // else: OFF + already persistent → keep it (remembers across runs)
+    }
 
-        // URL page (e.g. a Slido poll): wipe ALL website data — cookies,
-        // localStorage, sessionStorage, IndexedDB, cache, service workers —
-        // but ONLY for this site's records. That makes every run a fresh
-        // session there ("you already voted" state is cleared), while the
-        // in-app browser's OTHER sites keep their cookies/logins.
-        // (The wipe before run N+1 erases what run N saved, so re-running
-        // never restores the previous session — no using, no carrying-over.)
-        store.fetchDataRecords(ofTypes: allTypes) { records in
-            let victims = records.filter { rec in
-                let d = rec.displayName.lowercased()
-                return host == d || host.hasSuffix("." + d)
-            }
-            guard !victims.isEmpty else { load(); return }
-            store.removeData(ofTypes: allTypes, for: victims) { load() }
-        }
+    /// Tear down the current output webview and stand up a fresh one (with a
+    /// data store chosen by the no-cache toggle), re-applying the same
+    /// wiring `setupOutputPanel` installs: the script-message handlers, the
+    /// superview, and the layout constraints. The pywebview bridge's
+    /// navigation delegate is (re)attached by `bind()` on the subsequent load.
+    private func rebuildOutputWebView() {
+        let old = outputWebView
+        let wasHidden = old.isHidden
+        old.stopLoading()
+        old.removeFromSuperview()
+
+        let fresh = makeOutputWebView()
+        outputWebView = fresh
+        fresh.isHidden = wasHidden
+        // Re-add the per-instance script-message handlers (makeOutputWebView's
+        // config carries the user *scripts* but not these handlers).
+        fresh.configuration.userContentController.add(self, name: "saveVideo")
+        fresh.configuration.userContentController.add(self, name: "shareVideo")
+        fresh.configuration.userContentController.add(self, name: "clipboard")
+        outputPanel.addSubview(fresh)
+        NSLayoutConstraint.activate([
+            fresh.topAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor),
+            fresh.leadingAnchor.constraint(equalTo: outputPanel.leadingAnchor, constant: 1),
+            fresh.trailingAnchor.constraint(equalTo: outputPanel.trailingAnchor),
+            fresh.bottomAnchor.constraint(equalTo: outputPanel.bottomAnchor),
+        ])
     }
 
     private func showImageOutput(path: String?) {
@@ -7969,21 +7993,23 @@ except Exception:
            let urlForLoad = URL(string: path) {
             appendToTerminal("$ [output] loading URL \(path)\n", isError: false)
             setOutputEmptyStateHidden(true)
+            // No-cache ON → rebuild a fresh ephemeral webview FIRST, so the
+            // bridge binds and the page loads into the clean session (Slido
+            // etc. open with no prior cookies/localStorage, and nothing is
+            // saved). Must precede bind().
+            prepareOutputWebViewForLoad()
             outputWebView.isHidden = false
             outputExpandButton.isHidden = false
             // Bind the pywebview JS↔Python bridge to this WebView so
             // evaluate_js / js_api round-trips work against the live
             // page. Idempotent — safe to call on every load.
             PywebviewBridge.shared.bind(outputWebView)
-            // When "pywebview: no cache" is ON, force a fresh fetch that
-            // ignores any local/remote cached response (loadInOutputWebView
-            // has already wiped stored data for this load).
+            // When "pywebview: no cache" is ON, also force a fresh network
+            // fetch that ignores any local/remote cached response.
             let cachePolicy: NSURLRequest.CachePolicy = PywebviewBridge.disableCache
                 ? .reloadIgnoringLocalAndRemoteCacheData : .useProtocolCachePolicy
-            loadInOutputWebView(host: urlForLoad.host) { [weak self] in
-                self?.outputWebView.load(URLRequest(
-                    url: urlForLoad, cachePolicy: cachePolicy, timeoutInterval: 60))
-            }
+            outputWebView.load(URLRequest(
+                url: urlForLoad, cachePolicy: cachePolicy, timeoutInterval: 60))
             return
         }
 
@@ -7997,6 +8023,9 @@ except Exception:
 
         if ext == "html" {
             setOutputEmptyStateHidden(true)
+            // No-cache ON → fresh ephemeral webview first (before bind), so
+            // load_html pages also start clean each run.
+            prepareOutputWebViewForLoad()
             outputWebView.isHidden = false
             // Bind the pywebview bridge so evaluate_js / js_api work
             // against this page too (load_html signal lands here).
@@ -8013,18 +8042,14 @@ except Exception:
             // avoid copying into a Swift String unnecessarily.
             let parentDir = url.deletingLastPathComponent()
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-            // When "pywebview: no cache" is ON, loadInOutputWebView wipes
-            // prior web data first so a re-run starts clean (no stale
-            // localStorage / service-worker / cache from the last run).
-            // host: nil → local file page, cache-only clear.
-            loadInOutputWebView(host: nil) { [weak self] in
-                guard let self = self else { return }
-                if fileSize > 0 && fileSize < 20 * 1024 * 1024,
-                   let html = try? String(contentsOf: url, encoding: .utf8) {
-                    self.outputWebView.loadHTMLString(html, baseURL: parentDir)
-                } else {
-                    self.outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
-                }
+            // The fresh webview from prepareOutputWebViewForLoad() (when
+            // no-cache is ON) already guarantees a clean session, so load
+            // directly.
+            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
+               let html = try? String(contentsOf: url, encoding: .utf8) {
+                outputWebView.loadHTMLString(html, baseURL: parentDir)
+            } else {
+                outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
             }
         } else if ext == "pdf" {
             // PDFKit's PDFView — native multi-page continuous scroll,

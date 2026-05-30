@@ -7860,6 +7860,39 @@ except Exception:
         present(ac, animated: true)
     }
 
+    /// Gate output-webview loads through the "pywebview: no cache" dev
+    /// toggle. When the toggle is ON, wipe ALL website data (HTTP disk +
+    /// memory cache, localStorage / sessionStorage / IndexedDB, service
+    /// workers, cookies) from the web view's store *before* running
+    /// `load`, so nothing from a previous run is ever read back — every
+    /// pywebview run starts clean and nothing persists across runs. When
+    /// OFF, loads immediately and the cache behaves normally (kept + reused).
+    ///
+    /// This is needed because `outputWebView` is built once and a
+    /// WKWebView's `websiteDataStore` is immutable after init, so the
+    /// toggle can't swap the store on the live view — clearing before each
+    /// load is what actually makes the toggle take effect mid-session.
+    private func loadInOutputWebView(_ load: @escaping () -> Void) {
+        guard PywebviewBridge.disableCache else { load(); return }
+        // Clear CACHE types only (not cookies/localStorage) — the output
+        // view shares the default store with the in-app browser, so wiping
+        // everything would log the user out there. This targets exactly
+        // the "loads the cache from before" symptom: the HTTP disk/memory
+        // cache, the offline app cache, and service-worker response caches.
+        let cacheTypes: Set<String> = [
+            WKWebsiteDataTypeDiskCache,
+            WKWebsiteDataTypeMemoryCache,
+            WKWebsiteDataTypeOfflineWebApplicationCache,
+            WKWebsiteDataTypeServiceWorkerRegistrations,
+        ]
+        outputWebView.configuration.websiteDataStore.removeData(
+            ofTypes: cacheTypes,
+            modifiedSince: Date(timeIntervalSince1970: 0)) {
+            // completionHandler is delivered on the main queue
+            load()
+        }
+    }
+
     private func showImageOutput(path: String?) {
         // Hide everything first
         outputImageView.isHidden = true
@@ -7926,7 +7959,15 @@ except Exception:
             // evaluate_js / js_api round-trips work against the live
             // page. Idempotent — safe to call on every load.
             PywebviewBridge.shared.bind(outputWebView)
-            outputWebView.load(URLRequest(url: urlForLoad))
+            // When "pywebview: no cache" is ON, force a fresh fetch that
+            // ignores any local/remote cached response (loadInOutputWebView
+            // has already wiped stored data for this load).
+            let cachePolicy: NSURLRequest.CachePolicy = PywebviewBridge.disableCache
+                ? .reloadIgnoringLocalAndRemoteCacheData : .useProtocolCachePolicy
+            loadInOutputWebView { [weak self] in
+                self?.outputWebView.load(URLRequest(
+                    url: urlForLoad, cachePolicy: cachePolicy, timeoutInterval: 60))
+            }
             return
         }
 
@@ -7956,11 +7997,17 @@ except Exception:
             // avoid copying into a Swift String unnecessarily.
             let parentDir = url.deletingLastPathComponent()
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
-               let html = try? String(contentsOf: url, encoding: .utf8) {
-                outputWebView.loadHTMLString(html, baseURL: parentDir)
-            } else {
-                outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
+            // When "pywebview: no cache" is ON, loadInOutputWebView wipes
+            // prior web data first so a re-run starts clean (no stale
+            // localStorage / service-worker / cache from the last run).
+            loadInOutputWebView { [weak self] in
+                guard let self = self else { return }
+                if fileSize > 0 && fileSize < 20 * 1024 * 1024,
+                   let html = try? String(contentsOf: url, encoding: .utf8) {
+                    self.outputWebView.loadHTMLString(html, baseURL: parentDir)
+                } else {
+                    self.outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
+                }
             }
         } else if ext == "pdf" {
             // PDFKit's PDFView — native multi-page continuous scroll,

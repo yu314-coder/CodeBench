@@ -311,7 +311,8 @@ final class SystemInfoViewController: UIViewController {
               let rowsIndex = cardStack.arrangedSubviews.firstIndex(of: card.rowsStack)
         else { return }
 
-        let spark = SysInfoSparkline()
+        // Memory GRAPH (sparkline) intentionally omitted per user request —
+        // we keep only the static jetsam-ceiling gauge + numeric rows.
         let bar = SysInfoProgressBar()
 
         let caption = UILabel()
@@ -319,15 +320,13 @@ final class SystemInfoViewController: UIViewController {
         caption.font = UIFont.systemFont(ofSize: 10, weight: .medium).rounded
         caption.textColor = dimColor
 
-        let block = UIStackView(arrangedSubviews: [spark, caption, bar])
+        let block = UIStackView(arrangedSubviews: [caption, bar])
         block.axis = .vertical
         block.spacing = 6
-        block.setCustomSpacing(8, after: spark)
 
         // Insert just before the rowsStack so visuals sit under the title.
         cardStack.insertArrangedSubview(block, at: rowsIndex)
 
-        memorySparkline = spark
         memoryCeilingBar = bar
         updateMemoryVisuals()   // seed immediately so it isn't empty pre-first-tick
     }

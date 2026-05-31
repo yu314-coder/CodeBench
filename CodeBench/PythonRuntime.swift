@@ -1218,6 +1218,14 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
         setenv("PYTHONHOME", pythonRoot, 1)
         setenv("PYTHONPATH", pythonPath, 1)
         setenv("PYTHONNOUSERSITE", "1", 1)
+        // Force UTF-8 mode. In Python 3.14 the default open()/stdio encoding
+        // follows the C locale, which on iOS is ASCII — so user code doing
+        // open(file) on a UTF-8 file dies with "'ascii' codec can't decode
+        // byte 0xe2…". PYTHONUTF8=1 makes UTF-8 the default everywhere.
+        setenv("PYTHONUTF8", "1", 1)
+        setenv("PYTHONIOENCODING", "utf-8", 1)
+        setenv("LANG", "en_US.UTF-8", 1)
+        setenv("LC_CTYPE", "en_US.UTF-8", 1)
         // PYTHONDONTWRITEBYTECODE=0 + PYTHONPYCACHEPREFIX=<writable dir>
         // lets Python compile .py → .pyc and cache the result in
         // ~/Documents/.pycache/ (PEP 3147). The bundle's site-packages

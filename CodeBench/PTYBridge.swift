@@ -361,6 +361,9 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
         setenv("CLICOLOR_FORCE",    "1",               1)
         setenv("PYTHONUNBUFFERED",  "1",               1)
         setenv("PYTHONIOENCODING",  "utf-8",           1)
+        setenv("PYTHONUTF8",        "1",               1)   // iOS C-locale is ASCII → force UTF-8 default
+        setenv("LANG",              "en_US.UTF-8",     1)
+        setenv("LC_CTYPE",          "en_US.UTF-8",     1)
         setenv("COLUMNS",           String(cols),      1)
         setenv("LINES",             String(rows),      1)
         // Hint to pip and friends to not buffer

@@ -9174,6 +9174,10 @@ Output format rules:
         let task = downloadSession.downloadTask(with: downloadURL)
         downloadTask = task
         downloadSlot = slot
+        lastDownloadPercent = -1
+        // Mirror progress onto the editor's model button so a download started
+        // from the AI-chat model menu is visible there too.
+        editorController?.updateModelName("\(slot.title) · starting…")
         setLoadingState(true, message: "Downloading \(downloadURL.lastPathComponent)...")
         task.resume()
     }
@@ -9451,6 +9455,19 @@ Output format rules:
     // without the editor having to poll us.
 
     private var pendingAutoLoadSlot: ModelSlot?
+    /// Last integer download percent pushed to the UI — throttles the
+    /// per-chunk progress callbacks so we only refresh on a real change.
+    private var lastDownloadPercent = -1
+
+    /// Reset the editor's model button after a download ends without a load
+    /// (failure / cancel) so it doesn't stay stuck on "… 42%".
+    private func restoreEditorModelLabel() {
+        if let loaded = loadedModelSlot {
+            editorController?.updateModelName(loaded.title)
+        } else {
+            editorController?.updateModelName(selectedModelSlot.title + " (not loaded)")
+        }
+    }
 
     fileprivate func syncEditorModelState() {
         editorController?.downloadedModelSlots = Set(modelURLs.keys)
@@ -9820,6 +9837,7 @@ extension GameViewController: URLSessionDownloadDelegate {
                 try? FileManager.default.removeItem(at: location)
                 self.downloadTask = nil
                 self.downloadSlot = nil
+                restoreEditorModelLabel()
                 return
             }
 
@@ -9848,6 +9866,7 @@ extension GameViewController: URLSessionDownloadDelegate {
             filesManagerController?.reloadEntries()
         } catch {
             setLoadingState(false, message: "Download failed: \(error.localizedDescription)")
+            restoreEditorModelLabel()
         }
 
         self.downloadTask = nil
@@ -9876,7 +9895,13 @@ extension GameViewController: URLSessionDownloadDelegate {
         guard totalBytesExpectedToWrite > 0 else { return }
         let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
         let percent = Int(progress * 100)
+        guard percent != lastDownloadPercent else { return }
+        lastDownloadPercent = percent
         updateStatus("Downloading... \(percent)%")
+        // Live progress on the editor's model button (visible in the AI chat).
+        if let slot = downloadSlot {
+            editorController?.updateModelName("\(slot.title) · \(percent)%")
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -9884,6 +9909,7 @@ extension GameViewController: URLSessionDownloadDelegate {
         setLoadingState(false, message: "Download failed: \(error.localizedDescription)")
         self.downloadTask = nil
         self.downloadSlot = nil
+        restoreEditorModelLabel()
     }
 }
 

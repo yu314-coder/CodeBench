@@ -2381,10 +2381,26 @@ final class CodeEditorViewController: UIViewController {
         autoRunLabel.textColor = UIColor(white: 0.7, alpha: 1.0)
         autoRunLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let chatHeaderRow = UIStackView(arrangedSubviews: [chatTitleLabel, modelSelectorButton, autoRunLabel, aiAutoRunSwitch, closeChatButton])
-        chatHeaderRow.axis = .horizontal
+        // Header split into two rows so nothing gets squeezed in a narrow
+        // panel: row 1 = title + auto-run + close; row 2 = the model selector
+        // on its own, full-width and easy to find/tap (pick or download a
+        // model). The old single 5-item row crammed the model pill until it
+        // was nearly unreadable.
+        chatTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        chatTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let titleRow = UIStackView(arrangedSubviews: [chatTitleLabel, autoRunLabel, aiAutoRunSwitch, closeChatButton])
+        titleRow.axis = .horizontal
+        titleRow.spacing = 8
+        titleRow.alignment = .center
+
+        modelSelectorButton.setContentHuggingPriority(.required, for: .horizontal)
+        let modelRow = UIStackView(arrangedSubviews: [modelSelectorButton, UIView()])
+        modelRow.axis = .horizontal
+        modelRow.alignment = .center
+
+        let chatHeaderRow = UIStackView(arrangedSubviews: [titleRow, modelRow])
+        chatHeaderRow.axis = .vertical
         chatHeaderRow.spacing = 8
-        chatHeaderRow.alignment = .center
         chatHeaderRow.translatesAutoresizingMaskIntoConstraints = false
 
         aiChatContainer.addSubview(chatHeaderRow)
@@ -4486,10 +4502,21 @@ except Exception:
         for att in attachments {
             attachmentBlock += "\n\nAttached file `\(att.name)`:\n```\n\(att.text)\n```"
         }
-        let prompt = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)\n\nUser question: \(text)"
+        // Budget the file + attachment context to the loaded model's window so
+        // a big open file can't trip "prompt exceeds context length" on a short
+        // message. Reserve room for the system prompt and the generated answer.
+        let ctxTokens = max(2048, Int(llamaRunner?.loadedContextSize ?? 4096))
+        let genReserve = min(2048, max(512, ctxTokens / 4))
+        let ctxCharBudget = max(1500, (ctxTokens - genReserve - 400) * 3)
+        var contextBlock = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)"
+        if contextBlock.count > ctxCharBudget {
+            contextBlock = String(contextBlock.prefix(ctxCharBudget))
+                + "\n…[context truncated to fit the model — load one with a larger context for the whole file]"
+        }
+        let prompt = "\(contextBlock)\n\nUser question: \(text)"
 
         let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun." : "") Keep responses under 300 words."),
+            ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun. To display a plot or any visual, use matplotlib (import matplotlib.pyplot as plt; …; plt.show()) — it renders directly in the preview pane. Do NOT use pywebview, HTML, or a web view to show charts or images. To plot a function, evaluate it over a numpy array — e.g. x = np.linspace(-10, 10, 200); plt.plot(x, x) — never pass a Python function object to plt.plot." : "") Keep responses under 300 words."),
             ChatMessage(role: .user, content: prompt)
         ]
 
@@ -4524,7 +4551,7 @@ except Exception:
         // Create answer label (streams below the thinking pill)
         let answerLabel = addChatBubble(text: "", isUser: false)
 
-        runner.generate(messages: messages, maxTokens: 2048, onToken: { [weak self] token in
+        runner.generate(messages: messages, maxTokens: genReserve, onToken: { [weak self] token in
             rawBuffer += token
 
             // Parse <think>...</think> tags
@@ -7209,6 +7236,24 @@ except Exception:
     }
 
     @discardableResult
+    /// Make a chat message label copyable: long-press copies its full text to
+    /// the clipboard. The prose label is a plain UILabel with no copy
+    /// affordance otherwise (code cards already have their own copy button).
+    private func attachCopyGesture(to label: UILabel) {
+        label.isUserInteractionEnabled = true
+        label.addGestureRecognizer(
+            UILongPressGestureRecognizer(target: self, action: #selector(copyChatMessage(_:))))
+    }
+
+    @objc private func copyChatMessage(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began,
+              let label = g.view as? UILabel,
+              let text = label.text, !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        UISelectionFeedbackGenerator().selectionChanged()
+        showToast("Copied", near: label)
+    }
+
     private func addChatBubble(text: String, isUser: Bool) -> UILabel {
         if isUser {
             // ── User message: right-aligned pill (ChatGPT style) ──
@@ -7219,6 +7264,7 @@ except Exception:
             label.numberOfLines = 0
             label.lineBreakMode = .byWordWrapping
             label.translatesAutoresizingMaskIntoConstraints = false
+            attachCopyGesture(to: label)   // long-press to copy the message
 
             let bubble = UIView()
             bubble.backgroundColor = UIColor(red: 0.25, green: 0.25, blue: 0.30, alpha: 1) // dark pill
@@ -7275,6 +7321,7 @@ except Exception:
             label.numberOfLines = 0
             label.lineBreakMode = .byWordWrapping
             label.translatesAutoresizingMaskIntoConstraints = false
+            attachCopyGesture(to: label)   // long-press to copy the reply
 
             let wrapper = UIView()
             wrapper.translatesAutoresizingMaskIntoConstraints = false

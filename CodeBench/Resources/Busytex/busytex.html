@@ -155,10 +155,21 @@
             sendLog("[busytex] compile exit=" + data.exit_code + " (no pdf)");
           }
           var pc2 = pendingCompile; pendingCompile = null;
+          // Coerce every field to a primitive WKWebView can serialize back to
+          // Swift. A NaN/undefined exit_code, or a pdftex error log carrying
+          // lone UTF-16 surrogates / control bytes (common when a compile
+          // fails), makes callAsyncJavaScript reject the whole result with
+          // WKErrorDomain Code=5 "unsupported type" — losing the log + status.
+          var safeStatus = (typeof data.exit_code === "number" && isFinite(data.exit_code))
+            ? (data.exit_code | 0) : -1;
+          var safeLog = "";
+          try { safeLog = String(data.log == null ? "" : data.log); } catch (e) { safeLog = ""; }
+          safeLog = safeLog.replace(/[\uD800-\uDFFF]/g, "�")
+                           .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
           pc2.resolve({
-            status: data.exit_code === 0 ? 0 : data.exit_code,
-            log: data.log || "",
-            pdfBase64: pdfB64
+            status: safeStatus,
+            log: safeLog,
+            pdfBase64: (typeof pdfB64 === "string" ? pdfB64 : "")
           });
           // Drop the large message payload now that we've consumed it —
           // pdfBytes shares the Transferred ArrayBuffer from the worker,

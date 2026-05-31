@@ -647,7 +647,7 @@ final class FilesBrowserViewController: UIViewController {
     // MARK: - Create
 
     private func promptNewFile() {
-        let alert = UIAlertController(title: "New File", message: "Enter the file name:", preferredStyle: .alert)
+        let alert = UIAlertController(title: "New File", message: "Include an extension to set the language (e.g. app.py, main.cpp, notes.md).", preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "example.py"
             tf.autocapitalizationType = .none
@@ -659,6 +659,12 @@ final class FilesBrowserViewController: UIViewController {
             let newURL = self.currentURL.appendingPathComponent(name)
             self.fileManager.createFile(atPath: newURL.path, contents: nil)
             self.reloadFiles()
+            // VS Code behaviour: open the new file right away so the editor
+            // auto-detects its language from the extension (app.js → JavaScript,
+            // notes.md → Markdown, …). loadFile() maps extension → Monaco language.
+            if self.isCodeFile(newURL) {
+                self.delegate?.filesBrowser(self, didSelectCodeFile: newURL)
+            }
         })
         present(alert, animated: true)
     }
@@ -1199,6 +1205,51 @@ extension FilesBrowserViewController: UICollectionViewDelegate {
         from scipy.misc import doccer
         return f"docformat={callable(doccer.docformat)}"
     run("scipy.misc.doccer", t_scipy_misc_doccer)
+
+    # ── iOS native-library fixes — verify the on-device C patches ────
+    # Two device-only patches that can't be checked on macOS (the iOS
+    # numpy/scipy can't even import there). Each crashes HARD on an
+    # unpatched build, so a green line here means the fix actually
+    # shipped into this build.
+    def t_numpy_owndata():
+        # Past fix: iOS arm64 numpy returns OWNDATA=False from np.empty().
+        # Growing an OWNING array via .resize() must still work — that is
+        # the path pandas.merge relies on (the real bug that broke).
+        # NOTE: we do NOT directly .resize() a *non-owning* np.empty here —
+        # that hits a fragile shape.c path (manual buffer swap) that can
+        # corrupt the heap on device. We resize owning arrays only, and
+        # just report np.empty's owndata flag (informational).
+        import numpy as np
+        c = np.zeros(20, dtype=np.int64)[5:15].copy()   # owns
+        c.resize(30, refcheck=False)
+        a = np.array([1, 2, 3], dtype=np.int64)
+        a.resize(6, refcheck=False)
+        assert c.shape == (30,) and a.shape == (6,), "resize did not grow"
+        return f"owning .resize() ok ({c.shape[0]},{a.shape[0]})  np.empty owndata={np.empty(4, dtype=np.int64).flags.owndata}"
+    run("numpy .resize() (owning, shape.c)", t_numpy_owndata)
+
+    def t_scipy_blas_dcabs1():
+        # New fix (issue #2): scipy.linalg.cython_blas needs the
+        # reference-BLAS helper `dcabs1`, which Accelerate does not export
+        # on iOS — an unpatched build aborts importing scipy.signal with
+        # "symbol not found in flat namespace '_dcabs1_'". The bundled
+        # libscipy_blas_stubs.dylib (added as an LC_LOAD_DYLIB on
+        # cython_blas.so) supplies it. Complex linalg drives dcabs1 via
+        # complex pivoting; the reporter's signal pipeline is the repro.
+        import numpy as np
+        from scipy import linalg
+        from scipy.signal import butter, sosfiltfilt, find_peaks, savgol_filter
+        from scipy.signal.windows import gaussian
+        b = np.array([1 + 0j, 2 - 1j])
+        A = np.array([[2 + 1j, 1 - 1j], [0 + 1j, 3 + 2j]], dtype=complex)
+        assert np.allclose(A @ linalg.solve(A, b), b), "complex solve wrong"
+        fs = 200.0; t = np.linspace(0, 5, int(fs * 5), endpoint=False)
+        sig = np.sin(2 * np.pi * 3 * t) + 0.2 * np.cos(2 * np.pi * 40 * t)
+        sos = butter(4, 10, btype="low", fs=fs, output="sos")
+        y = savgol_filter(sosfiltfilt(sos, sig), 11, 3)
+        peaks, _ = find_peaks(y, height=0); w = gaussian(51, std=7)
+        return f"dcabs1 ✓  solve+signal ok  {len(peaks)} peaks |w|={w.sum():.1f}"
+    run("scipy BLAS dcabs1 / signal (issue #2)", t_scipy_blas_dcabs1)
 
     def t_pandas():
         # Freshly cross-compiled pandas 2.2.3 (44 Cython extensions

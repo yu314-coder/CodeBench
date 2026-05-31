@@ -19,7 +19,7 @@ final class GradientTileView: UIView {
 
 /// Inset label used as a pill (version / badge). Replaces the prior
 /// detail-view makePill for list use; the detail view keeps its own.
-final class PaddedLabel: UILabel {
+private final class PaddedLabel: UILabel {
     var inset = UIEdgeInsets(top: 2, left: 7, bottom: 2, right: 7)
     func configure(font: UIFont) {
         self.font = font

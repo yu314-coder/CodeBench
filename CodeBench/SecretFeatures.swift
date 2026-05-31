@@ -1,5 +1,6 @@
 import UIKit
 import QuartzCore
+import CoreImage
 
 // MARK: - Secret features hub
 //
@@ -475,8 +476,11 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         table.tableFooterView = footer
 
         // Refresh memory/info rows every second while visible.
+        // Refresh just the live values in the on-screen rows every second.
+        // (Previously this called table.reloadData(), which on iPad reset the
+        // scroll position — the panel kept jumping back to the top.)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.table.reloadData()
+            self?.refreshLiveValues()
         }
 
         // Lightweight FPS sampler owned by this VC (does not couple to the
@@ -495,6 +499,29 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             liveFPS = Double(fpsFrames) / dt
             fpsFrames = 0
             fpsWindowStart = now
+        }
+    }
+
+    /// Re-evaluate only the `.info` rows that are currently on screen and write
+    /// their fresh value straight into the existing cell. No table.reloadData(),
+    /// so the scroll position and any selection are preserved — this is what
+    /// stops the iPad "panel scrolls back to the top every second" behaviour.
+    private func refreshLiveValues() {
+        guard let visible = table.indexPathsForVisibleRows else { return }
+        for ip in visible {
+            guard ip.section < sections.count,
+                  ip.row < sections[ip.section].rows.count,
+                  let cell = table.cellForRow(at: ip) else { continue }
+            if case .info(let key, let value) = sections[ip.section].rows[ip.row] {
+                var cfg = UIListContentConfiguration.valueCell()
+                cfg.text = key
+                cfg.secondaryText = value()
+                cfg.textProperties.color = Self.fg
+                cfg.textProperties.font = .systemFont(ofSize: 14, weight: .regular)
+                cfg.secondaryTextProperties.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+                cfg.secondaryTextProperties.color = Self.monoVal
+                cell.contentConfiguration = cfg
+            }
         }
     }
 
@@ -572,6 +599,16 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
     @objc private func close()  { dismiss(animated: true) }
     @objc private func reload() { buildSections(); table.reloadData() }
 
+    /// Present the native QR-code generator (CoreImage CIQRCodeGenerator —
+    /// instant, no Python round-trip). The bundled pure-Python `qrcode` lib
+    /// stays available for use inside scripts.
+    fileprivate func presentQRGenerator() {
+        let nav = UINavigationController(rootViewController: QRGeneratorViewController())
+        nav.modalPresentationStyle = .formSheet
+        nav.navigationBar.tintColor = Self.actionTint
+        present(nav, animated: true)
+    }
+
     // MARK: - Section builder
 
     private func buildSections() {
@@ -587,6 +624,14 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                 .info(key: "Thermal",   value: { Self.thermalString() }),
                 .info(key: "Low power", value: { ProcessInfo.processInfo.isLowPowerModeEnabled ? "ON" : "off" }),
                 .info(key: "Free disk", value: { Self.formatBytes(Self.freeDiskBytes()) }),
+            ]),
+
+            // ── Tools ─────────────────────────────────────────────
+            Section(title: "Tools", icon: "qrcode", rows: [
+                .action(title: "QR Code Generator",
+                        subtitle: "URL or word list → scannable QR images you can save") { vc in
+                    vc.presentQRGenerator()
+                },
             ]),
 
             // ── Live memory ───────────────────────────────────────
@@ -632,14 +677,25 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
                         "print('\\n'.join(sorted(os.listdir(site))) if site else '(no site-packages on sys.path)')")
                 },
                 .action(title: "Reset manim / pyav state",
-                        subtitle: "Drop modules + flush Cairo/Pango/numpy caches") { vc in
-                    vc.runPython("import offlinai_shell; offlinai_shell._codebench_force_kill(); print('reset complete')")
+                        subtitle: "Close figures, flush plotly / torch / tqdm caches, force GC") { vc in
+                    vc.runPython("import offlinai_shell; offlinai_shell._post_script_cleanup(); print('cleanup complete')",
+                                 title: "Reset manim / pyav")
                 },
-                .action(title: "Run smoke test",
-                        subtitle: "Execute /Volumes/D/OfflinAi/test_new_additions.py if present") { vc in
+                .action(title: "Run import smoke test",
+                        subtitle: "Import the core bundled libraries and report pass / fail") { vc in
                     vc.runPython(
-                        "import os, runpy; p = '/Volumes/D/OfflinAi/test_new_additions.py'; " +
-                        "runpy.run_path(p, run_name='__main__') if os.path.exists(p) else print('test file not bundled')")
+                        "import importlib, time\n" +
+                        "mods=['numpy','scipy','pandas','statsmodels','sympy','networkx','matplotlib','PIL','sklearn','shapely','pint','uncertainties','qrcode']\n" +
+                        "ok=[]; bad=[]\n" +
+                        "for m in mods:\n" +
+                        "    try:\n" +
+                        "        t=time.time(); importlib.import_module(m); ok.append('  + %s (%.0f ms)' % (m,(time.time()-t)*1000))\n" +
+                        "    except Exception as e:\n" +
+                        "        bad.append('  x %s: %s: %s' % (m, type(e).__name__, e))\n" +
+                        "print('PASS %d/%d' % (len(ok), len(mods)))\n" +
+                        "print('\\n'.join(ok))\n" +
+                        "print('\\nFAIL:\\n'+'\\n'.join(bad) if bad else '\\nall core libraries import cleanly')",
+                        title: "Smoke test")
                 },
             ]),
 
@@ -779,14 +835,16 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
 
     // MARK: - Helpers
 
-    fileprivate func runPython(_ code: String) {
-        // Stream output back to the terminal — this is the same path
-        // the Run button uses. We don't surface a "completed" toast
-        // because the user will see the print() lands in the terminal.
-        toast("running…")
-        DispatchQueue.global(qos: .userInitiated).async {
-            _ = PythonRuntime.shared.execute(code: code, targetScene: nil, onOutput: { _ in })
-        }
+    /// Run Python and show its captured stdout/stderr in a sheet. The dev
+    /// panel is presented over the terminal, so surfacing the output here is
+    /// the only way the user actually sees what a button did (the old
+    /// fire-and-forget path discarded it).
+    fileprivate func runPython(_ code: String, title: String = "Output") {
+        let nav = UINavigationController(
+            rootViewController: PythonOutputViewController(title: title, runningCode: code))
+        nav.modalPresentationStyle = .pageSheet
+        nav.navigationBar.tintColor = Self.actionTint
+        present(nav, animated: true)
     }
 
     fileprivate func toast(_ msg: String) {
@@ -1018,5 +1076,327 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         case .toggle(_, let getter, let setter): setter(!getter()); t.reloadRows(at: [ip], with: .none)
         default: break
         }
+    }
+}
+
+// MARK: - QR Code generator
+
+/// Type a URL or text — one entry per line for a batch — generate scannable
+/// QR images, and save / share them. Uses CoreImage's `CIQRCodeGenerator`, so
+/// it's instant and needs no Python round-trip. (A pure-Python `qrcode` lib is
+/// also bundled for use inside scripts.)
+final class QRGeneratorViewController: UIViewController, UITextViewDelegate {
+
+    private let bg     = UIColor(red: 0.039, green: 0.039, blue: 0.059, alpha: 1.0)
+    private let cardBg = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1.0)
+    private let fg     = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)
+    private let muted  = UIColor(red: 0.420, green: 0.420, blue: 0.502, alpha: 1.0)
+    private let accent = UIColor(red: 0.659, green: 0.333, blue: 0.969, alpha: 1.0)
+
+    private let input        = UITextView()
+    private let placeholder  = UILabel()
+    private let resultsStack  = UIStackView()
+    private var generated: [(text: String, image: UIImage)] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = bg
+        title = "QR Generator"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done, target: self, action: #selector(done))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .action, target: self, action: #selector(shareAll))
+        navigationItem.rightBarButtonItem?.isEnabled = false
+
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.keyboardDismissMode = .interactive
+        view.addSubview(scroll)
+
+        let content = UIStackView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.axis = .vertical
+        content.spacing = 16
+        content.isLayoutMarginsRelativeArrangement = true
+        content.layoutMargins = UIEdgeInsets(top: 20, left: 20, bottom: 40, right: 20)
+        scroll.addSubview(content)
+
+        // Input card.
+        let inputCard = UIView()
+        inputCard.translatesAutoresizingMaskIntoConstraints = false
+        inputCard.backgroundColor = cardBg
+        inputCard.layer.cornerRadius = 14
+        inputCard.layer.cornerCurve = .continuous
+
+        input.translatesAutoresizingMaskIntoConstraints = false
+        input.backgroundColor = .clear
+        input.textColor = fg
+        input.tintColor = accent
+        input.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        input.autocapitalizationType = .none
+        input.autocorrectionType = .no
+        input.delegate = self
+        inputCard.addSubview(input)
+
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
+        placeholder.text = "Enter a URL or text.\nPut one per line to make several QR codes."
+        placeholder.numberOfLines = 0
+        placeholder.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        placeholder.textColor = muted
+        inputCard.addSubview(placeholder)
+
+        // Generate button.
+        let genButton = UIButton(type: .system)
+        genButton.translatesAutoresizingMaskIntoConstraints = false
+        var bc = UIButton.Configuration.filled()
+        bc.title = "Generate"
+        bc.baseBackgroundColor = accent
+        bc.baseForegroundColor = .white
+        bc.cornerStyle = .large
+        bc.buttonSize = .large
+        genButton.configuration = bc
+        genButton.addTarget(self, action: #selector(generate), for: .touchUpInside)
+
+        resultsStack.axis = .vertical
+        resultsStack.spacing = 16
+
+        content.addArrangedSubview(inputCard)
+        content.addArrangedSubview(genButton)
+        content.addArrangedSubview(resultsStack)
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+
+            input.topAnchor.constraint(equalTo: inputCard.topAnchor, constant: 12),
+            input.leadingAnchor.constraint(equalTo: inputCard.leadingAnchor, constant: 12),
+            input.trailingAnchor.constraint(equalTo: inputCard.trailingAnchor, constant: -12),
+            input.bottomAnchor.constraint(equalTo: inputCard.bottomAnchor, constant: -12),
+            input.heightAnchor.constraint(greaterThanOrEqualToConstant: 96),
+
+            placeholder.topAnchor.constraint(equalTo: input.topAnchor, constant: 8),
+            placeholder.leadingAnchor.constraint(equalTo: input.leadingAnchor, constant: 5),
+            placeholder.trailingAnchor.constraint(equalTo: input.trailingAnchor, constant: -5),
+        ])
+    }
+
+    @objc private func done() { view.endEditing(true); dismiss(animated: true) }
+
+    func textViewDidChange(_ textView: UITextView) {
+        placeholder.isHidden = !textView.text.isEmpty
+    }
+
+    @objc private func generate() {
+        view.endEditing(true)
+        let lines = (input.text ?? "")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        generated = Array(lines.prefix(50)).compactMap { t in
+            Self.makeQRImage(t).map { (text: t, image: $0) }
+        }
+        renderResults()
+        navigationItem.rightBarButtonItem?.isEnabled = generated.count > 1
+    }
+
+    private func renderResults() {
+        resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard !generated.isEmpty else {
+            let empty = UILabel()
+            empty.text = "Nothing to encode yet."
+            empty.textColor = muted
+            empty.font = .systemFont(ofSize: 13)
+            empty.textAlignment = .center
+            resultsStack.addArrangedSubview(empty)
+            return
+        }
+        for (idx, item) in generated.enumerated() {
+            resultsStack.addArrangedSubview(makeResultCard(text: item.text, image: item.image, index: idx))
+        }
+    }
+
+    private func makeResultCard(text: String, image: UIImage, index: Int) -> UIView {
+        let card = UIView()
+        card.backgroundColor = cardBg
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
+
+        let imgView = UIImageView(image: image)
+        imgView.translatesAutoresizingMaskIntoConstraints = false
+        imgView.contentMode = .scaleAspectFit
+        imgView.backgroundColor = .white
+        imgView.layer.cornerRadius = 8
+        imgView.clipsToBounds = true
+
+        let caption = UILabel()
+        caption.translatesAutoresizingMaskIntoConstraints = false
+        caption.text = text
+        caption.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        caption.textColor = muted
+        caption.numberOfLines = 2
+        caption.lineBreakMode = .byTruncatingMiddle
+        caption.textAlignment = .center
+
+        let save = UIButton(type: .system)
+        save.translatesAutoresizingMaskIntoConstraints = false
+        var sc = UIButton.Configuration.tinted()
+        sc.title = "Save / Share"
+        sc.image = UIImage(systemName: "square.and.arrow.up")
+        sc.imagePadding = 6
+        sc.baseForegroundColor = accent
+        sc.baseBackgroundColor = accent
+        save.configuration = sc
+        save.tag = index
+        save.addTarget(self, action: #selector(shareOne(_:)), for: .touchUpInside)
+
+        let col = UIStackView(arrangedSubviews: [imgView, caption, save])
+        col.translatesAutoresizingMaskIntoConstraints = false
+        col.axis = .vertical
+        col.spacing = 12
+        col.alignment = .center
+        col.isLayoutMarginsRelativeArrangement = true
+        col.layoutMargins = UIEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        card.addSubview(col)
+
+        NSLayoutConstraint.activate([
+            col.topAnchor.constraint(equalTo: card.topAnchor),
+            col.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            col.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            col.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            imgView.widthAnchor.constraint(equalToConstant: 220),
+            imgView.heightAnchor.constraint(equalToConstant: 220),
+            caption.widthAnchor.constraint(equalTo: col.widthAnchor, constant: -36),
+        ])
+        return card
+    }
+
+    @objc private func shareOne(_ sender: UIButton) {
+        guard sender.tag < generated.count else { return }
+        presentShare(images: [generated[sender.tag].image], source: sender)
+    }
+
+    @objc private func shareAll() {
+        guard !generated.isEmpty else { return }
+        presentShare(images: generated.map { $0.image }, source: navigationItem.rightBarButtonItem)
+    }
+
+    private func presentShare(images: [UIImage], source: Any?) {
+        let av = UIActivityViewController(activityItems: images, applicationActivities: nil)
+        // iPad requires a popover anchor or this traps.
+        if let bar = source as? UIBarButtonItem {
+            av.popoverPresentationController?.barButtonItem = bar
+        } else if let v = source as? UIView {
+            av.popoverPresentationController?.sourceView = v
+            av.popoverPresentationController?.sourceRect = v.bounds
+        }
+        present(av, animated: true)
+    }
+
+    /// Black-on-white QR with a quiet-zone margin so it scans reliably even
+    /// against the panel's dark chrome. Scaled at the CIImage stage and drawn
+    /// upright (no mirror) so it stays crisp.
+    static func makeQRImage(_ text: String, side: CGFloat = 660, margin: CGFloat = 28) -> UIImage? {
+        guard let data = text.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let ci = filter.outputImage, ci.extent.width > 0 else { return nil }
+        let scale = (side - 2 * margin) / ci.extent.width
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        let qr = UIImage(cgImage: cg)
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { rctx in
+            UIColor.white.setFill()
+            rctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+            rctx.cgContext.interpolationQuality = .none
+            qr.draw(in: CGRect(x: margin, y: margin, width: side - 2 * margin, height: side - 2 * margin))
+        }
+    }
+}
+
+// MARK: - Python output sheet
+
+/// Shows captured Python stdout/stderr (or any ready-made text) in a
+/// scrollable sheet. The dev panel is presented modally over the terminal, so
+/// output the fire-and-forget path would discard is surfaced here instead.
+final class PythonOutputViewController: UIViewController {
+
+    private let textView = UITextView()
+    private let spinner  = UIActivityIndicatorView(style: .medium)
+    private let runningCode: String?
+    private let initialText: String?
+
+    init(title: String, runningCode: String? = nil, showingText: String? = nil) {
+        self.runningCode = runningCode
+        self.initialText = showingText
+        super.init(nibName: nil, bundle: nil)
+        self.title = title
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(red: 0.039, green: 0.039, blue: 0.059, alpha: 1.0)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done, target: self, action: #selector(closeSheet))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .action, target: self, action: #selector(shareOutput))
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.isEditable = false
+        textView.backgroundColor = .clear
+        textView.textColor = UIColor(red: 0.776, green: 0.788, blue: 1.0, alpha: 1.0)
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.alwaysBounceVertical = true
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 24, right: 0)
+        view.addSubview(textView)
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        view.addSubview(spinner)
+
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+
+        if let t = initialText {
+            textView.text = t
+            navigationItem.rightBarButtonItem?.isEnabled = !t.isEmpty
+        } else if let code = runningCode {
+            navigationItem.rightBarButtonItem?.isEnabled = false
+            spinner.startAnimating()
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = PythonRuntime.shared.execute(code: code)
+                let out = result.output.isEmpty ? "(no output)" : result.output
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.spinner.stopAnimating()
+                    self.textView.text = out
+                    self.navigationItem.rightBarButtonItem?.isEnabled = true
+                }
+            }
+        } else {
+            textView.text = "(no output)"
+        }
+    }
+
+    @objc private func closeSheet() { dismiss(animated: true) }
+    @objc private func shareOutput() {
+        let av = UIActivityViewController(activityItems: [textView.text ?? ""], applicationActivities: nil)
+        av.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        present(av, animated: true)
     }
 }

@@ -438,9 +438,20 @@ final class Game2048ViewController: UIViewController {
     private let size = 4
     private var board: [[Int]] = []
     private var tiles: [[UILabel]] = []
-    private let scoreLabel = UILabel()
+    private let titleLabel = UILabel()
+    private let scoreValueLabel = UILabel()
+    private let bestValueLabel = UILabel()
+    private var cellSide: CGFloat = 0
     private var score = 0
     private let grid = UIView()
+
+    // ── Auto-play: "Win" (expectimax solver) + "AI" (installed LLM) ──
+    private enum AutoPlay { case off, solver, ai }
+    private var autoPlay: AutoPlay = .off
+    private var performingAutoMove = false      // distinguishes solver/AI moves from a human swipe
+    private var aiThinking = false              // single-flight guard for the LLM
+    private var sawWin = false                  // fire the 2048 alert at most once
+    private let statusLabel = UILabel()
     private let bg = UIColor(red: 0.06, green: 0.07, blue: 0.09, alpha: 1)
     private let gridBg = UIColor(red: 0.733, green: 0.678, blue: 0.627, alpha: 1)
     private let emptyTile = UIColor(red: 0.804, green: 0.749, blue: 0.694, alpha: 1)
@@ -449,26 +460,57 @@ final class Game2048ViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = bg
         title = "2048"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Reset", style: .plain, target: self, action: #selector(reset))
+        // Reset · AI (LLM auto-play) · Win (expectimax solver → 16384).
+        // Shown right-to-left, so the visible order from the edge is Win, AI, Reset.
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(title: "Reset", style: .plain, target: self, action: #selector(reset)),
+            UIBarButtonItem(title: "AI",  style: .plain, target: self, action: #selector(toggleAI)),
+            UIBarButtonItem(title: "Win", style: .done,  target: self, action: #selector(toggleSolver)),
+        ]
 
-        scoreLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
-        scoreLabel.textColor = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)
-        scoreLabel.textAlignment = .center
-        scoreLabel.translatesAutoresizingMaskIntoConstraints = false
-        // Pill chrome to match the launcher cards. Padding via insets so
-        // the existing center-X constraint + intrinsic size still place it.
-        scoreLabel.backgroundColor = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1.0)
-        scoreLabel.layer.cornerRadius = 11
-        scoreLabel.layer.cornerCurve = .continuous
-        scoreLabel.layer.borderColor = UIColor(red: 0.93, green: 0.76, blue: 0.18, alpha: 0.30).cgColor
-        scoreLabel.layer.borderWidth = 1
-        scoreLabel.clipsToBounds = true
-        scoreLabel.setContentHuggingPriority(.required, for: .horizontal)
-        view.addSubview(scoreLabel)
+        // Auto-play status banner (hidden unless the solver/AI is running).
+        statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.textColor = UIColor(red: 0.93, green: 0.76, blue: 0.18, alpha: 1)
+        statusLabel.textAlignment = .center
+        statusLabel.numberOfLines = 0
+        statusLabel.isHidden = true
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusLabel)
+
+        // Tap anywhere on the board to stop auto-play (so touch users can take over).
+        let stopTap = UITapGestureRecognizer(target: self, action: #selector(stopTapped))
+        view.addGestureRecognizer(stopTap)
+
+        // ── Header: big "2048" wordmark + SCORE / BEST cards ──────────
+        titleLabel.text = "2048"
+        titleLabel.font = .systemFont(ofSize: 36, weight: .heavy)
+        titleLabel.textColor = UIColor(red: 0.93, green: 0.76, blue: 0.18, alpha: 1)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let cardsRow = UIStackView(arrangedSubviews: [
+            makeScoreCard(caption: "SCORE", value: scoreValueLabel),
+            makeScoreCard(caption: "BEST",  value: bestValueLabel),
+        ])
+        cardsRow.axis = .horizontal
+        cardsRow.spacing = 8
+        cardsRow.distribution = .fillEqually
+
+        let header = UIStackView(arrangedSubviews: [titleLabel, cardsRow])
+        header.axis = .horizontal
+        header.alignment = .center
+        header.spacing = 12
+        header.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(header)
 
         grid.backgroundColor = gridBg
-        grid.layer.cornerRadius = 8
+        grid.layer.cornerRadius = 12
+        grid.layer.cornerCurve = .continuous
+        grid.layer.shadowColor = UIColor.black.cgColor
+        grid.layer.shadowOpacity = 0.35
+        grid.layer.shadowRadius = 16
+        grid.layer.shadowOffset = CGSize(width: 0, height: 8)
         grid.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(grid)
 
@@ -479,8 +521,12 @@ final class Game2048ViewController: UIViewController {
                 lbl.textAlignment = .center
                 lbl.font = .systemFont(ofSize: 32, weight: .bold)
                 lbl.layer.cornerRadius = 6
+                lbl.layer.cornerCurve = .continuous
                 lbl.layer.masksToBounds = true
-                lbl.translatesAutoresizingMaskIntoConstraints = false
+                // Frame-positioned in viewDidLayoutSubviews — keep autoresizing
+                // translation ON so the manual frame is respected (not zeroed
+                // by Auto Layout, which would clump every tile into a corner).
+                lbl.translatesAutoresizingMaskIntoConstraints = true
                 grid.addSubview(lbl)
                 _ = r; _ = c
                 rowTiles.append(lbl)
@@ -488,14 +534,29 @@ final class Game2048ViewController: UIViewController {
             tiles.append(rowTiles)
         }
 
+        // Simple, conflict-free TOP-ANCHORED layout: header pinned near the
+        // top, board directly below it, centered horizontally. Board width
+        // targets 90% of the screen but is bounded to [240, 430] pt — the
+        // required floor guarantees the board can NEVER collapse (which is
+        // what made tiles clump into a corner), and the cap keeps it sane on
+        // iPad. Height == width. No centerY / no over-constraint.
+        let gridWidth = grid.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.9)
+        gridWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            scoreLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
-            scoreLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            scoreLabel.heightAnchor.constraint(equalToConstant: 30),
-            grid.topAnchor.constraint(equalTo: scoreLabel.bottomAnchor, constant: 16),
+            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14),
+            header.leadingAnchor.constraint(equalTo: grid.leadingAnchor, constant: 2),
+            header.trailingAnchor.constraint(equalTo: grid.trailingAnchor, constant: -2),
+
+            grid.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
             grid.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            grid.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.82),
+            gridWidth,
+            grid.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+            grid.widthAnchor.constraint(lessThanOrEqualToConstant: 430),
             grid.heightAnchor.constraint(equalTo: grid.widthAnchor),
+
+            statusLabel.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 16),
+            statusLabel.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            statusLabel.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
         ])
 
         for dir in [UISwipeGestureRecognizer.Direction.left, .right, .up, .down] {
@@ -509,8 +570,11 @@ final class Game2048ViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let cellSize = (grid.bounds.width - 10 * CGFloat(size + 1)) / CGFloat(size)
-        let pad: CGFloat = 10
+        guard grid.bounds.width > 0 else { return }
+        let pad = max(7, grid.bounds.width * 0.028)
+        let cellSize = (grid.bounds.width - pad * CGFloat(size + 1)) / CGFloat(size)
+        guard cellSize > 0 else { return }   // board not yet sized — don't lay tiles into a corner
+        cellSide = cellSize
         for r in 0..<size {
             for c in 0..<size {
                 let t = tiles[r][c]
@@ -518,11 +582,60 @@ final class Game2048ViewController: UIViewController {
                     x: pad + CGFloat(c) * (cellSize + pad),
                     y: pad + CGFloat(r) * (cellSize + pad),
                     width: cellSize, height: cellSize)
+                t.layer.cornerRadius = max(6, cellSize * 0.12)
+                t.font = tileFont(for: Int(t.text ?? "") ?? 0)
             }
         }
     }
 
+    /// Font that scales with the cell size and shrinks for longer numbers,
+    /// so digits always fit no matter how big/small the board is laid out.
+    private func tileFont(for n: Int) -> UIFont {
+        let base = cellSide > 0 ? cellSide : 64
+        let frac: CGFloat = n < 100 ? 0.46 : (n < 1000 ? 0.36 : 0.28)
+        return .systemFont(ofSize: max(14, base * frac), weight: .bold)
+    }
+
+    /// A "SCORE"/"BEST" header card; `value` is wired so render() can update it.
+    private func makeScoreCard(caption: String, value: UILabel) -> UIView {
+        let card = UIView()
+        card.backgroundColor = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1)
+        card.layer.cornerRadius = 10
+        card.layer.cornerCurve = .continuous
+        card.layer.borderColor = UIColor(red: 0.93, green: 0.76, blue: 0.18, alpha: 0.22).cgColor
+        card.layer.borderWidth = 1
+
+        let cap = UILabel()
+        cap.text = caption
+        cap.font = .systemFont(ofSize: 10, weight: .bold)
+        cap.textColor = UIColor(white: 0.6, alpha: 1)
+        cap.textAlignment = .center
+
+        value.text = "0"
+        value.font = .monospacedDigitSystemFont(ofSize: 18, weight: .bold)
+        value.textColor = .white
+        value.textAlignment = .center
+
+        let s = UIStackView(arrangedSubviews: [cap, value])
+        s.axis = .vertical
+        s.alignment = .center
+        s.spacing = 1
+        s.isLayoutMarginsRelativeArrangement = true
+        s.layoutMargins = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        s.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(s)
+        NSLayoutConstraint.activate([
+            s.topAnchor.constraint(equalTo: card.topAnchor),
+            s.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            s.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            s.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+        ])
+        return card
+    }
+
     @objc private func reset() {
+        stopAutoPlay()
+        sawWin = false
         // Persist the highest tile reached before wiping — beats just
         // tracking the raw score because "I made 2048" is the genuine
         // win condition.
@@ -535,6 +648,8 @@ final class Game2048ViewController: UIViewController {
     }
 
     @objc private func swiped(_ g: UISwipeGestureRecognizer) {
+        // A human swipe/arrow during auto-play hands control back to the user.
+        if !performingAutoMove && autoPlay != .off { stopAutoPlay() }
         let before = board
         let scoreBefore = score
         switch g.direction {
@@ -553,31 +668,40 @@ final class Game2048ViewController: UIViewController {
         default: break
         }
         if board != before {
-            // Heavier "thunk" when a merge happened (score rose), else a
-            // tiny "punch" for a plain slide — gives merges a distinct feel.
-            let merged = score > scoreBefore
-            UIImpactFeedbackGenerator(style: merged ? .medium : .light).impactOccurred()
+            // Haptics for human play only — rapid auto-play would buzz nonstop.
+            if autoPlay == .off {
+                let merged = score > scoreBefore
+                UIImpactFeedbackGenerator(style: merged ? .medium : .light).impactOccurred()
+            }
             spawn()
             render()
+            // Track the highest tile reached (covers 2048 / 4096 / 8192 / 16384).
+            HiddenGameScores.recordIfHigher("g2048.bestTile", board.flatMap { $0 }.max() ?? 0)
+
             if isLost() {
-                HiddenGameScores.recordIfHigher("g2048.bestTile",
-                    board.flatMap { $0 }.max() ?? 0)
+                let wasAuto = autoPlay != .off
+                stopAutoPlay()
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
-                let a = UIAlertController(title: "Game over",
-                                          message: "Score \(score). Try again?",
-                                          preferredStyle: .alert)
+                let topTile = board.flatMap { $0 }.max() ?? 0
+                let a = UIAlertController(
+                    title: wasAuto ? "Auto-play finished" : "Game over",
+                    message: "No moves left. Best tile \(topTile) · score \(score).",
+                    preferredStyle: .alert)
                 a.addAction(UIAlertAction(title: "Reset", style: .default) { _ in self.reset() })
                 present(a, animated: true)
-            } else if board.flatMap({ $0 }).contains(2048) {
-                HiddenGameScores.recordIfHigher("g2048.bestTile", 2048)
-                // Heavy haptic + alert for the milestone.
+            } else if !sawWin && board.flatMap({ $0 }).contains(2048) {
+                sawWin = true
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                let a = UIAlertController(title: "🎉 2048!",
-                                          message: "Score \(score). Keep going?",
-                                          preferredStyle: .alert)
-                a.addAction(UIAlertAction(title: "Keep going", style: .default))
-                a.addAction(UIAlertAction(title: "Reset", style: .cancel) { _ in self.reset() })
-                present(a, animated: true)
+                // While auto-playing, keep going silently toward 16384 — the
+                // alert only interrupts a human player.
+                if autoPlay == .off {
+                    let a = UIAlertController(title: "🎉 2048!",
+                                              message: "Score \(score). Keep going?",
+                                              preferredStyle: .alert)
+                    a.addAction(UIAlertAction(title: "Keep going", style: .default))
+                    a.addAction(UIAlertAction(title: "Reset", style: .cancel) { _ in self.reset() })
+                    present(a, animated: true)
+                }
             }
         }
     }
@@ -614,10 +738,8 @@ final class Game2048ViewController: UIViewController {
     }
 
     private func render() {
-        let best = HiddenGameScores.best("g2048.bestTile")
-        scoreLabel.text = best > 0
-            ? "  Score \(score)    ·    Best tile \(best)  "
-            : "  Score \(score)  "
+        scoreValueLabel.text = "\(score)"
+        bestValueLabel.text = "\(HiddenGameScores.best("g2048.bestTile"))"
         for r in 0..<size { for c in 0..<size {
             let n = board[r][c]
             let t = tiles[r][c]
@@ -630,8 +752,12 @@ final class Game2048ViewController: UIViewController {
                 t.text = "\(n)"
                 t.backgroundColor = tileColor(n)
                 t.textColor = n <= 4 ? UIColor(red: 0.46, green: 0.43, blue: 0.40, alpha: 1) : .white
-                t.font = .systemFont(ofSize: n < 100 ? 38 : (n < 1000 ? 30 : 24), weight: .bold)
-                if prev == 0 {
+                t.font = tileFont(for: n)
+                if autoPlay != .off {
+                    // Auto-play: snap instantly (no per-tile spring/pulse) so
+                    // the solver/AI can rip through moves fast.
+                    t.transform = .identity
+                } else if prev == 0 {
                     // Pop-in on tile spawn so swipes feel responsive.
                     t.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
                     UIView.animate(withDuration: 0.18, delay: 0,
@@ -697,6 +823,9 @@ final class Game2048ViewController: UIViewController {
             (UIKeyCommand.inputDownArrow,  #selector(kbDown)),
             ("r",                          #selector(reset)),
             ("R",                          #selector(reset)),
+            ("w",                          #selector(toggleSolver)),  // Win = expectimax solver
+            ("a",                          #selector(toggleAI)),      // AI  = installed LLM
+            ("s",                          #selector(stopTapped)),    // stop auto-play
         ]
         return cmds.map { (input, sel) in
             let c = UIKeyCommand(input: input, modifierFlags: [], action: sel)
@@ -718,6 +847,412 @@ final class Game2048ViewController: UIViewController {
         let fake = UISwipeGestureRecognizer()
         fake.direction = dir
         swiped(fake)
+    }
+
+    // MARK: - Auto-play control ("Win" solver + "AI" LLM)
+
+    @objc private func stopTapped() { if autoPlay != .off { stopAutoPlay() } }
+
+    @objc private func toggleSolver() {
+        if autoPlay == .solver { stopAutoPlay() } else { startAutoPlay(.solver) }
+    }
+
+    @objc private func toggleAI() {
+        guard AIEngine.shared.runner != nil else {
+            showAutoBanner("⚠️ No AI model loaded — load one from the AI tab first.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
+                if self?.autoPlay == .off { self?.statusLabel.isHidden = true }
+            }
+            return
+        }
+        if autoPlay == .ai { stopAutoPlay() } else { startAutoPlay(.ai) }
+    }
+
+    private func startAutoPlay(_ mode: AutoPlay) {
+        autoPlay = mode
+        sawWin = false   // let the run climb past 2048 without the win alert
+        showAutoBanner(mode == .solver
+            ? "🏆 Solver running — climbing toward 16384.   (tap board / press S to stop)"
+            : "🤖 AI playing — the installed model picks each move.   (tap board / press S to stop)")
+        if mode == .solver { stepSolver() } else { stepAI() }
+    }
+
+    private func stopAutoPlay() {
+        autoPlay = .off
+        statusLabel.isHidden = true
+    }
+
+    private func showAutoBanner(_ text: String) {
+        statusLabel.text = text
+        statusLabel.isHidden = false
+    }
+
+    /// Apply a solver/AI-chosen move through the same merge/spawn/render path
+    /// a human swipe uses, flagged so `swiped` doesn't treat it as a takeover.
+    private func applyAutoMove(_ m: G2048Solver.Move) {
+        performingAutoMove = true
+        switch m {
+        case .left:  synthesizeSwipe(.left)
+        case .right: synthesizeSwipe(.right)
+        case .up:    synthesizeSwipe(.up)
+        case .down:  synthesizeSwipe(.down)
+        }
+        performingAutoMove = false
+    }
+
+    /// "Win": run the expectimax search OFF the main thread, apply on main,
+    /// then schedule the next move after a short visible delay.
+    private func stepSolver() {
+        guard autoPlay == .solver else { return }
+        let snapshot = board
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let mv = G2048Solver.bestMove(snapshot)
+            DispatchQueue.main.async {
+                guard let self, self.autoPlay == .solver else { return }
+                guard let mv = mv else { self.stopAutoPlay(); return }
+                self.applyAutoMove(mv)
+                guard self.autoPlay == .solver else { return }   // loss / takeover may have stopped it
+                // A tiny FIXED delay paces exactly one move per frame. Without
+                // it, fast moves batch up and CoreAnimation commits them in
+                // bursts — which looks like "freeze, then a flurry". 0.02 s ≈
+                // 50 moves/s: smooth AND fast.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in self?.stepSolver() }
+            }
+        }
+    }
+
+    /// "AI": the installed LLM picks each move; falls back to the solver when
+    /// the model is slow / returns an illegal move, so the run never stalls.
+    private func stepAI() {
+        guard autoPlay == .ai, !aiThinking else { return }
+        guard let runner = AIEngine.shared.runner else { stopAutoPlay(); return }
+        aiThinking = true
+        let snapshot = board
+        let sys = ChatMessage(role: .system, content:
+            "You are an expert 2048 player. Keep the largest tile pinned in one corner and keep rows/columns monotonic so tiles merge. Reply with EXACTLY one word — up, down, left, or right — nothing else.")
+        let usr = ChatMessage(role: .user, content: G2048Solver.prompt(snapshot))
+        // Speed knobs: tiny prompt + maxTokens 4 + stop at newline so the model
+        // emits only the move word; the call is async so the UI stays smooth.
+        runner.generate(messages: [sys, usr], maxTokens: 4, grammar: nil,
+                        stopSequences: ["\n"], onToken: { _ in }) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.autoPlay == .ai else { return }
+                self.aiThinking = false
+                let parsed = G2048Solver.parseMove(try? result.get())
+                if let mv = parsed, G2048Solver.move(self.board, mv).moved {
+                    // Valid LLM move — apply it directly (cheap).
+                    self.applyAutoMove(mv)
+                    guard self.autoPlay == .ai else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in self?.stepAI() }
+                } else {
+                    // Illegal/unparseable reply → compute the solver fallback
+                    // OFF the main thread so it never hitches the UI.
+                    let snap = self.board
+                    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                        let mv = G2048Solver.bestMove(snap)
+                        DispatchQueue.main.async {
+                            guard let self, self.autoPlay == .ai else { return }
+                            guard let mv = mv else { self.stopAutoPlay(); return }
+                            self.applyAutoMove(mv)
+                            guard self.autoPlay == .ai else { return }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in self?.stepAI() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 2048 expectimax solver — pure, board-only. Powers the "Win" auto-play
+// (and the AI mode's fallback). A monotonicity + smoothness + free-cells +
+// max-value heuristic with depth-adaptive search reliably climbs to 16384.
+// ════════════════════════════════════════════════════════════════════
+fileprivate enum G2048Solver {
+    enum Move: CaseIterable { case left, right, up, down }
+    static let N = 4
+
+    /// Slide + merge one line toward index 0 (the "left" primitive).
+    private static func slide(_ line: [Int]) -> (line: [Int], gained: Int) {
+        var nums = line.filter { $0 != 0 }
+        var gained = 0
+        var i = 0
+        while i + 1 < nums.count {
+            if nums[i] == nums[i + 1] {
+                nums[i] *= 2
+                gained += nums[i]
+                nums.remove(at: i + 1)
+            }
+            i += 1
+        }
+        while nums.count < N { nums.append(0) }
+        return (nums, gained)
+    }
+
+    /// Apply a move to a board copy → (new board, score gained, did-it-move).
+    static func move(_ b: [[Int]], _ m: Move) -> (board: [[Int]], gained: Int, moved: Bool) {
+        var nb = b
+        var gained = 0
+        switch m {
+        case .left:
+            for r in 0..<N { let s = slide(b[r]); nb[r] = s.line; gained += s.gained }
+        case .right:
+            for r in 0..<N { let s = slide(b[r].reversed()); nb[r] = Array(s.line.reversed()); gained += s.gained }
+        case .up:
+            for c in 0..<N {
+                let col = (0..<N).map { b[$0][c] }
+                let s = slide(col); gained += s.gained
+                for r in 0..<N { nb[r][c] = s.line[r] }
+            }
+        case .down:
+            for c in 0..<N {
+                let col = (0..<N).map { b[$0][c] }
+                let s = slide(col.reversed()); gained += s.gained
+                let rev = Array(s.line.reversed())
+                for r in 0..<N { nb[r][c] = rev[r] }
+            }
+        }
+        return (nb, gained, nb != b)
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // nneonneo bitboard expectimax — the reference strong 2048 AI.
+    // Board = one UInt64, cell (r,c) at bits 16*r+4*c holding the log2
+    // RANK (0 = empty, 1 = "2", 2 = "4", … 14 = 16384). Moves + the
+    // heuristic are O(1) table lookups over precomputed 65536-row tables,
+    // so it's allocation-free and fast enough to search deep (→ reaches
+    // 8192 reliably and 16384 most games; ~94% per nneonneo). The exact
+    // heuristic weights below are nneonneo's CMA-ES-tuned constants.
+    // Reference: https://github.com/nneonneo/2048-ai
+    // ════════════════════════════════════════════════════════════════
+
+    private struct BBTables {
+        var rowLeft  = [UInt16](repeating: 0, count: 65536)
+        var rowRight = [UInt16](repeating: 0, count: 65536)
+        var colUp    = [UInt64](repeating: 0, count: 65536)
+        var colDown  = [UInt64](repeating: 0, count: 65536)
+        var heur     = [Float](repeating: 0, count: 65536)
+    }
+    // Built once, lazily + thread-safely (static let). ~65k iterations.
+    private static let T: BBTables = buildBBTables()
+
+    private static func reverseRow(_ r: UInt16) -> UInt16 {
+        (r >> 12) | ((r >> 4) & 0x00F0) | ((r << 4) & 0x0F00) | ((r << 12) & 0xF000)
+    }
+    private static func unpackCol(_ r: UInt16) -> UInt64 {
+        let t = UInt64(r)
+        return (t | (t << 12) | (t << 24) | (t << 36)) & 0x000F000F000F000F
+    }
+    private static func transpose(_ x: UInt64) -> UInt64 {
+        let a1 = x & 0xF0F00F0FF0F00F0F
+        let a2 = x & 0x0000F0F00000F0F0
+        let a3 = x & 0x0F0F00000F0F0000
+        let a  = a1 | (a2 << 12) | (a3 >> 12)
+        let b1 = a & 0xFF00FF0000FF00FF
+        let b2 = a & 0x00FF00FF00000000
+        let b3 = a & 0x00000000FF00FF00
+        return b1 | (b2 >> 24) | (b3 << 24)
+    }
+
+    /// Slide+merge a 4-rank line toward index 0 (the "left" primitive).
+    private static func slideRanks(_ line0: [Int]) -> [Int] {
+        var line = line0
+        var i = 0
+        while i < 3 {
+            var j = i + 1
+            while j < 4 && line[j] == 0 { j += 1 }
+            if j == 4 { break }
+            if line[i] == 0 {
+                line[i] = line[j]; line[j] = 0; i -= 1
+            } else if line[i] == line[j] && line[i] != 0xf {
+                line[i] += 1; line[j] = 0
+            }
+            i += 1
+        }
+        return line
+    }
+
+    private static func buildBBTables() -> BBTables {
+        var t = BBTables()
+        for row in 0..<65536 {
+            let line = [row & 0xf, (row >> 4) & 0xf, (row >> 8) & 0xf, (row >> 12) & 0xf]
+            // ── heuristic (nneonneo) ──
+            var sum: Float = 0
+            var empty = 0, merges = 0, prev = 0, counter = 0
+            for rank in line {
+                sum += powf(Float(rank), 3.5)             // SCORE_SUM_POWER
+                if rank == 0 { empty += 1 }
+                else {
+                    if prev == rank { counter += 1 }
+                    else if counter > 0 { merges += 1 + counter; counter = 0 }
+                    prev = rank
+                }
+            }
+            if counter > 0 { merges += 1 + counter }
+            var ml: Float = 0, mr: Float = 0
+            for i in 1..<4 {
+                let a = line[i - 1], b = line[i]
+                if a > b { ml += powf(Float(a), 4) - powf(Float(b), 4) }   // SCORE_MONOTONICITY_POWER = 4
+                else      { mr += powf(Float(b), 4) - powf(Float(a), 4) }
+            }
+            t.heur[row] = 200000.0                                // SCORE_LOST_PENALTY
+                + 270.0 * Float(empty)                            // SCORE_EMPTY_WEIGHT
+                + 700.0 * Float(merges)                           // SCORE_MERGES_WEIGHT
+                - 47.0 * min(ml, mr)                              // SCORE_MONOTONICITY_WEIGHT
+                - 11.0 * sum                                      // SCORE_SUM_WEIGHT
+            // ── move tables (XOR deltas) ──
+            let res = slideRanks(line)
+            let urow = UInt16(truncatingIfNeeded: row)
+            let rres = UInt16(truncatingIfNeeded: res[0] | (res[1] << 4) | (res[2] << 8) | (res[3] << 12))
+            let rev = reverseRow(urow), revres = reverseRow(rres)
+            t.rowLeft[row]        = urow ^ rres
+            t.rowRight[Int(rev)]  = rev ^ revres
+            t.colUp[row]          = unpackCol(urow) ^ unpackCol(rres)
+            t.colDown[Int(rev)]   = unpackCol(rev) ^ unpackCol(revres)
+        }
+        return t
+    }
+
+    private static func execLeft(_ b: UInt64) -> UInt64 {
+        b ^ (UInt64(T.rowLeft[Int((b >> 0) & 0xFFFF)]) << 0)
+          ^ (UInt64(T.rowLeft[Int((b >> 16) & 0xFFFF)]) << 16)
+          ^ (UInt64(T.rowLeft[Int((b >> 32) & 0xFFFF)]) << 32)
+          ^ (UInt64(T.rowLeft[Int((b >> 48) & 0xFFFF)]) << 48)
+    }
+    private static func execRight(_ b: UInt64) -> UInt64 {
+        b ^ (UInt64(T.rowRight[Int((b >> 0) & 0xFFFF)]) << 0)
+          ^ (UInt64(T.rowRight[Int((b >> 16) & 0xFFFF)]) << 16)
+          ^ (UInt64(T.rowRight[Int((b >> 32) & 0xFFFF)]) << 32)
+          ^ (UInt64(T.rowRight[Int((b >> 48) & 0xFFFF)]) << 48)
+    }
+    private static func execUp(_ b: UInt64) -> UInt64 {
+        let t = transpose(b)
+        return b ^ (T.colUp[Int((t >> 0) & 0xFFFF)] << 0)
+                 ^ (T.colUp[Int((t >> 16) & 0xFFFF)] << 4)
+                 ^ (T.colUp[Int((t >> 32) & 0xFFFF)] << 8)
+                 ^ (T.colUp[Int((t >> 48) & 0xFFFF)] << 12)
+    }
+    private static func execDown(_ b: UInt64) -> UInt64 {
+        let t = transpose(b)
+        return b ^ (T.colDown[Int((t >> 0) & 0xFFFF)] << 0)
+                 ^ (T.colDown[Int((t >> 16) & 0xFFFF)] << 4)
+                 ^ (T.colDown[Int((t >> 32) & 0xFFFF)] << 8)
+                 ^ (T.colDown[Int((t >> 48) & 0xFFFF)] << 12)
+    }
+
+    private static func heurBoard(_ b: UInt64) -> Float {
+        let t = transpose(b)
+        return T.heur[Int((b >> 0) & 0xFFFF)] + T.heur[Int((b >> 16) & 0xFFFF)]
+             + T.heur[Int((b >> 32) & 0xFFFF)] + T.heur[Int((b >> 48) & 0xFFFF)]
+             + T.heur[Int((t >> 0) & 0xFFFF)] + T.heur[Int((t >> 16) & 0xFFFF)]
+             + T.heur[Int((t >> 32) & 0xFFFF)] + T.heur[Int((t >> 48) & 0xFFFF)]
+    }
+    private static func countEmpty(_ b: UInt64) -> Int {
+        var x = b, e = 0
+        for _ in 0..<16 { if (x & 0xf) == 0 { e += 1 }; x >>= 4 }
+        return e
+    }
+    private static func distinctTiles(_ b: UInt64) -> Int {
+        var x = b, mask = 0
+        for _ in 0..<16 { let v = Int(x & 0xf); if v != 0 { mask |= (1 << v) }; x >>= 4 }
+        return mask.nonzeroBitCount
+    }
+
+    private static let cprobThresh: Float = 0.0001        // CPROB_THRESH_BASE
+
+    private static func scoreMaxNode(_ b: UInt64, _ cprob: Float, _ depth: Int, _ lim: Int,
+                                     _ memo: inout [UInt64: Float]) -> Float {
+        var best: Float = 0
+        for nb in [execUp(b), execDown(b), execLeft(b), execRight(b)] where nb != b {
+            let s = scoreChanceNode(nb, cprob, depth, lim, &memo)
+            if s > best { best = s }
+        }
+        return best
+    }
+    private static func scoreChanceNode(_ b: UInt64, _ cprob: Float, _ depth: Int, _ lim: Int,
+                                        _ memo: inout [UInt64: Float]) -> Float {
+        if cprob < cprobThresh || depth >= lim { return heurBoard(b) }
+        if let cached = memo[b] { return cached }
+        let empty = countEmpty(b)
+        if empty == 0 { return heurBoard(b) }
+        let cp = cprob / Float(empty)
+        var total: Float = 0
+        var x = b
+        var i = 0
+        while i < 16 {
+            if (x & 0xf) == 0 {
+                let shift = UInt64(4 * i)
+                total += scoreMaxNode(b | (UInt64(1) << shift), cp * 0.9, depth + 1, lim, &memo) * 0.9
+                total += scoreMaxNode(b | (UInt64(2) << shift), cp * 0.1, depth + 1, lim, &memo) * 0.1
+            }
+            x >>= 4
+            i += 1
+        }
+        let res = total / Float(empty)
+        memo[b] = res
+        return res
+    }
+
+    private static func encode(_ vb: [[Int]]) -> UInt64 {
+        var board: UInt64 = 0
+        for r in 0..<4 { for c in 0..<4 {
+            let v = vb[r][c]
+            if v > 0 { board |= UInt64(v.trailingZeroBitCount) << UInt64(16 * r + 4 * c) }
+        }}
+        return board
+    }
+
+    /// Best move for the current board (nil if nothing moves) — bitboard
+    /// expectimax with probability-cutoff pruning + a per-call transposition
+    /// table. depth_limit grows with board complexity (nneonneo's rule), but
+    /// the cprob cutoff keeps every search bounded and roughly uniform.
+    static func bestMove(_ vb: [[Int]]) -> Move? {
+        let board = encode(vb)
+        // depth_limit = nneonneo's max(3, distinctTiles-2), but CAPPED at 6 so
+        // the late game can't spike into a multi-hundred-ms search (keeps every
+        // move uniformly fast). Per macroxue's data this depth band already
+        // reaches 8192 ~every game and 16384 the large majority; the cprob
+        // cutoff bounds it further. Lower the cap for more speed, raise it for
+        // more strength — it's the single speed/strength knob.
+        let lim = min(6, max(3, distinctTiles(board) - 2))
+        let candidates: [(Move, UInt64)] = [
+            (.up, execUp(board)), (.down, execDown(board)),
+            (.left, execLeft(board)), (.right, execRight(board)),
+        ]
+        var best: Move?
+        var bestScore: Float = -1
+        for (mv, nb) in candidates where nb != board {
+            var memo = [UInt64: Float](minimumCapacity: 4096)
+            let s = scoreChanceNode(nb, 1.0, 0, lim, &memo)
+            if s > bestScore { bestScore = s; best = mv }
+        }
+        return best
+    }
+
+    /// Compact board prompt for the LLM ("ai" mode).
+    static func prompt(_ b: [[Int]]) -> String {
+        let rows = b.map { $0.map { $0 == 0 ? "." : "\($0)" }.joined(separator: "\t") }.joined(separator: "\n")
+        return "2048 board (. = empty):\n\(rows)\n\nBest move? up, down, left, or right?"
+    }
+
+    /// Parse the LLM reply into a move (first direction word, then first letter).
+    static func parseMove(_ text: String?) -> Move? {
+        guard let t = text?.lowercased() else { return nil }
+        if t.contains("up")    { return .up }
+        if t.contains("down")  { return .down }
+        if t.contains("left")  { return .left }
+        if t.contains("right") { return .right }
+        for ch in t {
+            switch ch {
+            case "u": return .up
+            case "d": return .down
+            case "l": return .left
+            case "r": return .right
+            default: continue
+            }
+        }
+        return nil
     }
 }
 
@@ -1234,6 +1769,16 @@ final class SpaceInvadersViewController: UIViewController {
         particles.removeAll(); popups.removeAll()
         resetWave()
         let dl = CADisplayLink(target: self, selector: #selector(tick))
+        // Cap to 60 fps. The game moves entities a fixed amount PER FRAME
+        // (no delta-time), so on a 120 Hz ProMotion display an uncapped
+        // display link would fire twice as often and the whole game would
+        // run at double speed — unplayably fast. Pinning to 60 fps makes
+        // it play at the intended speed on every device.
+        if #available(iOS 15.0, *) {
+            dl.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
+        } else {
+            dl.preferredFramesPerSecond = 60
+        }
         dl.add(to: .main, forMode: .common)
         displayLink = dl
     }

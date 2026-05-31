@@ -358,6 +358,11 @@ final class LlamaRunner {
     }
     private var vocab: OpaquePointer?
     private var config = Config()
+
+    /// The context window (n_ctx) the currently-loaded model was created with.
+    /// Exposed so callers (e.g. the editor's AI chat) can budget their prompt
+    /// and never trip `promptTooLong` on a short message.
+    var loadedContextSize: Int32 { config.contextSize }
     private var isBusy = false
     private var cancelled = false
 

@@ -965,8 +965,26 @@ extension FilesBrowserViewController: UICollectionViewDelegate {
                 attributes: .destructive
             ) { _ in self.deleteItem(item) }
 
-            return UIMenu(children: [rename, duplicate, delete])
+            // Quick Look (files only) — a hidden long-press entry that renders
+            // CSV/JSON/YAML/images/.npy in a modal without leaving the browser.
+            var children: [UIMenuElement] = []
+            if !item.isDirectory {
+                children.append(UIAction(title: "Quick Look",
+                                         image: UIImage(systemName: "eye")) { _ in
+                    self.quickLookItem(item)
+                })
+            }
+            children.append(contentsOf: [rename, duplicate, delete])
+            return UIMenu(children: children)
         }
+    }
+
+    /// Present the data Quick Look modal for a file (CSV/JSON/image/.npy/…).
+    private func quickLookItem(_ item: FileItem) {
+        let ql = DataQuickLookViewController(fileURL: item.url)
+        let nav = UINavigationController(rootViewController: ql)
+        nav.modalPresentationStyle = .formSheet
+        present(nav, animated: true)
     }
 
     // MARK: - Tombstone for deleted starter files

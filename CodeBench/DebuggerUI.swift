@@ -21,7 +21,7 @@
 import Foundation
 import UIKit
 
-final class DebuggerUI {
+final class DebuggerUI: NSObject {
 
     // MARK: - State
 
@@ -90,6 +90,7 @@ final class DebuggerUI {
     init(presenter: UIViewController, monaco: MonacoEditorView) {
         self.presenter = presenter
         self.monacoView = monaco
+        super.init()
         try? FileManager.default.createDirectory(atPath: signalDir,
                                                  withIntermediateDirectories: true)
     }

@@ -138,12 +138,7 @@ extension WKWebView {
         let helper = BrowserBehaviorDelegate(host: host)
         self.uiDelegate = helper
         self.allowsBackForwardNavigationGestures = true
-        NSLog("[browser] attached uiDelegate to %p (host=%@) — v4 build 2026-05-25",
-              webView_pointer_for_log(self), String(describing: type(of: host)))
+        NSLog("[browser] attached uiDelegate (host=%@)", String(describing: type(of: host)))
         return helper
     }
-}
-
-private func webView_pointer_for_log(_ wv: WKWebView) -> UnsafeRawPointer {
-    return Unmanaged.passUnretained(wv).toOpaque()
 }

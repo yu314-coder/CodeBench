@@ -482,6 +482,9 @@ final class CodeEditorViewController: UIViewController {
 
     // Monaco editor (WebView-hosted, replaces UITextView + custom autocomplete UI)
     private let monacoView = MonacoEditorView()
+    /// Visual debugger (toolbar + inspector + gutter arrow), driven by the
+    /// Python `debug-gui` builtin via $TMPDIR/latex_signals/debug_state.json.
+    private var debugUI: DebuggerUI?
 
     // Legacy orphan stubs — kept to preserve compile of dead-code paths that Monaco replaces.
     // These UIViews are NEVER added to the view hierarchy; Monaco handles all their roles.
@@ -1918,6 +1921,12 @@ final class CodeEditorViewController: UIViewController {
             self?.statusCursorLabel.text = "Ln \(line), Col \(col)"
         }
 
+        // Visual debugger: watches $TMPDIR/latex_signals/debug_state.json (written
+        // by the Python `debug-gui` builtin) and drives the toolbar / inspector /
+        // gutter arrow. Inert until a debug session actually starts.
+        debugUI = DebuggerUI(presenter: self, monaco: monacoView)
+        debugUI?.start()
+
         editorContainer.addSubview(editorHeaderBar)
         editorContainer.addSubview(monacoView)
         // The legacy 22pt status strip below Monaco is gone — its state
@@ -2610,6 +2619,21 @@ final class CodeEditorViewController: UIViewController {
         outputPanel.addSubview(outputWebView)
         outputPanel.addSubview(outputImageView)
         outputPanel.addSubview(outputPDFView)
+
+        // hyperref emits TOC / \ref links as GoTo actions to NAMED destinations
+        // (e.g. /A << /S /GoTo /D (section.1) >>). PDFView navigates explicit
+        // page destinations on tap but is unreliable on named ones — and on
+        // Designed-for-iPad-on-Mac the built-in link tap often isn't delivered
+        // at all — so clicking a contents entry does nothing. Add our own tap
+        // that resolves the destination and scrolls to it. cancelsTouchesInView
+        // = false + simultaneous recognition (UIGestureRecognizerDelegate)
+        // keeps PDFView's scroll / pinch-zoom / text-selection fully intact;
+        // the handler only acts when a link annotation is actually hit.
+        let pdfLinkTap = UITapGestureRecognizer(target: self, action: #selector(handleOutputPDFLinkTap(_:)))
+        pdfLinkTap.delegate = self
+        pdfLinkTap.cancelsTouchesInView = false
+        outputPDFView.addGestureRecognizer(pdfLinkTap)
+
         outputPanel.addSubview(outputExpandButton)
 
         // Empty-state play-circle + bottom meta. Design CSS:
@@ -2804,6 +2828,30 @@ final class CodeEditorViewController: UIViewController {
             var cfg = button.configuration ?? UIButton.Configuration.plain()
             cfg.baseForegroundColor = isOn ? activeFg : mutedFg
             button.configuration = cfg
+        }
+    }
+
+    /// Navigate internal PDF links (hyperref table-of-contents entries,
+    /// \ref / \autoref, etc.) when tapped in the inline output preview.
+    /// PDFView resolves named destinations from the document's name tree at
+    /// load (PDFActionGoTo.destination is non-optional), but doesn't reliably
+    /// fire its own tap-navigation for them here, so we drive it explicitly.
+    @objc private func handleOutputPDFLinkTap(_ gesture: UITapGestureRecognizer) {
+        let pdfView = outputPDFView
+        guard !pdfView.isHidden, pdfView.document != nil else { return }
+        let viewPoint = gesture.location(in: pdfView)
+        guard let page = pdfView.page(for: viewPoint, nearest: true) else { return }
+        let pagePoint = pdfView.convert(viewPoint, to: page)
+        guard let annotation = page.annotation(at: pagePoint) else { return }
+
+        // Internal jump (TOC / cross-reference) → scroll to the destination.
+        if let goTo = annotation.action as? PDFActionGoTo {
+            pdfView.go(to: goTo.destination)
+            return
+        }
+        // External link (\href / \url) → hand off to the system browser.
+        if let urlAction = annotation.action as? PDFActionURL, let url = urlAction.url {
+            UIApplication.shared.open(url)
         }
     }
 
@@ -4031,7 +4079,7 @@ except Exception:
             switch self.currentLanguage {
             case .python:
                 didStream = true
-                let result = PythonRuntime.shared.execute(code: code, targetScene: scene) { [weak self] chunk in
+                let result = PythonRuntime.shared.execute(code: code, targetScene: scene, scriptPath: self.currentFileURL?.path) { [weak self] chunk in
                     DispatchQueue.main.async {
                         // Filter out internal-debug prefixes ([diag],
                         // [fallback], [py-exec], [manim-font], [manim
@@ -8201,6 +8249,10 @@ except Exception:
         codeTextView.text = contents  // mirror
         monacoView.setCode(contents, language: monacoLang)
         currentFileURL = url
+        // Debugger: track the open script (breakpoint-store key) and repaint its
+        // saved gutter dots now that the new content is loaded.
+        monacoView.currentScriptPath = url.path
+        monacoView.refreshBreakpointsForCurrentFile()
         lastSavedText = contents
         editorFileNameLabel.text = url.lastPathComponent
         applyLanguageTabStyle()

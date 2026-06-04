@@ -20,6 +20,9 @@ final class PreviewFullscreenViewController: UIViewController {
 
     private let path: String
     private let ext: String
+    /// Real-browser behavior for the preview WebViews — alert/confirm/prompt
+    /// dialogs + target="_blank"/window.open → system browser. Invisible (no UI).
+    private lazy var browserBehavior = BrowserBehaviorDelegate(host: self)
 
     init(path: String) {
         self.path = path
@@ -235,6 +238,7 @@ final class PreviewFullscreenViewController: UIViewController {
         wv.backgroundColor = .black
         wv.isOpaque = false
         wv.scrollView.backgroundColor = .black
+        wv.uiDelegate = browserBehavior        // alert/confirm/prompt + window.open
         // Attach the navigation delegate that pywebview uses to fire
         // `loaded` / `load_error` events the page can subscribe to.
         // Same shared instance the inline preview uses, so an event

@@ -350,6 +350,20 @@ final class MonacoEditorView: UIView {
         webView.evaluateJavaScript("window.__editor.setSymbolIndex(\(json))")
     }
 
+    // MARK: - Debugger bridge
+
+    /// Absolute path of the file currently shown — the key for the breakpoint
+    /// store (see MonacoEditorView+Breakpoints) and the debugger.
+    var currentScriptPath: String?
+
+    /// Paint (or clear, when `line` is nil) the golden current-execution-line
+    /// arrow + line highlight. Driven by DebuggerUI on each debugger stop.
+    func setDebugCurrentLine(_ line: Int?) {
+        guard isReady, Self.monacoEnabled else { return }
+        let arg = line.map(String.init) ?? "null"
+        webView.evaluateJavaScript("window.__editor && window.__editor.setDebugCurrentLine(\(arg)); true;")
+    }
+
     // MARK: - Helpers
 
     /// Escape for JS template literal: backslash, backtick, `${`, and carriage returns.
@@ -426,6 +440,10 @@ extension MonacoEditorView: WKScriptMessageHandler {
                 .replacingOccurrences(of: "`", with: "\\`")
                 .replacingOccurrences(of: "$", with: "\\$")
             webView.evaluateJavaScript("window.__editor.pasteFromClipboard(`\(escaped)`)")
+
+        case "breakpointToggle":
+            // editor.js posts {kind:"breakpointToggle", line} on a glyph-margin tap.
+            if let line = body["line"] as? Int { toggleBreakpoint(line: line) }
 
         default:
             break

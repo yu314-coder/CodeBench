@@ -115,6 +115,26 @@
         .monaco-editor .suggest-widget .monaco-list-row.focused {
             background: linear-gradient(90deg, rgba(99,102,241,0.25), rgba(168,85,247,0.12)) !important;
         }
+        /* ── Debugger: breakpoint dot + current-line arrow/highlight ── */
+        .cb-bp-glyph {
+            background: #ef4444;
+            border-radius: 50%;
+            width: 11px !important;
+            height: 11px !important;
+            margin-left: 5px;
+            margin-top: 4px;
+            box-shadow: 0 0 5px rgba(239,68,68,0.8);
+            cursor: pointer;
+        }
+        .cb-debug-arrow::before {
+            content: '\25B6';            /* ▶ */
+            color: #fbbf24;
+            font-size: 12px;
+            margin-left: 3px;
+        }
+        .cb-debug-line {
+            background: rgba(251, 191, 36, 0.13);
+        }
     </style>
 </head>
 <body>
@@ -243,7 +263,7 @@
                 scrollBeyondLastLine: false,
                 lineNumbers: 'on',
                 lineNumbersMinChars: 3,
-                glyphMargin: false,
+                glyphMargin: true,          // breakpoint dots + debugger arrow
                 folding: true,
                 showFoldingControls: 'mouseover',
                 wordWrap: 'on',
@@ -446,7 +466,49 @@
                         forceMoveMarkers: true,
                     }]);
                 },
+                // ── Debugger / breakpoints ──────────────────────────────
+                setBreakpoints(lines) {
+                    const decos = (lines || []).map(function (ln) {
+                        return {
+                            range: new monaco.Range(ln, 1, ln, 1),
+                            options: {
+                                glyphMarginClassName: 'cb-bp-glyph',
+                                glyphMarginHoverMessage: { value: 'Breakpoint' },
+                            },
+                        };
+                    });
+                    window.__bpDecorations = editor.deltaDecorations(
+                        window.__bpDecorations || [], decos);
+                },
+                setDebugCurrentLine(line) {
+                    if (line == null) {
+                        window.__debugDecorations = editor.deltaDecorations(
+                            window.__debugDecorations || [], []);
+                        return;
+                    }
+                    window.__debugDecorations = editor.deltaDecorations(
+                        window.__debugDecorations || [], [{
+                            range: new monaco.Range(line, 1, line, 1),
+                            options: {
+                                isWholeLine: true,
+                                className: 'cb-debug-line',
+                                glyphMarginClassName: 'cb-debug-arrow',
+                            },
+                        }]);
+                    try { editor.revealLineInCenterIfOutsideViewport(line); } catch (e) {}
+                },
             };
+
+            // Breakpoint toggling: a click in Monaco's glyph margin tells Swift,
+            // which persists the set and pushes it back via setBreakpoints().
+            window.__bpDecorations = window.__bpDecorations || [];
+            window.__debugDecorations = window.__debugDecorations || [];
+            editor.onMouseDown(function (e) {
+                if (e.target && e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                    const ln = e.target.position && e.target.position.lineNumber;
+                    if (ln) postToSwift({ kind: 'breakpointToggle', line: ln });
+                }
+            });
 
             // Single bundled entry point — registers Python + C + C++ + Fortran
             // IntelliSense providers. See editor.js for the full language DB.

@@ -45,8 +45,19 @@
     <string>CodeBench may access the camera if you choose to capture a photo or video to use as input for an OpenCV/PyAV/Pillow Python script. The camera is never accessed without your action.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>CodeBench may access the microphone if you choose to record audio to use as input for an audio-processing Python script. The microphone is never accessed without your action.</string>
+    <!--
+        UIFileSharingEnabled is intentionally false. It used to expose the
+        app's *sandbox* Documents as "On My iPad → BenchCode", which a File
+        Provider extension can't reach — so the user's files looked split
+        between that entry and the top-level "BenchCode" Location. The
+        Workspace (with ToolOutputs/Imported now nested inside it) is served
+        by the File Provider extension as a single top-level Location, like
+        iSH, so the redundant "On My iPad" entry is no longer wanted.
+        LSSupportsOpeningDocumentsInPlace stays true so the app can still open
+        documents in place (Share Sheet / "Open With…") without copying.
+    -->
     <key>UIFileSharingEnabled</key>
-    <true/>
+    <false/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
     <!--
@@ -452,7 +463,10 @@
              on-device LLM inference, manim Scene.render) and/or
              remove this entry before App Store submission. TestFlight
              + dev installs are unaffected. -->
-        <string>audio</string>
+        <!-- "audio" removed 2026-06-15 for App Store guideline 2.5.4: a
+             silent zero-amplitude keep-alive buffer is not genuine audible
+             content, so App Review rejects the "audio" background mode.
+             BackgroundExecutionGuard.startAudioLocked() is now a no-op. -->
         <!-- "processing": required for BGTaskScheduler-based long-
              running renders (manim, scipy) that get scheduled to
              continue after iOS reclaims the foreground. -->

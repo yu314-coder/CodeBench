@@ -242,6 +242,15 @@ final class BackgroundExecutionGuard {
     // MARK: - Silent audio
 
     private func startAudioLocked() {
+        // App Store guideline 2.5.4 (2026-06-15): the silent-audio keep-alive
+        // was retired. A zero-amplitude buffer is not genuine audible content,
+        // so the "audio" UIBackgroundModes entry was removed; activating a
+        // playback session here can no longer keep the app alive in the
+        // background, so this method is now a no-op. Background time comes from
+        // beginBackgroundTask + BGTaskScheduler ("processing"). The original
+        // implementation is kept below under `#if false` for reference.
+        sessionActive = false
+        #if false
         do {
             // `.playback` is the only category that's guaranteed to
             // continue when the screen locks. `.mixWithOthers` makes
@@ -290,6 +299,7 @@ final class BackgroundExecutionGuard {
         // CPU cost — the engine just keeps replaying the same memory.
         player.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
         player.play()
+        #endif
     }
 
     private func stopAudioLocked() {

@@ -125,6 +125,31 @@ _HARD_CLEANUP_PATHS=(
     "$FW/libgcc_s_1_1.framework"
     "$FW/libgfortran_5.framework"
     "$FW/libquadmath_0.framework"
+    # ── 2026-05 additions ──
+    # Each of these is a DUPLICATE of a binary that Xcode also
+    # framework-wraps into Frameworks/<name>.framework/. Apple's
+    # validator counts both copies and rejects the loose .dylib
+    # ("Invalid bundle structure ... binary file is not permitted").
+    # The framework copy remains in Frameworks/ and is what actually
+    # gets loaded at runtime, so deleting the app_packages duplicate
+    # is safe.
+    #
+    # pyarrow's libarrow_python: also has a libarrow_python.so alias
+    # next to it (see app_packages/site-packages/pyarrow/__init__.py
+    # for the ctypes-preload shim that loads via the .so path on iOS).
+    "$APP/app_packages/site-packages/pyarrow/libarrow_python.dylib"
+    # scipy's iOS-arm64 error-state runtime — Frameworks/scipy_aux/
+    # carries the production copy used by sparse linalg / fortran
+    # solvers; the app_packages copy is unused at runtime.
+    "$APP/app_packages/site-packages/scipy/special/libsf_error_state.dylib"
+    # PyTorch's runtime dylibs. libtorch_python (~103 MB) is the
+    # Python C-extension bridge; libshm is shared-memory IPC for
+    # multiprocessing. Both get auto-wrapped by Xcode and the
+    # framework copy is what dyld loads at PyTorchLib.bootstrap().
+    # See scripts/repack-torch-dylib.swift for the .applzma path
+    # that handles the >100 MB GitHub blob limit separately.
+    "$APP/app_packages/site-packages/torch/lib/libtorch_python.dylib"
+    "$APP/app_packages/site-packages/torch/lib/libshm.dylib"
     # ── ITMS-90338 Non-public API references ──
     # manimpango's native Cython extensions call _CTFontCopyDefaultCascadeList,
     # a private CoreText API. Our pure-Python shim in manimpango/__init__.py
@@ -163,25 +188,52 @@ echo "  APP=$APP  ($(du -sh "$APP" 2>/dev/null | awk '{print $1}'))"
 echo "  FW=$FW  ($(find "$FW" -maxdepth 1 \( -name "*.dylib" -o -name "*.so" \) -not -type l 2>/dev/null | wc -l | tr -d ' ') loose, $(find "$FW" -name "*.framework" -type d 2>/dev/null | wc -l | tr -d ' ') frameworks)"
 
 # ============================================================
-# Step 0b: Fix MinimumOSVersion mismatch in wrapped frameworks.
-# BeeWare's install_python writes Info.plists with MinimumOSVersion=13.0
-# but the binaries are built with LC_BUILD_VERSION minos=17.0 (matching
-# the app's IPHONEOS_DEPLOYMENT_TARGET). App Store rejects this mismatch
-# with ITMS-90208 "does not support the minimum OS Version specified in
-# the Info.plist" — once per wrapped framework (~100 errors per upload).
+# Step 0b: Fix MinimumOSVersion mismatch AND CFBundlePackageType in
+# wrapped frameworks.
+#
+# (1) MinimumOSVersion: BeeWare's install_python writes Info.plists with
+# MinimumOSVersion=13.0 but the binaries are built with LC_BUILD_VERSION
+# minos=17.0 (matching the app's IPHONEOS_DEPLOYMENT_TARGET). App Store
+# rejects this mismatch with ITMS-90208 "does not support the minimum OS
+# Version specified in the Info.plist" — once per wrapped framework
+# (~100 errors per upload).
+#
+# (2) CFBundlePackageType: BeeWare's install_python writes every wrapped
+# C-extension framework Info.plist with CFBundlePackageType=APPL
+# (application) instead of FMWK (framework). The app then contains the
+# main .app (APPL) PLUS ~440 framework bundles all ALSO claiming APPL.
+# `xcrun altool --upload-app` / Transporter identify the upload target
+# by scanning for the APPL bundle, find hundreds of them, and bail with:
+#   "Cannot determine the Apple ID from Bundle ID
+#    'euleryu.CodeBench.site-packages.<...>'"
+# — picking a nested framework's bundle ID instead of the app's. Forcing
+# every framework to FMWK leaves exactly one APPL bundle (the .app), so
+# the uploader resolves the correct app. (Step 4 re-signs every framework
+# after this, so the Info.plist edit doesn't leave a broken signature.)
 #
 # Force every framework Info.plist's MinimumOSVersion to match the
-# binary's actual minos (the app's deployment target).
+# binary's actual minos (the app's deployment target), and its
+# CFBundlePackageType to FMWK.
 # ============================================================
 TARGET_MIN_OS="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
-echo "wrap-loose-dylibs: Step 0b — harmonizing MinimumOSVersion to $TARGET_MIN_OS"
+echo "wrap-loose-dylibs: Step 0b — harmonizing MinimumOSVersion to $TARGET_MIN_OS + forcing CFBundlePackageType=FMWK"
 _PLIST_FIXED=0
+_PKGTYPE_FIXED=0
 while IFS= read -r -d '' _plist; do
     /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $TARGET_MIN_OS" "$_plist" 2>/dev/null \
         || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $TARGET_MIN_OS" "$_plist" 2>/dev/null
     _PLIST_FIXED=$((_PLIST_FIXED + 1))
+    # Force framework package type. A wrapped C-extension or dylib is a
+    # framework, never an application — APPL here confuses the App Store
+    # uploader's primary-bundle detection.
+    if [ "$(/usr/libexec/PlistBuddy -c "Print :CFBundlePackageType" "$_plist" 2>/dev/null)" != "FMWK" ]; then
+        /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType FMWK" "$_plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string FMWK" "$_plist" 2>/dev/null
+        _PKGTYPE_FIXED=$((_PKGTYPE_FIXED + 1))
+    fi
 done < <(find "$FW" -name "Info.plist" -path "*.framework/Info.plist" -print0 2>/dev/null)
 echo "  fixed MinimumOSVersion in $_PLIST_FIXED framework Info.plists"
+echo "  forced CFBundlePackageType=FMWK in $_PKGTYPE_FIXED framework Info.plists"
 
 # ============================================================
 # Step 0b2: Strip 32-bit (armv7) slice from any fat framework

@@ -31,6 +31,12 @@ import llama   // GGML_TYPE_F16 and other ggml constants
     /// GameViewController once the LlamaRunner is created.
     weak var runner: LlamaRunner?
 
+    /// Apple's on-device engine (Foundation Models). Used when the shared
+    /// `CodeBench.aiUseAppleOnDevice` flag is on AND the model is available,
+    /// so the terminal `ai` REPL honors the same selection the editor's AI
+    /// model picker makes. Owned (not weak) — it's stateless and cheap.
+    private let foundationRunner = FoundationModelsRunner()
+
     private var signalTimer: Timer?
     private var inFlight = false
     /// Set when the current generation has been cancelled via Ctrl-C.
@@ -74,11 +80,32 @@ import llama   // GGML_TYPE_F16 and other ggml constants
               let data = try? Data(contentsOf: URL(fileURLWithPath: reqPath)) else { return }
         try? FileManager.default.removeItem(atPath: reqPath)
 
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let path = obj["path"] as? String, !path.isEmpty else {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             writeModelDone(status: -1, message: "ai-load: malformed request.json")
             return
         }
+
+        // Apple on-device marker (terminal `/model apple`): flip the shared
+        // flag the editor's AI picker also reads, publish the active name, done.
+        if (obj["apple_on_device"] as? Bool) == true {
+            if FoundationModelsRunner.isAvailable() {
+                UserDefaults.standard.set(true, forKey: "CodeBench.aiUseAppleOnDevice")
+                try? "Apple Intelligence (on-device)\n".write(
+                    toFile: signalDir + "current_model.txt", atomically: true, encoding: .utf8)
+                writeModelDone(status: 0, message: "using Apple Intelligence (on-device)")
+            } else {
+                let reason = FoundationModelsRunner.unavailableReason() ?? "not available"
+                writeModelDone(status: -1, message: "Apple on-device model unavailable — \(reason)")
+            }
+            return
+        }
+
+        guard let path = obj["path"] as? String, !path.isEmpty else {
+            writeModelDone(status: -1, message: "ai-load: malformed request.json")
+            return
+        }
+        // Loading a real GGUF turns Apple on-device back off.
+        UserDefaults.standard.set(false, forKey: "CodeBench.aiUseAppleOnDevice")
         guard FileManager.default.fileExists(atPath: path) else {
             writeModelDone(status: -1, message: "ai-load: no such file: \(path)")
             return
@@ -263,8 +290,13 @@ import llama   // GGML_TYPE_F16 and other ggml constants
         let streamPath = signalDir + "ai_response.stream"
         FileManager.default.createFile(atPath: streamPath, contents: nil)
 
-        guard let runner = runner else {
-            writeDone(status: -2, message: "ai: no model loaded. Load one from the Models tab first.")
+        // Route to Apple's on-device model when the editor's AI picker selected
+        // it (shared flag) and it's actually available; else the bundled GGUF.
+        let useApple = UserDefaults.standard.bool(forKey: "CodeBench.aiUseAppleOnDevice")
+                    && FoundationModelsRunner.isAvailable()
+        let generator: TextGenerator? = useApple ? foundationRunner : runner
+        guard let generator = generator else {
+            writeDone(status: -2, message: "ai: no model loaded. Load one from the Models tab first, or pick Apple Intelligence (on-device).")
             return
         }
 
@@ -286,7 +318,7 @@ import llama   // GGML_TYPE_F16 and other ggml constants
         }
 
         inFlight = true
-        runner.generate(
+        generator.generate(
             messages: messages,
             maxTokens: maxTokens,
             grammar: nil,

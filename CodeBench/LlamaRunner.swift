@@ -1,7 +1,7 @@
 import Foundation
 import llama
 
-final class LlamaRunner {
+final class LlamaRunner: TextGenerator {
     fileprivate final class LlamaLogCapture {
         private var lines: [String] = []
         private let lock = NSLock()
@@ -358,6 +358,13 @@ final class LlamaRunner {
     }
     private var vocab: OpaquePointer?
     private var config = Config()
+
+    /// Live-update the sampling temperature. The sampler chain is rebuilt from
+    /// `config.temperature` at the start of each generation, so this takes
+    /// effect on the next `generate(...)` without reloading the model.
+    func setTemperature(_ t: Float) {
+        config.temperature = max(0, t)
+    }
 
     /// The context window (n_ctx) the currently-loaded model was created with.
     /// Exposed so callers (e.g. the editor's AI chat) can budget their prompt

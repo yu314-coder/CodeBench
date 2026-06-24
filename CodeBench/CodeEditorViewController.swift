@@ -428,6 +428,10 @@ final class CodeEditorViewController: UIViewController {
     private let editorFilesPanel = UIView()
     private var editorFilesWidthConstraint: NSLayoutConstraint!
     private var editorFilesPanelVisible: Bool = true
+    /// Leading inset of the editor toolbar. Widened on compact width so the
+    /// Run button clears the floating sidebar re-open button at the screen's
+    /// top-leading corner (otherwise they overlap on iPhone).
+    private var toolbarLeadingConstraint: NSLayoutConstraint?
     /// The child FilesBrowserViewController hosted inside editorFilesPanel.
     /// Different instance from `GameViewController.filesBrowserController`
     /// (which is now nil after the sidebar slim-down).
@@ -461,6 +465,8 @@ final class CodeEditorViewController: UIViewController {
     // Language.title in a colour-tinted capsule (no toggle, just an
     // unambiguous label so the tab itself doesn't have to spell it out).
     private let langPill = UILabel()
+    private var langPillMinWidth: NSLayoutConstraint?
+    private var langPillZeroWidth: NSLayoutConstraint?
     // 1.5pt accent bar pinned to the TOP edge of the file pill. Makes
     // the pill look like an active editor tab — same visual idiom as
     // VS Code's active-tab indicator. Recolored when the language changes.
@@ -858,6 +864,36 @@ final class CodeEditorViewController: UIViewController {
     /// UserDefaults key for the persisted custom output-panel width.
     private static let kOutputPanelWidthKey = "CodeBench.outputPanelWidth"
 
+    // MARK: - Preview tabs (iPad output panel)
+    /// Browser-style tab strip shown in the output-panel header on regular
+    /// width (iPad). Each tab is one preview source — a ToolOutputs chart, a
+    /// manim MP4, a web URL — and switching a tab re-renders via
+    /// ``showImageOutput`` (rendering is idempotent, so a tab is just a path).
+    private let previewTabsBar = PreviewTabsBar()
+    /// Ordered tab identities (file path or URL). "One tab per file/URL":
+    /// re-running a script that regenerates the same path updates its tab
+    /// rather than spawning a new one.
+    private var previewTabSources: [String] = []
+    private let maxPreviewTabs = 12
+
+    // MARK: - AI engine: Apple on-device (Foundation Models) option
+    /// When on, the editor AI uses Apple's on-device model (Foundation Models)
+    /// instead of the bundled GGUF runner. Persisted; only honored when the
+    /// model is actually available (iOS 26+ and a capable device).
+    private var aiUseAppleOnDevice: Bool {
+        get { UserDefaults.standard.bool(forKey: "CodeBench.aiUseAppleOnDevice") }
+        set { UserDefaults.standard.set(newValue, forKey: "CodeBench.aiUseAppleOnDevice") }
+    }
+    private let foundationRunner = FoundationModelsRunner()
+    /// Which engine the editor AI should use right now: Apple on-device when
+    /// selected AND available, else the bundled GGUF runner (nil if none loaded).
+    private func activeAIGenerator() -> TextGenerator? {
+        if aiUseAppleOnDevice, FoundationModelsRunner.isAvailable() {
+            return foundationRunner
+        }
+        return llamaRunner
+    }
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -888,6 +924,16 @@ final class CodeEditorViewController: UIViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSettingsDidChange),
             name: Settings.didChange, object: nil)
+
+        // ⌘, quick-settings sheet toggles Vim mode / inline completion →
+        // forward live to the Monaco editor. (Initial state is self-applied
+        // by MonacoEditorView.applyEditorPrefs() on editor-ready.)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleVimModeChanged(_:)),
+            name: Notification.Name("codeBenchVimModeChanged"), object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleInlineCompletionChanged(_:)),
+            name: Notification.Name("codeBenchInlineCompletionChanged"), object: nil)
 
         // After `pdflatex foo.tex` produces a PDF, surface it in the
         // editor's output preview panel so the user can see the result
@@ -1701,9 +1747,13 @@ final class CodeEditorViewController: UIViewController {
         statusStateLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         toolbar.addSubview(toolbarStack)
+        // 48pt on compact clears the floating sidebar re-open button (36pt at
+        // safe-leading+6); 12pt elsewhere. Kept in sync in traitCollectionDidChange.
+        let toolbarLeading = toolbarStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: isCompactWidth ? 48 : 12)
+        toolbarLeadingConstraint = toolbarLeading
         NSLayoutConstraint.activate([
             toolbarStack.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 6),
-            toolbarStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12),
+            toolbarLeading,
             toolbarStack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -12),
             toolbarStack.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -6)
         ])
@@ -1929,6 +1979,21 @@ final class CodeEditorViewController: UIViewController {
 
         editorContainer.addSubview(editorHeaderBar)
         editorContainer.addSubview(monacoView)
+        // Tap-to-focus on the editor — mirror of the terminal's tap gesture
+        // (see `focusTerminal`). On iPad, tapping the Monaco WKWebView does
+        // NOT reliably resign the native SwiftTerm terminal's first
+        // responder, so the keyboard can stay stuck on the terminal and the
+        // caret never returns to the editor ("I select the terminal, move to
+        // the editor box, and it keeps focus on the terminal"). This tap
+        // forces the hand-off. cancels/delays are off so Monaco still
+        // receives the tap for caret placement, and the shared gesture
+        // delegate lets it coexist with (and defer to) selection gestures.
+        let editorFocusTap = UITapGestureRecognizer(target: self, action: #selector(handleEditorAreaTap))
+        editorFocusTap.cancelsTouchesInView = false
+        editorFocusTap.delaysTouchesBegan = false
+        editorFocusTap.delaysTouchesEnded = false
+        editorFocusTap.delegate = self
+        monacoView.addGestureRecognizer(editorFocusTap)
         // The legacy 22pt status strip below Monaco is gone — its state
         // dot, cursor pos, and encoding labels now live in the toolbar
         // tail (see configureToolbarStatusTail) so the editor pane
@@ -1983,7 +2048,6 @@ final class CodeEditorViewController: UIViewController {
             langPill.leadingAnchor.constraint(equalTo: fileTabPill.trailingAnchor, constant: 8),
             langPill.centerYAnchor.constraint(equalTo: editorHeaderBar.centerYAnchor),
             langPill.heightAnchor.constraint(equalToConstant: 18),
-            langPill.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
 
             // AI Assist chip — trailing edge, violet capsule.
             aiAssistChip.trailingAnchor.constraint(equalTo: editorHeaderBar.trailingAnchor, constant: -12),
@@ -2011,12 +2075,29 @@ final class CodeEditorViewController: UIViewController {
             monacoView.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor),
         ])
 
+        // Language pill width: keep the ≥56 minimum on regular width (iPad),
+        // but collapse it to 0 + hide it on compact/iPhone so it stops
+        // squeezing the file tab. The file extension already conveys language.
+        langPillMinWidth = langPill.widthAnchor.constraint(greaterThanOrEqualToConstant: 56)
+        langPillZeroWidth = langPill.widthAnchor.constraint(equalToConstant: 0)
+        langPillMinWidth?.isActive = true
+        applyCompactHeaderChrome()
+
         // Initial tab styling — currentLanguage defaults to .python in
         // the property declaration, so this paints the Python icon and
         // pill colour on first show. Subsequent calls (loadFile,
         // insertCode, languageChanged) re-paint when the language flips.
         applyLanguageTabStyle()
         updateBreadcrumb()
+    }
+
+    /// Compact (iPhone) header chrome: collapse + hide the language pill so it
+    /// stops cramping the file tab. Regular width (iPad) keeps the ≥56 pill.
+    private func applyCompactHeaderChrome() {
+        let compact = isCompactWidth
+        langPill.isHidden = compact
+        langPillMinWidth?.isActive = !compact
+        langPillZeroWidth?.isActive = compact
     }
 
     // MARK: - Editor Status Bar
@@ -2574,6 +2655,26 @@ final class CodeEditorViewController: UIViewController {
         outputHeaderBar.addSubview(outputTabsContainer)
         outputPanel.addSubview(outputHeaderBar)
 
+        // Browser-style preview tabs occupy the header's title region and are
+        // shown only on iPad once ≥1 preview exists (the title hides to make
+        // room — see rebuildPreviewTabsBar). iPhone keeps the half-sheet.
+        previewTabsBar.translatesAutoresizingMaskIntoConstraints = false
+        previewTabsBar.isHidden = true
+        previewTabsBar.accentColor = EditorTheme.accent
+        outputHeaderBar.addSubview(previewTabsBar)
+        NSLayoutConstraint.activate([
+            previewTabsBar.leadingAnchor.constraint(equalTo: outputHeaderBar.leadingAnchor, constant: 12),
+            previewTabsBar.trailingAnchor.constraint(equalTo: outputHeaderBar.trailingAnchor, constant: -10),
+            previewTabsBar.topAnchor.constraint(equalTo: outputHeaderBar.topAnchor),
+            previewTabsBar.bottomAnchor.constraint(equalTo: outputHeaderBar.bottomAnchor),
+        ])
+        previewTabsBar.onSelect = { [weak self] id in
+            self?.showImageOutput(path: id)   // idempotent re-render
+        }
+        previewTabsBar.onClose = { [weak self] id in
+            self?.closePreviewTab(id)
+        }
+
         // Reflow the gradient once the header has size; piggyback on the
         // viewDidLayoutSubviews update path by storing a reference.
         outputHeaderBar.layoutIfNeeded()
@@ -2829,6 +2930,91 @@ final class CodeEditorViewController: UIViewController {
             cfg.baseForegroundColor = isOn ? activeFg : mutedFg
             button.configuration = cfg
         }
+    }
+
+    // MARK: - Preview tabs (dynamic, iPad)
+
+    /// Tabs are only for things the user wants to SEE: ToolOutputs charts /
+    /// manim videos / pywebview pages (``isChartOutputPath``) and live web URLs.
+    private func isPreviewableForTab(_ path: String) -> Bool {
+        return isChartOutputPath(path)
+            || path.hasPrefix("http://") || path.hasPrefix("https://")
+    }
+
+    private func previewTabTitle(for path: String) -> String {
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            return URL(string: path)?.host ?? "Web"
+        }
+        return (path as NSString).lastPathComponent
+    }
+
+    private func previewTabIcon(for path: String) -> String {
+        let p = path.lowercased()
+        if p.hasPrefix("http") { return "globe" }
+        if p.hasSuffix(".mp4") || p.hasSuffix(".mov") || p.hasSuffix(".webm") || p.hasSuffix(".m4v") { return "film" }
+        if p.hasSuffix(".pdf") { return "doc.richtext" }
+        if p.hasSuffix(".html") || p.hasSuffix(".htm") { return "globe" }
+        if p.hasSuffix(".png") || p.hasSuffix(".jpg") || p.hasSuffix(".jpeg") || p.hasSuffix(".gif") || p.hasSuffix(".webp") { return "photo" }
+        return "rectangle.on.rectangle"
+    }
+
+    /// Canonicalize a preview source so the two chart finders — the fs-watcher
+    /// (``tryShowChart``) and the Run-button ``__codebench_plot_path`` reader —
+    /// which can hand us the SAME file as `/var/…` vs `/private/var/…` (iOS
+    /// symlinks `/var` → `/private/var`), collapse to ONE tab instead of two.
+    /// Live URLs pass through unchanged.
+    private func canonicalPreviewPath(_ path: String) -> String {
+        if path.hasPrefix("http://") || path.hasPrefix("https://") { return path }
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Register ``rawPath`` as a tab (or re-activate it if already present) and
+    /// refresh the strip. "One tab per file/URL" — dedup is on the canonical
+    /// path; over the cap, evict the oldest tab that isn't the one activating.
+    private func registerOrActivatePreviewTab(_ rawPath: String) {
+        let path = canonicalPreviewPath(rawPath)
+        if !previewTabSources.contains(path) {
+            previewTabSources.append(path)
+            if previewTabSources.count > maxPreviewTabs,
+               let dropIdx = previewTabSources.firstIndex(where: { $0 != path }) {
+                previewTabSources.remove(at: dropIdx)
+            }
+        }
+        rebuildPreviewTabsBar(active: path)
+    }
+
+    /// Close a tab. If it was active, fall back to a neighbour; if it was the
+    /// last one, clear the panel (which also restores the title).
+    private func closePreviewTab(_ path: String) {
+        guard let idx = previewTabSources.firstIndex(of: path) else { return }
+        // `path` is canonical (that's what we store); currentOutputPath is the
+        // raw string the renderer was handed — canonicalize before comparing.
+        let activeCanonical = canonicalPreviewPath(currentOutputPath ?? "")
+        let wasActive = (activeCanonical == path)
+        previewTabSources.remove(at: idx)
+        if previewTabSources.isEmpty {
+            rebuildPreviewTabsBar(active: nil)
+            showImageOutput(path: nil)
+            return
+        }
+        if wasActive {
+            let next = previewTabSources[min(idx, previewTabSources.count - 1)]
+            showImageOutput(path: next)   // re-renders + re-registers as active
+        } else {
+            rebuildPreviewTabsBar(active: activeCanonical)
+        }
+    }
+
+    /// Push the current model into the strip and toggle title↔tabs visibility.
+    private func rebuildPreviewTabsBar(active: String?) {
+        let show = !isCompactWidth && !previewTabSources.isEmpty
+        previewTabsBar.isHidden = !show
+        outputTitleLabel.isHidden = show
+        previewTabsBar.setTabs(previewTabSources.map {
+            PreviewTabsBar.Tab(id: $0,
+                               title: previewTabTitle(for: $0),
+                               systemIcon: previewTabIcon(for: $0))
+        }, active: active)
     }
 
     /// Navigate internal PDF links (hyperref table-of-contents entries,
@@ -3876,10 +4062,7 @@ except Exception:
     /// already know what they want to write.)
     private func loadInitialFile() {
         let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard let workspace = docs?.appendingPathComponent("Workspace") else {
-            loadEmptyBuffer(); return
-        }
+        let workspace = AppPaths.workspaceURL
         try? fm.createDirectory(at: workspace, withIntermediateDirectories: true)
 
         // Last-opened file (persisted in UserDefaults across app launches).
@@ -4090,7 +4273,13 @@ except Exception:
                     }
                 }
                 output = result.output.isEmpty ? "" : result.output
-                hasError = output.lowercased().contains("error") || output.contains("Traceback")
+                // Match real Python error patterns (case-sensitive, like the
+                // stderr filter), NOT any lowercased "error" — otherwise benign
+                // text such as "status=no error has occurred" or "error-free"
+                // falsely marks a successful run as "completed with errors".
+                hasError = output.contains("Traceback")
+                    || output.contains("Error")
+                    || output.contains("Exception")
                 resultImagePath = result.imagePath
 
             case .c:
@@ -4355,7 +4544,7 @@ except Exception:
         qualityLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Create fresh segmented controls for the popover (don't re-parent instance properties)
-        let qualitySeg = UISegmentedControl(items: ["Low 480p", "Med 720p", "High 1080p"])
+        let qualitySeg = UISegmentedControl(items: ["480p", "720p", "1080p", "1440p", "4K", "8K"])
         qualitySeg.selectedSegmentIndex = UserDefaults.standard.integer(forKey: "manim_quality")
         qualitySeg.translatesAutoresizingMaskIntoConstraints = false
         qualitySeg.backgroundColor = EditorTheme.gutterBg
@@ -4568,7 +4757,7 @@ except Exception:
             ChatMessage(role: .user, content: prompt)
         ]
 
-        guard let runner = llamaRunner else {
+        guard let runner = activeAIGenerator() else {
             // Old behaviour: a dead-end text bubble telling the user
             // to navigate elsewhere ("go to the Models tab"). Better:
             // surface the model picker right here, so picking a model
@@ -4826,7 +5015,7 @@ except Exception:
                                         depth: Int) {
         guard aiAutoRunEnabled else { return }
         guard depth + 1 < chatMaxReActDepth else { return }
-        guard let runner = llamaRunner else { return }
+        guard let runner = activeAIGenerator() else { return }
         // Only spend a follow-up turn when there's something to act on:
         // an error to fix, or output/chart to explain.
         guard hadError || !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || producedChart else { return }
@@ -5463,6 +5652,16 @@ except Exception:
     /// at runtime (font sizes, word wrap, monaco theme). Everything
     /// else (Manim quality, autosave cadence, etc.) is read on demand
     /// from `Settings` by whichever code path uses it.
+    @objc private func handleVimModeChanged(_ n: Notification) {
+        let on = (n.object as? Bool) ?? UserDefaults.standard.bool(forKey: "editor.vimMode.enabled")
+        monacoView.setVimMode(on)
+    }
+
+    @objc private func handleInlineCompletionChanged(_ n: Notification) {
+        let on = (n.object as? Bool) ?? UserDefaults.standard.bool(forKey: "editor.inlineCompletion.enabled")
+        monacoView.setInlineCompletions(on)
+    }
+
     @objc private func handleSettingsDidChange() {
         let newTerm = CGFloat(Settings.terminalFontSize)
         if newTerm != terminalFontSize {
@@ -5628,6 +5827,8 @@ except Exception:
         guard traitCollection.horizontalSizeClass != previousTraitCollection?.horizontalSizeClass
         else { return }
         let compact = isCompactWidth
+        applyCompactHeaderChrome()
+        toolbarLeadingConstraint?.constant = compact ? 48 : 12
         editorFilesPanelVisible = !compact
         editorFilesWidthConstraint?.constant = compact ? 0 : 220
         editorFilesPanel.alpha = compact ? 0 : 1
@@ -5851,6 +6052,21 @@ except Exception:
                 : "Pick a model to load right now.",
             preferredStyle: .actionSheet)
 
+        // Apple's on-device model (the family behind Apple Intelligence / Siri),
+        // shown only when it's usable here (iOS 26+ and a capable device).
+        // Selecting it routes the AI edit box to it; picking a GGUF switches back.
+        // On an iOS 27 device this transparently uses the iOS 27 model.
+        if FoundationModelsRunner.isAvailable() {
+            let on = self.aiUseAppleOnDevice
+            sheet.addAction(UIAlertAction(
+                title: "\(on ? "✓ " : "  ")Apple Intelligence (on-device)",
+                style: .default) { _ in
+                self.aiUseAppleOnDevice = true
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                self.showToast("Using Apple's on-device model", near: sender)
+            })
+        }
+
         for url in availableModels {
             let isCurrent = (url.path == mruPath)
             let sizeStr = (try? url.resourceValues(forKeys: [.fileSizeKey]))
@@ -5861,6 +6077,7 @@ except Exception:
             let title = "\(prefix)\(url.lastPathComponent) — \(sizeStr)"
             sheet.addAction(UIAlertAction(title: title, style: .default) { _ in
                 let slot = isCurrent ? mruSlot : 0  // fallback: slot 0 if unknown
+                self.aiUseAppleOnDevice = false   // picking a GGUF switches off Apple on-device
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 NotificationCenter.default.post(
                     name: .codeBenchRequestLoadModel,
@@ -6325,10 +6542,22 @@ except Exception:
         swiftTermView.reloadInputViews()
     }
 
+    /// Mirror of `focusTerminal()` for the editor side. Tapping the editor
+    /// must pull keyboard focus OUT of the native terminal: on iPad, tapping
+    /// the Monaco WKWebView doesn't reliably resign SwiftTerm's first
+    /// responder, so the keyboard stays routed to the terminal and the caret
+    /// never returns to the editor. Only act when the terminal actually holds
+    /// focus, so ordinary editor taps (and caret placement) are untouched.
+    @objc private func handleEditorAreaTap() {
+        guard swiftTermView.isFirstResponder else { return }
+        swiftTermView.resignFirstResponder()
+        monacoView.focusEditor()
+    }
+
     /// Keyboard-avoidance for the terminal. Without this, when the
     /// user taps the terminal on an iPhone / Magic-Keyboard-less iPad,
     /// the software keyboard pops up from the bottom and covers the
-    /// most recent prompt (`euler@Eulers-iPad ~/Workspace %`), which
+    /// most recent prompt (`euler@Eulers-iPad ~/Documents/Workspace %`), which
     /// is always at the bottom of the terminal. The user then sees
     /// an empty-looking terminal and doesn't realise the REPL is
     /// waiting for input.
@@ -6892,9 +7121,7 @@ except Exception:
     /// than the PTY). This is the safety net for the terminal preview.
     private func startToolOutputDirectoryWatcher() {
         guard toolOutputDirWatcher == nil else { return }
-        guard let documents = FileManager.default.urls(
-                for: .documentDirectory, in: .userDomainMask).first else { return }
-        let toolDir = documents.appendingPathComponent("ToolOutputs", isDirectory: true)
+        let toolDir = AppPaths.toolOutputsURL           // App Group / Workspace / ToolOutputs
         try? FileManager.default.createDirectory(
             at: toolDir, withIntermediateDirectories: true)
         let fd = open(toolDir.path, O_EVTONLY)
@@ -6924,9 +7151,7 @@ except Exception:
     /// changes. Walks for a chart-like file modified more recently
     /// than our last-shown timestamp and loads it.
     private func onToolOutputDirectoryChanged() {
-        guard let documents = FileManager.default.urls(
-                for: .documentDirectory, in: .userDomainMask).first else { return }
-        let toolDir = documents.appendingPathComponent("ToolOutputs", isDirectory: true)
+        let toolDir = AppPaths.toolOutputsURL
         // Diagnostic: log every fs-event firing so we can tell (in
         // Xcode console) whether the watcher itself triggered. If the
         // user reports "preview didn't update" and this log is absent,
@@ -7064,9 +7289,7 @@ except Exception:
     /// the auto-present chain misses; the user can always summon the
     /// last chart by tapping the eye icon.
     @objc private func showLatestPreviewTapped() {
-        guard let docs = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask).first else { return }
-        let toolOutputs = docs.appendingPathComponent("ToolOutputs")
+        let toolOutputs = AppPaths.toolOutputsURL
         writePreviewDebugLog("manual-preview tapped, scanning \(toolOutputs.path)")
 
         let extOK: Set<String> = ["html", "htm", "png", "jpg", "jpeg",
@@ -7990,7 +8213,10 @@ except Exception:
         // ── 1. Status header (non-interactive label-style row) ──
         let headerTitle: String
         let headerSubtitle: String
-        if let loaded = loadedModelSlot {
+        if aiUseAppleOnDevice, FoundationModelsRunner.isAvailable() {
+            headerTitle = "Using · Apple Intelligence"
+            headerSubtitle = "On-device model (no GGUF needed)"
+        } else if let loaded = loadedModelSlot {
             headerTitle = "Loaded · \(loaded.title)"
             headerSubtitle = loaded.subtitle
         } else {
@@ -8021,8 +8247,9 @@ except Exception:
                 title: slot.title,
                 subtitle: slot.subtitle,
                 image: UIImage(systemName: iconName),
-                state: isLoaded ? .on : .off
+                state: (isLoaded && !aiUseAppleOnDevice) ? .on : .off
             ) { [weak self] _ in
+                self?.aiUseAppleOnDevice = false   // picking a GGUF leaves Apple on-device
                 self?.onModelSelected?(slot)
             }
         }
@@ -8083,9 +8310,36 @@ except Exception:
             children: [chooseFile, openManager]
         )
 
+        // ── Apple's on-device model (iOS 26+) — the family behind Apple
+        // Intelligence / Siri. Shown even when unavailable (with the reason),
+        // so it's never a silent omission. On an iOS 27 device this uses the
+        // iOS 27 model automatically. Selecting it drives BOTH this editor AI
+        // box and the terminal `ai` REPL (shared flag).
+        var appleSection: [UIMenu] = []
+        if #available(iOS 26, *) {
+            let available = FoundationModelsRunner.isAvailable()
+            let selected  = aiUseAppleOnDevice && available
+            let appleAction = UIAction(
+                title: "Apple Intelligence (on-device)",
+                subtitle: available
+                    ? "On-device · private · free"
+                    : "Unavailable — \(FoundationModelsRunner.unavailableReason() ?? "not ready")",
+                image: UIImage(systemName: "sparkles"),
+                attributes: available ? [] : .disabled,
+                state: selected ? .on : .off
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.aiUseAppleOnDevice = true
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                self.updateModelName("Apple Intelligence")
+                self.modelSelectorButton.menu = self.buildModelMenu()
+            }
+            appleSection = [UIMenu(options: .displayInline, children: [appleAction])]
+        }
+
         return UIMenu(
             title: "Models",
-            children: [headerGroup] + familyMenus + [footerGroup]
+            children: [headerGroup] + appleSection + familyMenus + [footerGroup]
         )
     }
 
@@ -8152,8 +8406,20 @@ except Exception:
         // have Latin-1 bytes (font names, math glyph debug output) that
         // make UTF-8 decoding fail silently, so the old guard returned
         // without showing anything — the user saw "nothing happens".
+        // Check the file size BEFORE reading — pulling a huge file (a video, a
+        // dataset, an HTML embedding a base64 video) fully into a String hangs /
+        // OOMs the app. Above the hard cap, read only a 256 KB prefix.
+        let fileSize = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        let hardReadCap = 50_000_000   // 50 MB
         let contents: String
-        if let s = try? String(contentsOf: url, encoding: .utf8) {
+        if fileSize > hardReadCap {
+            let head: Data? = {
+                guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+                defer { try? fh.close() }
+                return try? fh.read(upToCount: 262_144)   // 256 KB
+            }()
+            contents = head.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        } else if let s = try? String(contentsOf: url, encoding: .utf8) {
             contents = s
         } else if let s = try? String(contentsOf: url, encoding: .isoLatin1) {
             contents = s
@@ -8246,14 +8512,38 @@ except Exception:
             currentLanguage = .python
             monacoLang = "python"
         }
-        codeTextView.text = contents  // mirror
-        monacoView.setCode(contents, language: monacoLang)
+        // Big-file guard: a multi-MB file — e.g. an HTML embedding a base64
+        // video — hangs the app. escapeForTemplate's passes over the string, the
+        // multi-MB WK-bridge transfer, and Monaco rendering one giant line all
+        // choke. Above the cap (or with a single pathologically long line) we
+        // show a truncated, READ-ONLY view: the app stays responsive and the
+        // file is never overwritten with the truncated text (lastSavedText is the
+        // shown text + editing is disabled).
+        let byteCount = contents.utf8.count
+        var oversized = fileSize > 5_000_000 || byteCount > 5_000_000
+        if !oversized && byteCount > 300_000 {
+            let longest = contents.split(separator: "\n", omittingEmptySubsequences: false)
+                                  .lazy.map(\.count).max() ?? 0
+            oversized = longest > 200_000
+        }
+        let shown: String
+        if oversized {
+            let mb = String(format: "%.1f", Double(max(fileSize, byteCount)) / 1_000_000)
+            shown = "/* ⚠️ \(url.lastPathComponent) is \(mb) MB — opened READ-ONLY (first 200 KB shown).\n"
+                  + "   Editing is disabled so the file isn't truncated on save. Use the Preview (eye) button to render it. */\n\n"
+                  + String(contents.prefix(200_000))
+        } else {
+            shown = contents
+        }
+        codeTextView.text = shown  // legacy mirror (truncated when oversized)
+        monacoView.setReadOnly(oversized)
+        monacoView.setCode(shown, language: oversized ? "plaintext" : monacoLang)
         currentFileURL = url
         // Debugger: track the open script (breakpoint-store key) and repaint its
         // saved gutter dots now that the new content is loaded.
         monacoView.currentScriptPath = url.path
         monacoView.refreshBreakpointsForCurrentFile()
-        lastSavedText = contents
+        lastSavedText = shown
         editorFileNameLabel.text = url.lastPathComponent
         applyLanguageTabStyle()
         modifiedDot.isHidden = true
@@ -8600,6 +8890,14 @@ except Exception:
         guard let path = path, !path.isEmpty else {
             appendToTerminal("$ [output] No image path\n", isError: false)
             return
+        }
+
+        // Browser-style preview tabs (iPad only): bookmark this source as a
+        // tab. Idempotent — an existing path just re-activates its tab, so
+        // re-running a script that regenerates the same file updates its tab
+        // instead of spawning a new one. iPhone (compact) uses the half-sheet.
+        if !isCompactWidth, isPreviewableForTab(path) {
+            registerOrActivatePreviewTab(path)
         }
 
         // iPhone (compact width): surface the chart as a half-sheet

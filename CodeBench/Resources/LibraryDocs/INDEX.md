@@ -29,6 +29,9 @@ The Docs tab shows a detail page for each library listed below. Tap a library na
 ## Animation
 - **manim** — math animation → MP4
 
+## 3D
+- **bpy (Blender)** — full Blender module; Cycles renders on the Apple GPU (Metal) + OpenImageDenoise. Saving a `.blend` opens an interactive 3D preview.
+
 ## Media
 - **av (PyAV)** — FFmpeg bindings (video + audio)
 

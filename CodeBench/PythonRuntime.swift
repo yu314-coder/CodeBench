@@ -99,6 +99,13 @@ final class PythonRuntime {
     /// invocation after it's been pushed into the wrapper's globals.
     private var targetSceneForNextRun: String = ""
 
+    /// Absolute path of the .py launched by the editor's Run button. Lets the
+    /// wrapper set __file__ / sys.argv[0] / sys.path[0] so a Run behaves
+    /// exactly like `python <file>` in the terminal — scripts that use
+    /// os.path.abspath(__file__) or import sibling modules then work. Empty
+    /// when running an anonymous buffer / non-file snippet.
+    private var scriptPathForNextRun: String = ""
+
     private init() {
         queue.setSpecific(key: queueKey, value: ())
     }
@@ -116,11 +123,12 @@ final class PythonRuntime {
     /// to render only that class. The wrapper script reads it from
     /// `__codebench_target_scene` and filters its scene-class list
     /// accordingly.
-    func execute(code: String, targetScene: String?, onOutput: ((String) -> Void)?) -> ExecutionResult {
+    func execute(code: String, targetScene: String?, scriptPath: String? = nil, onOutput: ((String) -> Void)?) -> ExecutionResult {
         // Stash the picker selection in a property so executeSync (which
         // doesn't take parameters) can read it from setGlobalString just
         // before runStatements fires.
         targetSceneForNextRun = targetScene ?? ""
+        scriptPathForNextRun = scriptPath ?? ""
         return execute(code: code, onOutput: onOutput)
     }
 
@@ -888,12 +896,18 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
             // entirely: the value is part of the compiled bytecode.
             let pickedTarget = targetSceneForNextRun
             targetSceneForNextRun = ""
+            let pickedScriptPath = scriptPathForNextRun
+            scriptPathForNextRun = ""
             // Also push it into globals as a defensive backup so any
             // legacy code path that still reads the global keeps working.
             try setGlobalString(pickedTarget, key: "__codebench_target_scene", globals: globals)
+            try setGlobalString(pickedScriptPath, key: "__codebench_script_path", globals: globals)
             let wrapperSource = Self.executionWrapperScript.replacingOccurrences(
                 of: "__CODEBENCH_TARGET_SCENE_LITERAL__",
                 with: pythonQuoted(pickedTarget))
+                .replacingOccurrences(
+                of: "__CODEBENCH_SCRIPT_PATH_LITERAL__",
+                with: pythonQuoted(pickedScriptPath))
 
             print("[python] [\(elapsed())] Running wrapper script (code: \(trimmed.count) chars, picker=\(pickedTarget.isEmpty ? "<all>" : pickedTarget))...")
             try runStatements(wrapperSource, filename: "<offlinai-python-tool>")
@@ -3175,6 +3189,23 @@ try:
     _class_ids_before_exec = {
         _n: id(_v) for _n, _v in globals().items() if isinstance(_v, type)
     }
+
+    # Editor "Run" parity with `python <file>` in the terminal: give the
+    # script a real __file__ / sys.argv[0] / sys.path[0] (the literal is
+    # substituted in from the saved file path, "" for an unsaved buffer).
+    # Without this, os.path.abspath(__file__) raised NameError under Run even
+    # though `python file.py` in the terminal worked.
+    _cb_script_path = __CODEBENCH_SCRIPT_PATH_LITERAL__
+    if _cb_script_path:
+        import os as _cb_os, sys as _cb_sys
+        globals()["__file__"] = _cb_script_path
+        try:
+            _cb_sys.argv = [_cb_script_path]
+        except Exception:
+            pass
+        _cb_dir = _cb_os.path.dirname(_cb_script_path)
+        if _cb_dir and _cb_dir not in _cb_sys.path:
+            _cb_sys.path.insert(0, _cb_dir)
 
     # Execute user code
     _log("Executing user code...")

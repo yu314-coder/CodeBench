@@ -181,6 +181,9 @@ final class GameViewController: UIViewController {
     private var thinkingHeightConstraint: NSLayoutConstraint?
     private let backgroundLayer = CAGradientLayer()
     private let settingsPanel = UIView()
+    /// Dimmed, tap-to-dismiss scrim behind `settingsPanel` so it reads as a
+    /// modal sheet rather than a stray floating box.
+    private let settingsBackdrop = UIView()
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var contentStackBottomConstraint: NSLayoutConstraint?
     private var selectedModelSlot: ModelSlot = .qwen35_4b
@@ -264,6 +267,21 @@ final class GameViewController: UIViewController {
             input: "p",
             modifierFlags: .command,
             discoverabilityTitle: "Open Command Palette"))
+        // ⇧⌘, → the in-app **Settings overlay** (`settingsPanel`, toggled by
+        // settingsTapped): the unified quick sheet — model, AI provider, API key,
+        // vim mode, inline completion. We use ⇧⌘, NOT plain ⌘,: ⌘, is the
+        // system-reserved "Settings" shortcut, so on a hardware keyboard the OS
+        // swallows it (even wantsPriorityOverSystemBehavior wasn't reliable).
+        // Adding Shift makes a distinct, conflict-free chord and keeps the
+        // comma = settings mnemonic. (Action is settingsTapped — the quick sheet,
+        // not navSettingsTapped, which is the heavier sidebar Settings tab.)
+        let settingsCmd = UIKeyCommand(
+            title: "Settings",
+            action: #selector(settingsTapped),
+            input: ",",
+            modifierFlags: [.command, .shift],
+            discoverabilityTitle: "Settings")
+        cmds.append(settingsCmd)
         return cmds
     }
 
@@ -3961,19 +3979,11 @@ final class GameViewController: UIViewController {
         ])
         sidebarView.backgroundColor = UIColor(white: 0.10, alpha: 0.85)
 
-        // Settings panel: frosted dark glass
-        let settingsBlur = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialDark))
-        settingsBlur.translatesAutoresizingMaskIntoConstraints = false
-        settingsBlur.clipsToBounds = true
-        settingsBlur.layer.cornerRadius = 16
-        settingsPanel.insertSubview(settingsBlur, at: 0)
-        NSLayoutConstraint.activate([
-            settingsBlur.topAnchor.constraint(equalTo: settingsPanel.topAnchor),
-            settingsBlur.leadingAnchor.constraint(equalTo: settingsPanel.leadingAnchor),
-            settingsBlur.trailingAnchor.constraint(equalTo: settingsPanel.trailingAnchor),
-            settingsBlur.bottomAnchor.constraint(equalTo: settingsPanel.bottomAnchor),
-        ])
-        settingsPanel.backgroundColor = UIColor(white: 0.08, alpha: 0.80)
+        // The settings panel styles itself (adaptive material blur + grabber +
+        // backdrop) in `buildSettingsPanel()`. We deliberately do NOT add a blur
+        // here anymore: the old `.systemMaterialDark` layer was fully covered by
+        // the panel's own `.systemThickMaterial` blur — a wasted second blur that
+        // also forced dark glass in light mode.
 
         // Add subtle separator line between sidebar and editor
         let separator = UIView()
@@ -4021,11 +4031,20 @@ final class GameViewController: UIViewController {
             contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 0),
             contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: 0),
 
+            // Adaptive: float a ~380pt sheet on the right on iPad/regular width,
+            // but shrink to fit the content area on iPhone so it never overflows
+            // (a hard 360pt panel used to spill past the ~310pt iPhone column and
+            // get clipped — the main reason it "looked bad").
             settingsPanel.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor, constant: 12),
-            settingsPanel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            settingsPanel.widthAnchor.constraint(equalToConstant: 360),
-            settingsPanel.bottomAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.bottomAnchor, constant: -12)
+            settingsPanel.trailingAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            settingsPanel.bottomAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            settingsPanel.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.safeAreaLayoutGuide.leadingAnchor, constant: 12)
         ])
+        // Preferred width — high (not required) so it yields to the leading
+        // margin on a narrow iPhone and fills the column with 12pt insets.
+        let settingsPanelWidth = settingsPanel.widthAnchor.constraint(equalToConstant: 380)
+        settingsPanelWidth.priority = .defaultHigh
+        settingsPanelWidth.isActive = true
         contentStackBottomConstraint = contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: 0)
         contentStackBottomConstraint?.isActive = true
 
@@ -5276,72 +5295,49 @@ final class GameViewController: UIViewController {
         // ── Header ──────────────────────────────────
         let settingsTitle = UILabel()
         settingsTitle.text = "Settings"
-        settingsTitle.font = UIFont.systemFont(ofSize: 24, weight: .bold).rounded
+        settingsTitle.font = UIFont.systemFont(ofSize: 26, weight: .bold).rounded
         settingsTitle.textColor = .label
+
+        let settingsSubtitle = UILabel()
+        settingsSubtitle.text = "Model, generation, appearance & tools"
+        settingsSubtitle.font = UIFont.systemFont(ofSize: 12.5, weight: .medium).rounded
+        settingsSubtitle.textColor = .secondaryLabel
+
+        let titleStack = UIStackView(arrangedSubviews: [settingsTitle, settingsSubtitle])
+        titleStack.axis = .vertical; titleStack.spacing = 2
 
         let closeBtn = UIButton(type: .system)
         closeBtn.setImage(UIImage(systemName: "xmark.circle.fill")?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 26, weight: .medium)
             .applying(UIImage.SymbolConfiguration(paletteColors: [.secondaryLabel, UIColor.secondarySystemFill]))), for: .normal)
         closeBtn.addTarget(self, action: #selector(dismissSettingsPanel), for: .touchUpInside)
+        closeBtn.setContentHuggingPriority(.required, for: .horizontal)
 
-        let headerRow = UIStackView(arrangedSubviews: [settingsTitle, UIView(), closeBtn])
+        let headerRow = UIStackView(arrangedSubviews: [titleStack, UIView(), closeBtn])
         headerRow.axis = .horizontal; headerRow.alignment = .center
 
-        // ── 1. Model Info Card (NEW) ────────────────
-        let modelNameLbl = UILabel()
-        modelNameLbl.text = selectedModelSlot.title
-        modelNameLbl.font = UIFont.systemFont(ofSize: 18, weight: .bold).rounded
-        modelNameLbl.textColor = .label
+        // ── MODEL ──
+        let modelReady = loadedModelSlot != nil ? "Ready" : "Not loaded"
+        let modelCtx = preferredContextSize()
+        let modelSection = makeGroupedSection(header: "Model", rows: [
+            makeGroupedDisclosureRow(
+                title: selectedModelSlot.title,
+                subtitle: "\(selectedModelSlot.subtitle) · \(modelCtx) ctx · \(modelReady)",
+                action: #selector(dismissSettingsPanel))
+        ])
 
-        let modelSubtitleLbl = UILabel()
-        modelSubtitleLbl.text = selectedModelSlot.subtitle
-        modelSubtitleLbl.font = UIFont.systemFont(ofSize: 13, weight: .regular).rounded
-        modelSubtitleLbl.textColor = .secondaryLabel
-
-        // Stats row
-        let ctxSize = preferredContextSize()
-        let statChips: [(String, String, UIColor)] = [
-            ("memorychip", "\(ctxSize) ctx", .systemBlue),
-            ("internaldrive", selectedModelSlot.subtitle.components(separatedBy: "~").last?.trimmingCharacters(in: .whitespaces) ?? "?", .systemPurple),
-            ("bolt.fill", loadedModelSlot != nil ? "Ready" : "Not loaded", loadedModelSlot != nil ? .systemGreen : .systemOrange)
-        ]
-        let statsRow = UIStackView()
-        statsRow.axis = .horizontal; statsRow.spacing = 8; statsRow.distribution = .fillEqually
-        for (icon, text, color) in statChips {
-            let chip = makeStatChip(icon: icon, text: text, color: color)
-            statsRow.addArrangedSubview(chip)
-        }
-
-        var changeModelCfg = UIButton.Configuration.filled()
-        changeModelCfg.title = "Change Model"
-        changeModelCfg.image = UIImage(systemName: "arrow.triangle.2.circlepath")
-        changeModelCfg.imagePadding = 6
-        changeModelCfg.baseBackgroundColor = UIColor.systemBlue.withAlphaComponent(0.12)
-        changeModelCfg.baseForegroundColor = .systemBlue
-        changeModelCfg.cornerStyle = .capsule
-        changeModelCfg.buttonSize = .small
-        changeModelCfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
-        let changeModelBtn = UIButton(type: .system)
-        changeModelBtn.configuration = changeModelCfg
-        changeModelBtn.addTarget(self, action: #selector(dismissSettingsPanel), for: .touchUpInside)
-
-        let modelContentStack = UIStackView(arrangedSubviews: [modelNameLbl, modelSubtitleLbl, statsRow, changeModelBtn])
-        modelContentStack.axis = .vertical; modelContentStack.spacing = 10
-        modelContentStack.setCustomSpacing(4, after: modelNameLbl)
-        let modelCard = makeSettingsCard(header: "Model", icon: "cpu", tint: .systemBlue, content: modelContentStack)
-
-        // ── 2. Persona Card ─────────────────────────
-        var presetBtnConfig = UIButton.Configuration.filled()
-        presetBtnConfig.title = SystemPromptPresetsManager.shared.activePresetName
-        presetBtnConfig.baseBackgroundColor = UIColor.systemPurple.withAlphaComponent(0.12)
-        presetBtnConfig.baseForegroundColor = .systemPurple
-        presetBtnConfig.cornerStyle = .capsule
-        presetBtnConfig.image = UIImage(systemName: "person.fill")
-        presetBtnConfig.imagePadding = 8
-        presetBtnConfig.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
-        presetButton.configuration = presetBtnConfig
+        // ── PERSONA ──
+        var presetCfg = UIButton.Configuration.plain()
+        presetCfg.title = SystemPromptPresetsManager.shared.activePresetName
+        presetCfg.baseForegroundColor = .secondaryLabel
+        presetCfg.image = UIImage(systemName: "chevron.up.chevron.down")?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        presetCfg.imagePlacement = .trailing
+        presetCfg.imagePadding = 6
+        presetCfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
+        presetButton.configuration = presetCfg
         presetButton.showsMenuAsPrimaryAction = true
+        presetButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let presetMenuActions = SystemPromptPresetsManager.builtInPresets.map { preset in
             UIAction(title: preset.name, image: UIImage(systemName: preset.icon)) { [weak self] _ in
@@ -5367,203 +5363,110 @@ final class GameViewController: UIViewController {
         }
         presetButton.menu = UIMenu(children: presetMenuActions + [customPresetAction])
 
-        let personaDesc = UILabel()
-        personaDesc.text = "Choose a personality preset for the AI assistant."
-        personaDesc.font = UIFont.systemFont(ofSize: 12, weight: .regular).rounded
-        personaDesc.textColor = .tertiaryLabel
-        personaDesc.numberOfLines = 0
+        let personaSection = makeGroupedSection(header: "Persona", rows: [
+            makeGroupedRow(title: "Preset", accessory: presetButton)
+        ], footer: "Choose a personality preset for the AI assistant.")
 
-        let personaContentStack = UIStackView(arrangedSubviews: [presetButton, personaDesc])
-        personaContentStack.axis = .vertical; personaContentStack.spacing = 8
-        let personaCard = makeSettingsCard(header: "Persona", icon: "person.crop.circle.fill", tint: .systemPurple, content: personaContentStack)
-
-        // ── 3. Generation Card ──────────────────────
+        // ── GENERATION ──
         effortLabel.textColor = .label
-        effortLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        let effortStack = UIStackView(arrangedSubviews: [effortLabel, effortSegment])
-        effortStack.axis = .vertical; effortStack.spacing = 8
-
-        let thinkSep = makeSettingsSeparator()
-
+        effortLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         thinkingToggleLabel.textColor = .label
-        thinkingToggleLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        let thinkDesc = UILabel()
-        thinkDesc.text = "Display the model's chain-of-thought reasoning steps."
-        thinkDesc.font = UIFont.systemFont(ofSize: 12, weight: .regular).rounded
-        thinkDesc.textColor = .tertiaryLabel
-        thinkDesc.numberOfLines = 0
-        let thinkLabelStack = UIStackView(arrangedSubviews: [thinkingToggleLabel, thinkDesc])
-        thinkLabelStack.axis = .vertical; thinkLabelStack.spacing = 2
-        let thinkRow = UIStackView(arrangedSubviews: [thinkLabelStack, UIView(), thinkingToggle])
-        thinkRow.axis = .horizontal; thinkRow.alignment = .center
-
-        let maxSep = makeSettingsSeparator()
-
+        thinkingToggleLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         maxTokensLabel.textColor = .label
-        maxTokensLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        let maxRow = UIStackView(arrangedSubviews: [maxTokensLabel, UIView(), maxTokensStepper])
-        maxRow.axis = .horizontal; maxRow.alignment = .center
+        maxTokensLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        let genSection = makeGroupedSection(header: "Generation", rows: [
+            makeGroupedStackedRow(titleView: effortLabel, control: effortSegment),
+            makeGroupedRow(titleView: thinkingToggleLabel, accessory: thinkingToggle),
+            makeGroupedRow(titleView: maxTokensLabel, accessory: maxTokensStepper),
+        ], footer: "Show Thinking displays the model's chain-of-thought reasoning steps.")
 
-        let genContentStack = UIStackView(arrangedSubviews: [effortStack, thinkSep, thinkRow, maxSep, maxRow])
-        genContentStack.axis = .vertical; genContentStack.spacing = 12
-        let genCard = makeSettingsCard(header: "Generation", icon: "bolt.fill", tint: .systemTeal, content: genContentStack)
-
-        // ── 4. Appearance Card ──────────────────────
+        // ── APPEARANCE ──
         themeSegment.selectedSegmentIndex = ThemeManager.shared.mode.rawValue
         themeSegment.addTarget(self, action: #selector(themeSegmentChanged(_:)), for: .valueChanged)
-
-        let themeLabel = UILabel()
-        themeLabel.text = "Theme"
-        themeLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        themeLabel.textColor = .label
-        let themeRow = UIStackView(arrangedSubviews: [themeLabel, UIView(), themeSegment])
-        themeRow.axis = .horizontal; themeRow.alignment = .center
-
-        let appearSep = makeSettingsSeparator()
+        let themeTitle = UILabel()
+        themeTitle.text = "Theme"
+        themeTitle.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        themeTitle.textColor = .label
 
         hapticsToggleLabel.text = "Haptic Feedback"
-        hapticsToggleLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
+        hapticsToggleLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         hapticsToggleLabel.textColor = .label
         hapticsToggle.isOn = HapticService.shared.enabled
         hapticsToggle.onTintColor = WorkspaceStyle.accent
         hapticsToggle.addTarget(self, action: #selector(hapticsToggleChanged(_:)), for: .valueChanged)
-        let hapticRow = UIStackView(arrangedSubviews: [hapticsToggleLabel, UIView(), hapticsToggle])
-        hapticRow.axis = .horizontal; hapticRow.alignment = .center
 
-        let appearContentStack = UIStackView(arrangedSubviews: [themeRow, appearSep, hapticRow])
-        appearContentStack.axis = .vertical; appearContentStack.spacing = 12
-        let appearCard = makeSettingsCard(header: "Appearance", icon: "paintbrush.fill", tint: .systemPink, content: appearContentStack)
+        let appearSection = makeGroupedSection(header: "Appearance", rows: [
+            makeGroupedStackedRow(titleView: themeTitle, control: themeSegment),
+            makeGroupedRow(titleView: hapticsToggleLabel, accessory: hapticsToggle),
+        ])
 
-        // ── 5. Tools Card ───────────────────────────
+        // ── TOOLS ──
         autoLoadLabel.textColor = .label
-        autoLoadLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        let autoRow = UIStackView(arrangedSubviews: [autoLoadLabel, UIView(), autoLoadToggle])
-        autoRow.axis = .horizontal; autoRow.alignment = .center
-
-        let toolsSep1 = makeSettingsSeparator()
-
+        autoLoadLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         pythonToolsLabel.textColor = .label
-        pythonToolsLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium).rounded
-        let pyRow = UIStackView(arrangedSubviews: [pythonToolsLabel, UIView(), pythonToolsToggle])
-        pyRow.axis = .horizontal; pyRow.alignment = .center
+        pythonToolsLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
 
-        let toolsSep2 = makeSettingsSeparator()
+        let runtimeTitle = UILabel()
+        runtimeTitle.text = "Python Runtime"
+        runtimeTitle.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        runtimeTitle.textColor = .label
+        let runtimeTitleStack = UIStackView(arrangedSubviews: [pythonStatusIconLabel, runtimeTitle])
+        runtimeTitleStack.axis = .horizontal; runtimeTitleStack.spacing = 6; runtimeTitleStack.alignment = .center
 
-        // Python runtime header
-        let pyHeaderLabel = UILabel()
-        pyHeaderLabel.text = "Runtime"
-        pyHeaderLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold).rounded
-        pyHeaderLabel.textColor = .secondaryLabel
-        let pyHeaderRow = UIStackView(arrangedSubviews: [pythonStatusIconLabel, pyHeaderLabel, UIView(), pythonRefreshButton])
-        pyHeaderRow.axis = .horizontal; pyHeaderRow.alignment = .center; pyHeaderRow.spacing = 6
-
-        // Library chips flow layout
         let libraryChipsView = makeLibraryChipsView()
 
         pythonStatusLabel.textColor = .secondaryLabel
-        pythonStatusLabel.font = UIFont.systemFont(ofSize: 11, weight: .regular).rounded
+        pythonStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         pythonStatusLabel.numberOfLines = 0
 
-        let toolsContentStack = UIStackView(arrangedSubviews: [autoRow, toolsSep1, pyRow, toolsSep2, pyHeaderRow, libraryChipsView, pythonStatusLabel])
-        toolsContentStack.axis = .vertical; toolsContentStack.spacing = 12
-        let toolsCard = makeSettingsCard(header: "Tools", icon: "wrench.and.screwdriver.fill", tint: .systemIndigo, content: toolsContentStack)
+        let toolsSection = makeGroupedSection(header: "Tools", rows: [
+            makeGroupedRow(titleView: autoLoadLabel, accessory: autoLoadToggle),
+            makeGroupedRow(titleView: pythonToolsLabel, accessory: pythonToolsToggle),
+            makeGroupedRow(titleView: runtimeTitleStack, accessory: pythonRefreshButton),
+            wrapRowContent(libraryChipsView),
+        ], footerView: pythonStatusLabel)
 
-        // ── 6. Knowledge Base Card ──────────────────
+        // ── KNOWLEDGE BASE ──
         let ragDocCount = RAGEngine.shared.documents.count
         let ragChunkCount = RAGEngine.shared.totalChunkCount
+        let kbSection = makeGroupedSection(header: "Knowledge Base", rows: [
+            makeGroupedRow(title: "Documents", accessory: makeValueLabel("\(ragDocCount)")),
+            makeGroupedRow(title: "Chunks", accessory: makeValueLabel("\(ragChunkCount)")),
+            makeGroupedButtonRow(title: "Import Document", symbol: "doc.badge.plus",
+                                 action: #selector(ragImportTapped)),
+        ])
 
-        let ragIconRow = UIStackView()
-        ragIconRow.axis = .horizontal; ragIconRow.spacing = 16; ragIconRow.alignment = .center
-        let docStatView = makeStatBadge(value: "\(ragDocCount)", label: "Documents", color: .systemGreen)
-        let chunkStatView = makeStatBadge(value: "\(ragChunkCount)", label: "Chunks", color: .systemMint)
-        ragIconRow.addArrangedSubview(docStatView)
-        ragIconRow.addArrangedSubview(chunkStatView)
-        ragIconRow.addArrangedSubview(UIView()) // spacer
+        // ── ACTIONS ──
+        let actionsSection = makeGroupedSection(header: nil, rows: [
+            makeGroupedButtonRow(title: "Compare Models", symbol: "arrow.left.arrow.right",
+                                 action: #selector(compareModelsTapped)),
+            makeGroupedButtonRow(title: "Export Conversation", symbol: "square.and.arrow.up",
+                                 action: #selector(settingsExportConversationTapped)),
+        ])
 
-        let ragImportBtn = UIButton(type: .system)
-        var ragBtnCfg = UIButton.Configuration.filled()
-        ragBtnCfg.title = "Import Document"
-        ragBtnCfg.image = UIImage(systemName: "doc.badge.plus")
-        ragBtnCfg.imagePadding = 6
-        ragBtnCfg.baseBackgroundColor = UIColor.systemGreen.withAlphaComponent(0.12)
-        ragBtnCfg.baseForegroundColor = .systemGreen
-        ragBtnCfg.cornerStyle = .capsule
-        ragBtnCfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
-        ragImportBtn.configuration = ragBtnCfg
-        ragImportBtn.addTarget(self, action: #selector(ragImportTapped), for: .touchUpInside)
-
-        let ragContentStack = UIStackView(arrangedSubviews: [ragIconRow, ragImportBtn])
-        ragContentStack.axis = .vertical; ragContentStack.spacing = 12
-        let ragCard = makeSettingsCard(header: "Knowledge Base", icon: "book.closed.fill", tint: .systemGreen, content: ragContentStack)
-
-        // ── 7. Actions Card ─────────────────────────
-        let cmpBtn = UIButton(type: .system)
-        var cmpCfg = UIButton.Configuration.filled()
-        cmpCfg.title = "Compare Models"
-        cmpCfg.image = UIImage(systemName: "arrow.left.arrow.right")
-        cmpCfg.imagePadding = 8
-        cmpCfg.baseBackgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
-        cmpCfg.baseForegroundColor = .systemOrange
-        cmpCfg.cornerStyle = .capsule
-        cmpCfg.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
-        cmpBtn.configuration = cmpCfg
-        cmpBtn.addTarget(self, action: #selector(compareModelsTapped), for: .touchUpInside)
-
-        let exportBtn = UIButton(type: .system)
-        var exportCfg = UIButton.Configuration.filled()
-        exportCfg.title = "Export Conversation"
-        exportCfg.image = UIImage(systemName: "square.and.arrow.up")
-        exportCfg.imagePadding = 8
-        exportCfg.baseBackgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
-        exportCfg.baseForegroundColor = .systemOrange
-        exportCfg.cornerStyle = .capsule
-        exportCfg.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
-        exportBtn.configuration = exportCfg
-        exportBtn.addTarget(self, action: #selector(settingsExportConversationTapped), for: .touchUpInside)
-
-        let actionsContentStack = UIStackView(arrangedSubviews: [cmpBtn, exportBtn])
-        actionsContentStack.axis = .vertical; actionsContentStack.spacing = 10
-        let actionsCard = makeSettingsCard(header: "Actions", icon: "sparkle", tint: .systemOrange, content: actionsContentStack)
-
-        // ── 8. About Card (NEW) ─────────────────────
-        let versionLbl = UILabel()
+        // ── ABOUT ──
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        versionLbl.text = "Version \(appVersion) (\(buildNumber))"
-        versionLbl.font = UIFont.systemFont(ofSize: 14, weight: .semibold).rounded
-        versionLbl.textColor = .label
-
-        let madeWithLbl = UILabel()
-        madeWithLbl.text = "Made with \u{2764}\u{FE0F} and llama.cpp"
-        madeWithLbl.font = UIFont.systemFont(ofSize: 13, weight: .regular).rounded
-        madeWithLbl.textColor = .secondaryLabel
-
-        let libCountLbl = UILabel()
-        libCountLbl.text = "35+ Python packages bundled"
-        libCountLbl.font = UIFont.systemFont(ofSize: 12, weight: .regular).rounded
-        libCountLbl.textColor = .tertiaryLabel
-
-        let aboutContentStack = UIStackView(arrangedSubviews: [versionLbl, madeWithLbl, libCountLbl])
-        aboutContentStack.axis = .vertical; aboutContentStack.spacing = 4
-        let aboutCard = makeSettingsCard(header: "About", icon: "info.circle.fill", tint: .systemGray, content: aboutContentStack)
+        let aboutSection = makeGroupedSection(header: "About", rows: [
+            makeGroupedRow(title: "Version", accessory: makeValueLabel("\(appVersion) (\(buildNumber))")),
+        ], footer: "Made with \u{2764}\u{FE0F} and llama.cpp · 35+ Python packages bundled")
 
         // ── ASSEMBLY ────────────────────────────────
         let allSections = UIStackView(arrangedSubviews: [
             headerRow,
-            modelCard,
-            personaCard,
-            genCard,
-            appearCard,
-            toolsCard,
-            ragCard,
-            actionsCard,
-            aboutCard
+            modelSection,
+            personaSection,
+            genSection,
+            appearSection,
+            toolsSection,
+            kbSection,
+            actionsSection,
+            aboutSection
         ])
         allSections.axis = .vertical
-        allSections.spacing = 16
+        allSections.spacing = 22
         allSections.translatesAutoresizingMaskIntoConstraints = false
-        allSections.setCustomSpacing(20, after: headerRow)
-        allSections.setCustomSpacing(24, after: actionsCard)
+        allSections.setCustomSpacing(18, after: headerRow)
 
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -5571,40 +5474,58 @@ final class GameViewController: UIViewController {
         scrollView.alwaysBounceVertical = true
         scrollView.addSubview(allSections)
 
-        settingsPanel.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.92)
+        // Native inset-grouped look: an opaque grouped background behind the
+        // `.secondarySystemGroupedBackground` cards, so it reads as a real
+        // Settings-style grouped table. No blur — the chosen style is clean.
+        settingsPanel.backgroundColor = .systemGroupedBackground
         settingsPanel.layer.cornerRadius = WorkspaceStyle.radiusLarge
         settingsPanel.layer.cornerCurve = .continuous
         settingsPanel.layer.borderWidth = 0.5
         settingsPanel.layer.borderColor = UIColor.separator.cgColor
         settingsPanel.layer.shadowColor = UIColor.black.cgColor
-        settingsPanel.layer.shadowOpacity = 0.15
-        settingsPanel.layer.shadowRadius = 20
-        settingsPanel.layer.shadowOffset = CGSize(width: 0, height: 8)
+        settingsPanel.layer.shadowOpacity = 0.18
+        settingsPanel.layer.shadowRadius = 24
+        settingsPanel.layer.shadowOffset = CGSize(width: 0, height: 10)
         settingsPanel.layer.zPosition = 5
         settingsPanel.isHidden = true
-        settingsPanel.clipsToBounds = true
+        settingsPanel.clipsToBounds = false   // let the drop shadow render
         settingsPanel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Add blur behind
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterial))
-        blur.translatesAutoresizingMaskIntoConstraints = false
-        blur.layer.cornerRadius = WorkspaceStyle.radiusLarge
-        blur.layer.cornerCurve = .continuous
-        blur.clipsToBounds = true
-        settingsPanel.addSubview(blur)
+        // Grabber pill — signals "sheet"; pinned above the scroll content.
+        let grabber = UIView()
+        grabber.backgroundColor = .tertiaryLabel
+        grabber.layer.cornerRadius = 2.5
+        grabber.translatesAutoresizingMaskIntoConstraints = false
+        settingsPanel.addSubview(grabber)
         settingsPanel.addSubview(scrollView)
+
+        // Dimmed, tap-to-dismiss scrim. Inserted BELOW the panel so the panel
+        // still wins touches (UIKit hit-tests front-to-back by subview order).
+        settingsBackdrop.backgroundColor = UIColor.black.withAlphaComponent(0.28)
+        settingsBackdrop.alpha = 0
+        settingsBackdrop.isHidden = true
+        settingsBackdrop.translatesAutoresizingMaskIntoConstraints = false
+        settingsBackdrop.addGestureRecognizer(
+            UITapGestureRecognizer(target: self, action: #selector(dismissSettingsPanel)))
+
         contentView.addSubview(settingsPanel)
+        contentView.insertSubview(settingsBackdrop, belowSubview: settingsPanel)
 
         NSLayoutConstraint.activate([
-            blur.topAnchor.constraint(equalTo: settingsPanel.topAnchor),
-            blur.leadingAnchor.constraint(equalTo: settingsPanel.leadingAnchor),
-            blur.trailingAnchor.constraint(equalTo: settingsPanel.trailingAnchor),
-            blur.bottomAnchor.constraint(equalTo: settingsPanel.bottomAnchor),
+            settingsBackdrop.topAnchor.constraint(equalTo: contentView.topAnchor),
+            settingsBackdrop.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            settingsBackdrop.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            settingsBackdrop.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-            scrollView.topAnchor.constraint(equalTo: settingsPanel.topAnchor, constant: 20),
-            scrollView.leadingAnchor.constraint(equalTo: settingsPanel.leadingAnchor, constant: 20),
-            scrollView.trailingAnchor.constraint(equalTo: settingsPanel.trailingAnchor, constant: -20),
-            scrollView.bottomAnchor.constraint(equalTo: settingsPanel.bottomAnchor, constant: -20),
+            grabber.centerXAnchor.constraint(equalTo: settingsPanel.centerXAnchor),
+            grabber.topAnchor.constraint(equalTo: settingsPanel.topAnchor, constant: 8),
+            grabber.widthAnchor.constraint(equalToConstant: 36),
+            grabber.heightAnchor.constraint(equalToConstant: 5),
+
+            scrollView.topAnchor.constraint(equalTo: settingsPanel.topAnchor, constant: 22),
+            scrollView.leadingAnchor.constraint(equalTo: settingsPanel.leadingAnchor, constant: 16),
+            scrollView.trailingAnchor.constraint(equalTo: settingsPanel.trailingAnchor, constant: -16),
+            scrollView.bottomAnchor.constraint(equalTo: settingsPanel.bottomAnchor, constant: -16),
 
             allSections.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             allSections.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
@@ -5616,66 +5537,242 @@ final class GameViewController: UIViewController {
 
     // MARK: - Settings Card Helpers
 
-    private func makeSettingsCard(header: String, icon: String, tint: UIColor, content: UIView) -> UIView {
-        let container = UIView()
-        container.backgroundColor = .secondarySystemGroupedBackground
-        container.layer.cornerRadius = 16
-        container.layer.cornerCurve = .continuous
-        container.clipsToBounds = true
+    // MARK: native inset-grouped builders (Settings-app style)
 
-        // Header
-        let iconBg = UIView()
-        iconBg.backgroundColor = tint.withAlphaComponent(0.15)
-        iconBg.layer.cornerRadius = 8
-        iconBg.layer.cornerCurve = .continuous
-        iconBg.translatesAutoresizingMaskIntoConstraints = false
+    /// Uppercase section header, à la UITableView `.insetGrouped`.
+    private func makeGroupedHeader(_ title: String) -> UILabel {
+        let l = UILabel()
+        l.text = title.uppercased()
+        l.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        l.textColor = .secondaryLabel
+        return l
+    }
+
+    /// Small grey footer note under a section.
+    private func makeGroupedFooter(_ text: String) -> UILabel {
+        let l = UILabel()
+        l.text = text
+        l.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        l.textColor = .secondaryLabel
+        l.numberOfLines = 0
+        return l
+    }
+
+    /// Indent a header/footer 16pt so it aligns with row text.
+    private func wrapHeaderFooter(_ inner: UIView) -> UIView {
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        let c = UIView()
+        c.addSubview(inner)
         NSLayoutConstraint.activate([
-            iconBg.widthAnchor.constraint(equalToConstant: 28),
-            iconBg.heightAnchor.constraint(equalToConstant: 28)
+            inner.topAnchor.constraint(equalTo: c.topAnchor),
+            inner.bottomAnchor.constraint(equalTo: c.bottomAnchor),
+            inner.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
+            inner.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -16),
         ])
+        return c
+    }
 
-        let iconImg = UIImageView(image: UIImage(systemName: icon)?
+    /// 0.5pt divider inset 16pt from the left, like a grouped-table separator.
+    private func makeRowHairline() -> UIView {
+        let c = UIView()
+        c.translatesAutoresizingMaskIntoConstraints = false
+        c.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        let line = UIView()
+        line.backgroundColor = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(line)
+        NSLayoutConstraint.activate([
+            line.topAnchor.constraint(equalTo: c.topAnchor),
+            line.bottomAnchor.constraint(equalTo: c.bottomAnchor),
+            line.trailingAnchor.constraint(equalTo: c.trailingAnchor),
+            line.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 16),
+        ])
+        return c
+    }
+
+    /// Rounded grouped "cell cluster" holding `rows`, hairlines between them.
+    private func makeGroupedCard(_ rows: [UIView]) -> UIView {
+        let card = UIView()
+        card.backgroundColor = .secondarySystemGroupedBackground
+        card.layer.cornerRadius = 12
+        card.layer.cornerCurve = .continuous
+        card.clipsToBounds = true
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for (i, row) in rows.enumerated() {
+            if i > 0 { stack.addArrangedSubview(makeRowHairline()) }
+            stack.addArrangedSubview(row)
+        }
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+        return card
+    }
+
+    /// One inset-grouped section: optional header, the card, optional footer.
+    private func makeGroupedSection(header: String?, rows: [UIView],
+                                    footer: String? = nil, footerView: UIView? = nil) -> UIView {
+        var subs: [UIView] = []
+        if let header = header { subs.append(wrapHeaderFooter(makeGroupedHeader(header))) }
+        subs.append(makeGroupedCard(rows))
+        if let footer = footer { subs.append(wrapHeaderFooter(makeGroupedFooter(footer))) }
+        if let footerView = footerView { subs.append(wrapHeaderFooter(footerView)) }
+        let s = UIStackView(arrangedSubviews: subs)
+        s.axis = .vertical
+        s.spacing = 7
+        return s
+    }
+
+    /// Standard grouped row: a title view (+ optional subtitle) and a right accessory.
+    private func makeGroupedRow(titleView: UIView, accessory: UIView? = nil,
+                                subtitle: String? = nil) -> UIView {
+        var leftViews: [UIView] = [titleView]
+        if let subtitle = subtitle {
+            let s = UILabel()
+            s.text = subtitle
+            s.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+            s.textColor = .secondaryLabel
+            s.numberOfLines = 0
+            leftViews.append(s)
+        }
+        let left = UIStackView(arrangedSubviews: leftViews)
+        left.axis = .vertical
+        left.spacing = 2
+
+        let h = UIStackView(arrangedSubviews: [left])
+        h.axis = .horizontal
+        h.alignment = .center
+        h.spacing = 10
+        h.translatesAutoresizingMaskIntoConstraints = false
+        if let accessory = accessory {
+            accessory.setContentHuggingPriority(.required, for: .horizontal)
+            accessory.setContentCompressionResistancePriority(.required, for: .horizontal)
+            let spacer = UIView()
+            spacer.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
+            spacer.setContentCompressionResistancePriority(UILayoutPriority(1), for: .horizontal)
+            h.addArrangedSubview(spacer)
+            h.addArrangedSubview(accessory)
+        }
+
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        row.addSubview(h)
+        NSLayoutConstraint.activate([
+            h.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            h.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+            h.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            h.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+        ])
+        return row
+    }
+
+    /// Convenience: build the title label from a string.
+    private func makeGroupedRow(title: String, accessory: UIView? = nil,
+                                subtitle: String? = nil) -> UIView {
+        let t = UILabel()
+        t.text = title
+        t.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        t.textColor = .label
+        return makeGroupedRow(titleView: t, accessory: accessory, subtitle: subtitle)
+    }
+
+    /// Tappable disclosure row (chevron); `action` fires on tap.
+    private func makeGroupedDisclosureRow(title: String, subtitle: String?,
+                                          action: Selector) -> UIView {
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right")?
             .withConfiguration(UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
-        iconImg.tintColor = tint
-        iconImg.contentMode = .center
-        iconImg.translatesAutoresizingMaskIntoConstraints = false
-        iconBg.addSubview(iconImg)
+        chevron.tintColor = .tertiaryLabel
+        let row = makeGroupedRow(title: title, accessory: chevron, subtitle: subtitle)
+        row.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
+        return row
+    }
+
+    /// Full-width tappable action row: accent title + optional leading symbol.
+    private func makeGroupedButtonRow(title: String, symbol: String?,
+                                      tint: UIColor = WorkspaceStyle.accent,
+                                      action: Selector) -> UIView {
+        let label = UILabel()
+        label.text = title
+        label.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        label.textColor = tint
+        var views: [UIView] = []
+        if let symbol = symbol {
+            let iv = UIImageView(image: UIImage(systemName: symbol)?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)))
+            iv.tintColor = tint
+            iv.setContentHuggingPriority(.required, for: .horizontal)
+            views.append(iv)
+        }
+        views.append(label)
+        let h = UIStackView(arrangedSubviews: views)
+        h.axis = .horizontal
+        h.alignment = .center
+        h.spacing = 10
+        h.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        row.addSubview(h)
         NSLayoutConstraint.activate([
-            iconImg.centerXAnchor.constraint(equalTo: iconBg.centerXAnchor),
-            iconImg.centerYAnchor.constraint(equalTo: iconBg.centerYAnchor)
+            h.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            h.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+            h.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            h.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -16),
         ])
+        row.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
+        return row
+    }
 
-        let headerLabel = UILabel()
-        headerLabel.text = header
-        headerLabel.font = UIFont.systemFont(ofSize: 15, weight: .bold).rounded
-        headerLabel.textColor = .label
-
-        let headerStack = UIStackView(arrangedSubviews: [iconBg, headerLabel])
-        headerStack.axis = .horizontal; headerStack.spacing = 10; headerStack.alignment = .center
-
-        // Separator under header
-        let sep = UIView()
-        sep.backgroundColor = UIColor.separator.withAlphaComponent(0.3)
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        sep.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-
-        let outerStack = UIStackView(arrangedSubviews: [headerStack, sep, content])
-        outerStack.axis = .vertical
-        outerStack.spacing = 12
-        outerStack.setCustomSpacing(10, after: headerStack)
-        outerStack.translatesAutoresizingMaskIntoConstraints = false
-        outerStack.isLayoutMarginsRelativeArrangement = true
-        outerStack.layoutMargins = UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-
-        container.addSubview(outerStack)
+    /// Row with a label and a full-width control beneath it (segmented controls).
+    private func makeGroupedStackedRow(titleView: UIView, control: UIView) -> UIView {
+        control.translatesAutoresizingMaskIntoConstraints = false
+        let v = UIStackView(arrangedSubviews: [titleView, control])
+        v.axis = .vertical
+        v.spacing = 10
+        v.translatesAutoresizingMaskIntoConstraints = false
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(v)
         NSLayoutConstraint.activate([
-            outerStack.topAnchor.constraint(equalTo: container.topAnchor),
-            outerStack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            outerStack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            outerStack.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            v.topAnchor.constraint(equalTo: row.topAnchor, constant: 11),
+            v.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -11),
+            v.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            v.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
         ])
+        return row
+    }
 
-        return container
+    /// Wrap arbitrary content as a full-width row (16pt insets).
+    private func wrapRowContent(_ content: UIView, vInset: CGFloat = 11) -> UIView {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: row.topAnchor, constant: vInset),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -vInset),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -16),
+        ])
+        return row
+    }
+
+    /// Grey right-aligned value label for "title … value" rows.
+    private func makeValueLabel(_ text: String) -> UILabel {
+        let l = UILabel()
+        l.text = text
+        l.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        l.textColor = .secondaryLabel
+        l.setContentHuggingPriority(.required, for: .horizontal)
+        return l
     }
 
     private func makeStatChip(icon: String, text: String, color: UIColor) -> UIView {
@@ -6941,6 +7038,9 @@ Output format rules:
         thinkingPillRow?.removeFromSuperview()
         thinkingPillRow = nil
         settingsPanel.isHidden = true
+        settingsPanel.transform = .identity
+        settingsBackdrop.isHidden = true
+        settingsBackdrop.alpha = 0
 
         let assistantIndex = messages.count
         messages.append(ChatMessage(role: .assistant, content: ""))
@@ -8993,10 +9093,17 @@ Output format rules:
     @objc private func settingsTapped() {
         let shouldShow = settingsPanel.isHidden
         if shouldShow {
+            settingsBackdrop.alpha = 0
+            settingsBackdrop.isHidden = false
             settingsPanel.alpha = 0
+            settingsPanel.transform = CGAffineTransform(translationX: 0, y: 10).scaledBy(x: 0.98, y: 0.98)
             settingsPanel.isHidden = false
-            UIView.animate(withDuration: 0.2) {
+            UIView.animate(withDuration: 0.32, delay: 0,
+                           usingSpringWithDamping: 0.86, initialSpringVelocity: 0.3,
+                           options: [.curveEaseOut, .allowUserInteraction]) {
                 self.settingsPanel.alpha = 1
+                self.settingsPanel.transform = .identity
+                self.settingsBackdrop.alpha = 1
             }
             refreshPythonLibraryStatusIfNeeded(force: false)
         } else {
@@ -9006,11 +9113,15 @@ Output format rules:
 
     @objc private func dismissSettingsPanel() {
         guard !settingsPanel.isHidden else { return }
-        UIView.animate(withDuration: 0.18, animations: {
+        UIView.animate(withDuration: 0.2, animations: {
             self.settingsPanel.alpha = 0
+            self.settingsPanel.transform = CGAffineTransform(translationX: 0, y: 8).scaledBy(x: 0.98, y: 0.98)
+            self.settingsBackdrop.alpha = 0
         }, completion: { _ in
             self.settingsPanel.isHidden = true
             self.settingsPanel.alpha = 1
+            self.settingsPanel.transform = .identity
+            self.settingsBackdrop.isHidden = true
         })
     }
 

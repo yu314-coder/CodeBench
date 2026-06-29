@@ -239,7 +239,7 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                     if injected {
                         sourceForEngine = patched
                         self.emitProgress(
-                            "injected \\usepackage{lmodern} (T1 fontenc needs it on WASM)")
+                            "injected \\usepackage{lmodern} (Latin Modern Type1 — avoids mktexpk/fork on WASM)")
                     }
                 }
                 // For the auto-CJK route, inject fontspec + setmainfont
@@ -655,8 +655,10 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
         }
     }
 
-    /// Inject `\usepackage{lmodern}` into the preamble if the doc asks
-    /// for T1 fontenc without bringing its own T1-capable font family.
+    /// Inject `\usepackage{lmodern}` into the preamble by default, unless
+    /// the doc already picks its own font family. (Latin Modern is a
+    /// drop-in Computer Modern replacement with full OT1/T1/TS1 Type1
+    /// coverage — see the body for why this must be the default on WASM.)
     ///
     /// Rationale: `\usepackage[T1]{fontenc}` switches LaTeX's default
     /// font encoding from OT1 to T1. The default font family (`cmr`)
@@ -686,7 +688,9 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
             "ccfonts", "fourier", "tgtermes", "tgpagella", "tgbonum",
             "tgschola", "tgheros", "tgcursor", "tgadventor",
         ]
-        let lowered = source.lowercased()
+        // Detect on a comment-stripped copy so a commented-out font line
+        // (e.g. `% \usepackage{lmodern}`) doesn't suppress the injection.
+        let lowered = Self.strippingTeXComments(source).lowercased()
         for fam in t1CapableFamilies {
             // Match `\usepackage{fam}` or `\usepackage[opts]{fam}`.
             if lowered.contains("\\usepackage{\(fam)}") ||
@@ -695,57 +699,25 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
                 return (source, false)
             }
         }
-        // Trigger 1: explicit `\usepackage[T1]{fontenc}`.
-        let usesT1 = lowered.range(
-            of: "\\\\usepackage\\[[^\\]]*\\bt1\\b[^\\]]*\\]\\{fontenc\\}",
-            options: .regularExpression) != nil
-
-        // Trigger 2: any package that pulls TS1 (Text Companion) glyphs.
-        // The doc here was failing with `tcrm1200 at 600 not found` —
-        // that's a TS1 font lookup triggered by `textcomp`, `siunitx`,
-        // `eurosym`, `units`, etc. — even without explicit T1 fontenc.
-        // Each of these silently switches LaTeX into TS1 mode and
-        // demands tcrm bitmaps which iOS can't generate (no fork()).
-        let ts1Packages = [
-            "textcomp", "siunitx", "eurosym", "units", "marvosym",
-            "wasysym", "pifont", "fontawesome", "fontawesome5",
-            "tipa", "phonetic",
-        ]
-        let usesTS1 = ts1Packages.contains { pkg in
-            lowered.contains("\\usepackage{\(pkg)}") ||
-            lowered.range(of: "\\\\usepackage\\[[^\\]]*\\]\\{\(pkg)\\}",
-                          options: .regularExpression) != nil
-        }
-
-        // Trigger 3: bare TS1 glyph commands the user wrote directly
-        // (`\textcurrency`, `\texteuro`, `\textdegree`, etc.). These
-        // pull in TS1 even without an explicit textcomp/siunitx import
-        // because LaTeX kernels load TS1 lazily.
-        let ts1Glyphs = [
-            "\\textcurrency", "\\texteuro", "\\textcent", "\\textyen",
-            "\\textsterling", "\\textdegree", "\\textmu", "\\textohm",
-            "\\textcelsius", "\\textperthousand", "\\textnumero",
-        ]
-        let usesTS1Glyph = ts1Glyphs.contains { lowered.contains($0.lowercased()) }
-
-        // Trigger 4: document classes that internally load textcomp /
-        // T1 fontenc without the user's .tex showing it. IEEEtran,
-        // acmart, revtex etc. all pull TS1 via their class files —
-        // those failures look identical to the user (tcrm1200 not
-        // found) but our regex-on-source detection above misses them.
-        let ts1Classes = [
-            "ieeetran", "acmart", "revtex", "revtex4", "revtex4-1", "revtex4-2",
-            "elsarticle", "achemso", "tugboat", "memoir", "scrartcl", "scrreprt",
-            "scrbook", "scrlttr2",
-        ]
-        let usesTS1Class = ts1Classes.contains { cls in
-            lowered.range(of: "\\\\documentclass(?:\\[[^\\]]*\\])?\\{\(cls)\\}",
-                          options: .regularExpression) != nil
-        }
-
-        guard usesT1 || usesTS1 || usesTS1Glyph || usesTS1Class else {
+        // Respect an explicit font choice: if the doc sets its own main
+        // family (\setmainfont, \rmdefault) or loads fontspec, leave it be.
+        if lowered.contains("\\setmainfont") ||
+           lowered.contains("\\rmdefault") ||
+           lowered.contains("\\usepackage{fontspec}") {
             return (source, false)
         }
+
+        // Otherwise inject lmodern by DEFAULT. With the stock Computer
+        // Modern fonts, pdflatex falls back to `mktexpk` for ANY T1 or
+        // TS1 (Text Companion) lookup — and `mktexpk` needs `fork()`,
+        // which WASM doesn't have, so it dies with e.g. `tcrm1200 at 600
+        // not found`. Enumerating triggers (T1 fontenc, textcomp,
+        // \textdegree, IEEEtran, …) was whack-a-mole: `hyperref`/`url` and
+        // many glyphs pull TS1 in silently under plain OT1 and slip past
+        // every check (this is the doc that did). Latin Modern is a
+        // drop-in CM replacement with full OT1/T1/TS1 Type1 coverage, so
+        // injecting it whenever the doc hasn't picked its own family fixes
+        // the whole class at once — no font generation, ever.
 
         // Insert right after the \documentclass{…} line.
         let docClassRegex = try? NSRegularExpression(
@@ -761,6 +733,29 @@ import Darwin  // for open(), write(), close(), strlen, O_WRONLY/O_APPEND/O_CREA
         var out = source
         out.insert(contentsOf: injection, at: matchRange.upperBound)
         return (out, true)
+    }
+
+    /// Strip TeX line comments (`%` … to end-of-line, but not an escaped
+    /// `\%`) so the font-family / font-setup detection above doesn't trip
+    /// on a commented-out `\usepackage{...}` line.
+    static func strippingTeXComments(_ s: String) -> String {
+        var out = String()
+        out.reserveCapacity(s.count)
+        for line in s.split(separator: "\n", omittingEmptySubsequences: false) {
+            let chars = Array(line)
+            var cut = chars.count
+            var i = 0
+            while i < chars.count {
+                if chars[i] == "%" && (i == 0 || chars[i - 1] != "\\") {
+                    cut = i
+                    break
+                }
+                i += 1
+            }
+            out += String(chars[0..<cut])
+            out += "\n"
+        }
+        return out
     }
 
     /// Detect CJK content in the source. Used to auto-route pdflatex

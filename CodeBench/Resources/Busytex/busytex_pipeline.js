@@ -438,6 +438,31 @@ class BusytexPipeline
         return initialized_module;
     }
 
+    // Write a list of {path, contents} into a fresh MEMFS at project_dir.
+    // Factored out of compile() so a mid-compile Module reload can restore
+    // the exact filesystem (source + generated .aux/.toc) into the new
+    // Module. `contents == null` means "directory".
+    _populate_fs(Module, files)
+    {
+        const {FS, PATH} = Module;
+        if(FS.analyzePath(this.project_dir).object.mount.mountpoint == this.project_dir)
+            FS.unmount(this.project_dir);
+        FS.mount(FS.filesystems.MEMFS, {}, this.project_dir);
+
+        let dirs = new Set(['/', this.project_dir]);
+        for(const {path, contents} of files.sort((lhs, rhs) => lhs['path'] < rhs['path'] ? -1 : 1))
+        {
+            const absolute_path = PATH.join(this.project_dir, path);
+            if(contents == null)
+                this.mkdir_p(FS, PATH, absolute_path, dirs);
+            else
+            {
+                this.mkdir_p(FS, PATH, PATH.dirname(absolute_path), dirs);
+                FS.writeFile(absolute_path, contents);
+            }
+        }
+    }
+
     async compile(files, main_tex_path, bibtex, verbose, driver, data_packages_js = [])
     {
         if(!this.supported_drivers.includes(driver))
@@ -480,8 +505,8 @@ class BusytexPipeline
         
         this.Module = this.reload_module_if_needed(this.Module == null, this.env, this.project_dir, data_packages_js);
         
-        const Module = await this.Module;
-        const {FS, PATH} = Module;
+        let Module = await this.Module;
+        let {FS, PATH} = Module;
 
         const tex_path = PATH.basename(main_tex_path), dirname = PATH.dirname(main_tex_path);
 
@@ -501,26 +526,43 @@ class BusytexPipeline
         
         const xdvipdfmx = ['xdvipdfmx', '-o', pdf_path, xdv_path].concat((this.verbose_args[verbose] || this.verbose_args[BusytexPipeline.VerboseSilent]).xdvipdfmx);
 
-        if(FS.analyzePath(this.project_dir).object.mount.mountpoint == this.project_dir)
-            FS.unmount(this.project_dir);
-        FS.mount(FS.filesystems.MEMFS, {}, this.project_dir);
+        this._populate_fs(Module, files);
 
-        let dirs = new Set(['/', this.project_dir]);
-        for(const {path, contents} of files.sort((lhs, rhs) => lhs['path'] < rhs['path'] ? -1 : 1))
-        {
-            const absolute_path = PATH.join(this.project_dir, path);
-            if(contents == null)
-                this.mkdir_p(FS, PATH, absolute_path, dirs);
-            else
-            {
-                this.mkdir_p(FS, PATH, PATH.dirname(absolute_path), dirs);
-                FS.writeFile(absolute_path, contents);
-            }
-        }
-        
         const source_dir = PATH.join(this.project_dir, dirname);
         FS.chdir(source_dir);
         
+        // Does the doc need multiple LaTeX passes? \tableofcontents, \ref,
+        // hyperref outlines, etc. write .toc/.aux on one pass and only render
+        // on the NEXT — a single pass leaves them blank. Detect from the main
+        // source and run extra passes only when needed (simple docs stay one
+        // pass). Without this, a no-bibliography doc with a table of contents
+        // produced a blank TOC page.
+        const _main_file = files.find(f => f && typeof f.contents === 'string' && PATH.basename(f.path || '') === tex_path);
+        const _src = _main_file ? _main_file.contents : '';
+        // Multi-pass IS enabled, but with a twist forced by this WASM build:
+        // pdflatex exits via an explicit exit() that throws ExitStatus from deep
+        // in the call stack and unwinds to JS WITHOUT restoring the WASM stack
+        // pointer (an __stack_pointer global, separate from linear memory). The
+        // per-command HEAPU8 reset restores memory + the stack cookie but NOT
+        // that SP global, so a naive 2nd callMain's stackAlloc runs off a stale,
+        // near-exhausted stack and corrupts. emscripten's run() resets the SP
+        // via emscripten_stack_init() before each program; the pipeline calls
+        // callMain directly and skips it. So between passes we call
+        // emscripten_stack_init() ourselves (see the `needs_multipass &&
+        // ran_a_cmd` block in the command loop), giving each extra LaTeX pass a
+        // clean stack so \tableofcontents / \ref / hyperref resolve. The
+        // "keepRuntimeAlive() is set (counter=0)" line is benign noExitRuntime
+        // noise. A full Module reload would also reset the stack but re-fetches
+        // the 100MB+ texmf data packages and hangs, so we reset in-place.
+        // Single-pass docs (the common case) never enter this block.
+        const _wanted_multipass = /\\tableofcontents|\\listoffigures|\\listoftables|\\ref\{|\\pageref\{|\\nameref\{|\\autoref\{|\\eqref\{|\\[cC]ref\{|\\cite[a-zA-Z]*\{|\\hyperref|\\printindex|\\printglossar|\\printbibliography|\\usepackage(\[[^\]]*\])?\{[^}]*hyperref/.test(_src);
+        // Scope multipass to the default pdflatex driver only — the path
+        // CodeBench uses for ordinary documents (and where the TOC bug was
+        // reported). The xetex / luatex multipass branches below have never
+        // executed before (multipass was disabled), so leave them on their
+        // existing single-pass behavior rather than activating untested paths.
+        const needs_multipass = _wanted_multipass && driver == 'pdftex_bibtex8';
+
         let cmds = [];
         if(driver == 'xetex_bibtex8_dvipdfmx')
         {
@@ -532,10 +574,17 @@ class BusytexPipeline
                     [xetex, this.error_messages_all, true], 
                     [xdvipdfmx, this.error_messages_all, false]
                 ] :
+                (needs_multipass ?
                 [
-                    [xetex, this.error_messages_all, false], 
+                    [xetex, this.error_messages_fatal, true],
+                    [xetex, this.error_messages_fatal, true],
+                    [xetex, this.error_messages_all, false],
                     [xdvipdfmx, this.error_messages_all, false]
-                ];
+                ] :
+                [
+                    [xetex, this.error_messages_all, false],
+                    [xdvipdfmx, this.error_messages_all, false]
+                ]);
         }
         else if(driver == 'pdftex_bibtex8')
         {
@@ -543,12 +592,20 @@ class BusytexPipeline
                 [
                     [pdftex_not_final, this.error_messages_fatal, false], 
                     [bibtex8, this.error_messages_fatal, true], 
-                    [pdftex_not_final, this.error_messages_fatal, true],  
+                    [pdftex_not_final, this.error_messages_fatal, true],
                     [pdftex, this.error_messages_all, false]
-                ] : 
+                ] :
+                (needs_multipass ?
+                [
+                    // Pass 1 writes .aux/.toc; engine reloads a fresh Module
+                    // between passes (keepRuntimeAlive workaround); pass 2
+                    // reads them back and renders the TOC / resolves refs.
+                    [pdftex_not_final, this.error_messages_fatal, false],
+                    [pdftex, this.error_messages_all, false]
+                ] :
                 [
                     [pdftex, this.error_messages_all]
-                ];
+                ]);
         }
         else if(driver == 'luahbtex_bibtex8')
         {
@@ -559,9 +616,15 @@ class BusytexPipeline
                     [luahbtex, this.error_messages_fatal, true], 
                     [luahbtex, this.error_messages_all, true]
                 ] : 
+                (needs_multipass ?
+                [
+                    [luahbtex_not_final, this.error_messages_fatal, true],
+                    [luahbtex_not_final, this.error_messages_fatal, true],
+                    [luahbtex, this.error_messages_all, false]
+                ] :
                 [
                     [luahbtex, this.error_messages_all, false]
-                ];
+                ]);
         }
         else if(driver == 'luatex_bibtex8')
         {
@@ -572,9 +635,15 @@ class BusytexPipeline
                     [luatex, this.error_messages_fatal, true],
                     [luatex, this.error_messages_all, false]
                 ] :
+                (needs_multipass ?
+                [
+                    [luatex_not_final, this.error_messages_fatal, true],
+                    [luatex_not_final, this.error_messages_fatal, true],
+                    [luatex, this.error_messages_all, false]
+                ] :
                 [
                     [luatex, this.error_messages_all, false]
-                ];
+                ]);
         }
         else if(driver == 'xetex_dvi_only')
         {
@@ -588,12 +657,51 @@ class BusytexPipeline
         
         let exit_code = 0, stdout = '', stderr = '', log = '', aux = '';
         let skip = false;
-        const mem_header = Uint8Array.from(Module.HEAPU8.slice(0, this.mem_header_size));
+        let ran_a_cmd = false;
+        let fallback_pdf = null;
+        let mem_header = Uint8Array.from(Module.HEAPU8.slice(0, this.mem_header_size));
         const logs = [];
         for(const [cmd, error_messages, can_skip] of cmds)
         {
             if(can_skip && skip)
                 continue;
+
+            // Multi-pass on this WASM build: pdflatex exits via an explicit
+            // exit() that throws ExitStatus from deep in the call stack and
+            // unwinds to JS WITHOUT restoring the WASM stack pointer (an
+            // __stack_pointer global, not part of linear memory). The per-
+            // command HEAPU8 reset below restores memory and the stack cookie
+            // but NOT that SP global, so the next callMain's stackAlloc would
+            // run off a stale, near-exhausted stack and corrupt. emscripten's
+            // run() resets the SP via emscripten_stack_init() before each
+            // program; the pipeline calls callMain directly and skips that, so
+            // we do it ourselves between passes. (The benign "keepRuntimeAlive()
+            // is set (counter=0)" line is just noExitRuntime noise — pass 1
+            // succeeds with it; the un-reset stack is the real blocker. A full
+            // Module reload would also work but re-downloads the 100MB+ texmf
+            // data packages and hangs, so we reset the stack in-place instead.)
+            // Gated on needs_multipass → single-pass docs are untouched.
+            if(needs_multipass && ran_a_cmd)
+            {
+                // Keep the previous pass's valid PDF as a fallback so that even
+                // if the final pass somehow fails we degrade to a blank TOC,
+                // never to "no PDF at all".
+                const prev_pdf = this.read_all_bytes(FS, pdf_path);
+                if(prev_pdf && prev_pdf.length > 0)
+                    fallback_pdf = prev_pdf;
+
+                if(Module.asm && typeof Module.asm.emscripten_stack_init == 'function')
+                {
+                    this.print('$ # resetting engine stack for next LaTeX pass (TOC/cross-references)');
+                    Module.asm.emscripten_stack_init();
+                }
+                else
+                {
+                    this.print('$ # stack reset unavailable — using single-pass PDF (TOC may be blank)');
+                    break;
+                }
+            }
+            ran_a_cmd = true;
 
             const is_bibtex = cmd[0].startsWith('bibtex');
             const cmd_log_path = is_bibtex ? blg_path : log_path;
@@ -639,7 +747,18 @@ class BusytexPipeline
 
         console.log('LOGS', logs);
 
-        const pdf = exit_code == 0 ? this.read_all_bytes(FS, pdf_path) : null;
+        let pdf = exit_code == 0 ? this.read_all_bytes(FS, pdf_path) : null;
+        // Multi-pass safety net: if the final pass produced no usable PDF but an
+        // earlier pass did (saved in fallback_pdf), ship that rather than
+        // nothing — a blank TOC beats a failed compile. exit_code stays as-is
+        // so the logs still show what happened.
+        if((!pdf || pdf.length == 0) && fallback_pdf && fallback_pdf.length > 0)
+        {
+            this.print('$ # final LaTeX pass produced no PDF — using the previous pass (TOC may be blank)');
+            pdf = fallback_pdf;
+            if(exit_code != 0)
+                exit_code = 0;
+        }
         // For the xetex_dvi_only driver, read the .xdv bytes instead so
         // Swift can do native glyph-path extraction (manim MathTex path).
         const xdv = (exit_code == 0 && driver == 'xetex_dvi_only')

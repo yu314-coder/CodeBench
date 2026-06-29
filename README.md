@@ -10,7 +10,7 @@ A self-contained developer / scientific / AI workstation for iPad and Mac. Pytho
   │       ▲                  ▲                               │
   │       │                  │                               │
   │       │            ┌─────┴───────┐                       │
-  │       │            │  vim mode   │  ⌘P  ⌘,               │
+  │       │            │  vim mode   │  ⌘P ⇧⌘,               │
   │       │            └─────────────┘                       │
   │       ▼                                                  │
   │   Notebook editor  ─── per-cell Run + persistent kernel  │
@@ -71,16 +71,16 @@ Tap any `.ipynb` file in the file browser → opens **directly in the editor box
 - Persisted breakpoints (`~/.codebench/breakpoints/<file>.bps`) honoured at launch
 - Headless fallback — if the UI isn't compiled in (older build), the debugger auto-continues after 3 s so scripts don't hang
 
-### Configurable AI providers (`⌘,`)
+### Configurable AI providers (`⇧⌘,`)
 
 The AI subsystem can now dispatch to any of four backends, switched per-request or per-session:
 
 | Provider | Configure | Notes |
 |---|---|---|
 | **Bundled GGUF** | Models tab → tap a `.gguf` | Default, runs through `llama.cpp` |
-| **OpenAI** | `⌘,` → Settings → paste API key | Streams `chat/completions` SSE |
-| **Anthropic** | `⌘,` → Settings → paste API key | Streams Messages API with `system` separation |
-| **OpenAI-compat** | `⌘,` → set base URL (e.g. `http://192.168.1.10:11434/v1`) | Ollama / vLLM / llama.cpp server |
+| **OpenAI** | `⇧⌘,` → Settings → paste API key | Streams `chat/completions` SSE |
+| **Anthropic** | `⇧⌘,` → Settings → paste API key | Streams Messages API with `system` separation |
+| **OpenAI-compat** | `⇧⌘,` → set base URL (e.g. `http://192.168.1.10:11434/v1`) | Ollama / vLLM / llama.cpp server |
 
 API keys are stored in **Keychain** (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Ctrl-C in the terminal cancels in-flight HTTP requests + local generations symmetrically.
 
@@ -90,7 +90,7 @@ API keys are stored in **Keychain** (`kSecAttrAccessibleWhenUnlockedThisDeviceOn
 
 ### Vim mode (in Monaco)
 
-Toggle in `⌘,` settings. Implements a ~80% subset of vim:
+Toggle in `⇧⌘,` settings. Implements a ~80% subset of vim:
 
 - **Modes**: NORMAL · INSERT · VISUAL · V-LINE (status pill bottom-right)
 - **Motion**: `h j k l` · `w b e` · `0 $ ^` · `gg G` · `{ } %`
@@ -103,10 +103,10 @@ Toggle in `⌘,` settings. Implements a ~80% subset of vim:
 
 Persists via `localStorage.setItem('codebench.vim.enabled', '1')` so it survives editor reloads.
 
-### Quick Open (`⌘P`) + Settings (`⌘,`)
+### Quick Open (`⌘P`) + Settings (`⇧⌘,`)
 
 - **`⌘P`** — VS Code-style fuzzy file picker. Recent files at the top with "recent · " subtitle, full workspace walk underneath (capped at 5 000 files). Arrow keys + Enter to open.
-- **`⌘,`** — unified settings sheet: AI provider, API key, model name, temperature, max_tokens, vim mode toggle, inline-completion toggle.
+- **`⇧⌘,`** — unified settings sheet: AI provider, API key, model name, temperature, max_tokens, vim mode toggle, inline-completion toggle.
 
 ### Long-press Quick Look in file browser
 
@@ -169,7 +169,7 @@ User-edited copies are detected by file-head SHA comparison and **never overwrit
 | **Visual debugger** | Floating toolbar (Continue / Step Over / Step Into / Step Out / Stop) + variable inspector + call stack + golden current-line arrow in gutter. Driven by a Pdb subclass over signal files. Persisted breakpoints |
 | **Integrated terminal** | [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) backed by a PTY master/slave pair piping into the embedded CPython REPL |
 | **pdflatex on-device** | [busytex](https://github.com/busytex/busytex) WASM (pdftex 1.40.25 + xetex + luatex + bibtex8 + xdvipdfmx) running in a hidden WKWebView with TeX Live 2023 packages preloaded into MEMFS. A custom 23 MB overlay adds pgf / tikz / beamer / hyperref / mathtools / microtype / cleveref / fancyhdr / bbm / CJKutf8 / fontspec / ctex and ls-R index |
-| **Local + remote LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch + OpenAI / Anthropic / OpenAI-compat (Ollama, vLLM) HTTP streaming. ChatGPT-style UI: streaming, collapsible thinking, compiled LaTeX, code cards, 📎 file attachments, optional auto-run of AI-generated Python into the preview. Conversation export. API keys in Keychain. Provider switchable via `⌘,` |
+| **Local + remote LLM chat** | [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF models + ExecuTorch + OpenAI / Anthropic / OpenAI-compat (Ollama, vLLM) HTTP streaming. ChatGPT-style UI: streaming, collapsible thinking, compiled LaTeX, code cards, 📎 file attachments, optional auto-run of AI-generated Python into the preview. Conversation export. API keys in Keychain. Provider switchable via `⇧⌘,` |
 | **RAG engine** | In-process vector store for RAG over user-imported docs |
 | **Image generation** | Offline image models via ExecuTorch |
 | **Inline rich output** | `plt.show()` / `display(df)` / `Image.show()` etc. render in the output panel with append semantics — figures, DataFrames, plotly all flow through |
@@ -190,7 +190,7 @@ User-edited copies are detected by file-head SHA comparison and **never overwrit
 | **Jupyter `.ipynb`** | Same CPython, cell-stacked editor with persistent in-process kernel | (built-in; tap any `.ipynb` in the file browser) |
 | **C** | Pure-Swift tree-walking interpreter (3.4k LOC, 48 operators, structs, pointers, preprocessor) | [c-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/c-interpreter.md) · [interpreters.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/interpreters.md) |
 | **C++** | Pure-Swift tree-walking interpreter (4.2k LOC, classes, STL, templates, inheritance) | [cpp-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/cpp-interpreter.md) · [interpreters.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/libs/interpreters.md) |
-| **Fortran** | Pure-Swift tree-walking interpreter (4.1k LOC, modules, allocatable arrays, intrinsics) | [fortran-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-interpreter.md) · [fortran-runtime.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-runtime.md) |
+| **Fortran** | [ofort](https://github.com/Beliavsky/ofort) tree-walking interpreter in C (Beliavsky, MIT) via a Swift bridge — modules, allocatable arrays, 45+ intrinsics | [fortran-interpreter.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-interpreter.md) · [fortran-runtime.md](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/fortran-runtime.md) |
 
 All four languages share the same Monaco editor + IntelliSense pipeline and auto-save. Python additionally has the dedicated notebook editor for `.ipynb` files (cell-stacked UI in place of Monaco).
 
@@ -271,7 +271,7 @@ Full pdflatex doc: **[media.md#offlinai_latex--local-latex-engine](https://githu
 
 ## Local & remote AI
 
-The AI subsystem (chat, `ai` builtin, inline code-completion) routes to one of four backends, switchable per-session via `⌘,` settings or per-request via the `"provider"` field in `ai_request.json`:
+The AI subsystem (chat, `ai` builtin, inline code-completion) routes to one of four backends, switchable per-session via `⇧⌘,` settings or per-request via the `"provider"` field in `ai_request.json`:
 
 | Backend | Use case |
 |---|---|
@@ -317,7 +317,7 @@ The CodeBench shell IS a Python REPL — typing Python executes directly. On top
 | Shortcut | Action |
 |---|---|
 | `⌘P` | Quick Open file picker (fuzzy match) |
-| `⌘,` | Settings sheet (AI provider, vim mode, inline completion) |
+| `⇧⌘,` | Settings sheet (AI provider, vim mode, inline completion) |
 | `⌘/` | Keyboard-shortcuts help |
 | `⌘A` (in terminal) | Select all terminal output |
 | `⌘C` (in terminal) | Copy selection |

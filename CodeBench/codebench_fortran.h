@@ -4,6 +4,11 @@
  * Supports: INTEGER, REAL, DOUBLE PRECISION, CHARACTER, LOGICAL, COMPLEX,
  *           arrays, derived types, modules, subroutines, functions,
  *           DO/IF/SELECT CASE, intrinsic functions, formatted I/O.
+ *
+ * Implementation: powered by ofort (https://github.com/Beliavsky/ofort) by
+ * Beliavsky, MIT-licensed (see ofort/LICENSE). ofort was extracted from this
+ * app's original interpreter and matured upstream; we adopt it back. This
+ * header is the unchanged public ofort_* C API the rest of the app binds to.
  */
 
 #ifndef OFFLINAI_FORTRAN_H

@@ -34,6 +34,7 @@ final class KeyboardShortcutsViewController: UIViewController, UITableViewDataSo
             ("⌘⌥←",   "Previous file"),
             ("⌘⌥→",   "Next file"),
             ("⌘W",      "Close current file"),
+            ("⇧⌘,",     "Settings (AI provider, vim mode, completion)"),
         ]),
         Section(title: "Hidden", rows: [
             ("5× tap Settings title", "Browser history"),

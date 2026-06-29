@@ -56,17 +56,27 @@ prefs = bpy.context.preferences.addons["cycles"].preferences
 prefs.compute_device_type = "METAL"
 (prefs.refresh_devices if hasattr(prefs, "refresh_devices") else prefs.get_devices)()
 for d in prefs.devices: d.use = True
+prefs.metalrt = "OFF"                     # iOS: skip the hardware-RT path
+prefs.kernel_optimization_level = "OFF"   # iOS: skip the slow specialized kernel compile
 scene.cycles.device = "GPU"
 
 scene.cycles.samples = 24
 scene.cycles.use_denoising = True
 scene.cycles.denoiser = "OPENIMAGEDENOISE"        # AI denoise → clean at low samples
 scene.render.resolution_x, scene.render.resolution_y = 480, 360
-scene.render.filepath = "render.png"
+scene.render.filepath = "render.png"              # /tmp is read-only on iOS; use a relative path or ~/Documents
 bpy.ops.render.render(write_still=True)
 ```
 
-A subdivided Suzanne renders at 480×360 in ~1.7 s on an M-series GPU.
+**First GPU render of a session compiles Metal kernels (~3 min, serial), then
+caches — later renders run in ~2–3 s.** Keep `metalrt`/`kernel_optimization_level`
+off as above. **CPU** (`scene.cycles.device = "CPU"`) skips the compile entirely
+and is a good default for quick stills.
+
+You don't have to write any preview code: saving a `.blend` **or** running a
+render shows a **tqdm progress bar** and then opens the **interactive 3D viewer**
+(drag to orbit · pinch to zoom · tap **Rendered** for the photoreal Cycles image)
+automatically.
 
 ## What's available
 

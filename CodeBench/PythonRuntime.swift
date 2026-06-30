@@ -1190,6 +1190,14 @@ for _p in [\(pythonQuoted(versionPath)), \(pythonQuoted(dynloadPath)), \(pythonQ
     if _p and _p not in sys.path:
         sys.path.insert(0, _p)
 os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
+# USD (bpy): point Pixar OpenUSD's PlugRegistry at the bundled USD plugin
+# resources so bpy.ops.wm.usd_import / usd_export can discover the file-format
+# and schema plugins (the monolithic libusd_ms carries the code; these dirs
+# carry the plugInfo.json manifests + schema resources).
+_usd_res = os.path.join(\(pythonQuoted(sitePackagesPath)), "bpy", "usd_resources")
+if os.path.isdir(_usd_res):
+    os.environ.setdefault("PXR_PLUGINPATH_NAME",
+        os.path.join(_usd_res, "lib_usd") + os.pathsep + os.path.join(_usd_res, "plugin_usd"))
 """
         _ = globals
         try runStatements(script, filename: "<offlinai-python-paths>")

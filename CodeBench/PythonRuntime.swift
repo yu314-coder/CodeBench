@@ -881,7 +881,14 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
             let manimQuality = UserDefaults.standard.integer(forKey: "manim_quality") // 0=low, 1=med, 2=high
             let manimFPS = UserDefaults.standard.integer(forKey: "manim_fps")
             try setGlobalString(String(manimQuality), key: "__codebench_manim_quality", globals: globals)
-            try setGlobalString(String(manimFPS > 0 ? manimFPS : 24), key: "__codebench_manim_fps", globals: globals)
+            // Default matches Settings.manimFPS (15) so the FPS shown in the UI
+            // is the FPS the render uses; the chosen value is honored downstream.
+            try setGlobalString(String(manimFPS > 0 ? manimFPS : 15), key: "__codebench_manim_fps", globals: globals)
+            // Experimental GPU (Metal) manim backend toggle (Settings). When on,
+            // the manim setup swaps in the CairoMetal shim; any failure falls
+            // back to CPU cairo, so this never breaks the default render path.
+            let manimGPU = UserDefaults.standard.bool(forKey: "manim_gpu")
+            try setGlobalString(manimGPU ? "1" : "0", key: "__codebench_manim_gpu", globals: globals)
 
             // Class-picker selection (set by execute(targetScene:)). "" /
             // "*" = render all detected Scene subclasses (legacy); a
@@ -1166,13 +1173,12 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
         let sitePackagesPath = bundleURL.appendingPathComponent("app_packages/site-packages", isDirectory: true).path
         let toolDir = try ensureToolOutputDirectory().path
 
-        // User-installable site-packages: Documents/site-packages is writable, so the
-        // Packages tab installs pip wheels here. Ensure it exists + is on sys.path.
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let userSitePath = documentsURL?.appendingPathComponent("site-packages", isDirectory: true).path ?? ""
-        if !userSitePath.isEmpty {
-            try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
-        }
+        // User-installable site-packages — the App Group dir that equals
+        // ~/Documents/site-packages once HOME is repointed, i.e. exactly where
+        // pip injects its `--target`. Keeping it on sys.path here makes
+        // pip-installed wheels importable. Ensure it exists.
+        let userSitePath = AppPaths.userSitePackagesURL.path
+        try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
 
         // Same pandas-on-path logic as in configureEnvironmentBeforeInitialize —
         // necessary on the runtime-init path too because Py_Initialize
@@ -1218,17 +1224,20 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
         // INSIDE `pandas_ios/pandas-2.2.3/` → that's the path on PATH.
         let pandasDir = bundleURL
             .appendingPathComponent("pandas_ios/pandas-2.2.3", isDirectory: true).path
-        // User-installable site-packages in Documents (writable on iOS)
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let userSitePath = documentsURL?.appendingPathComponent("site-packages", isDirectory: true).path ?? ""
-        if !userSitePath.isEmpty {
-            try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
-        }
+        // User-installable site-packages — App Group dir == ~/Documents/site-packages
+        // (HOME is repointed below), matching pip's injected --target so installs
+        // resolve on sys.path.
+        let userSitePath = AppPaths.userSitePackagesURL.path
+        try? FileManager.default.createDirectory(atPath: userSitePath, withIntermediateDirectories: true)
         let pythonPath = [versionPath, dynloadPath, sitePackagesPath, pandasDir, userSitePath]
             .filter { !$0.isEmpty }
             .joined(separator: ":")
         let toolDir = try ensureToolOutputDirectory().path
 
+        // Point HOME at the shared App Group container (when provisioned) so
+        // ~/Documents/Workspace resolves into it — keeping the Python side in
+        // sync with the Files-app Location. No-op without the App Group.
+        AppPaths.exportHomeEnvironment()
         setenv("PYTHONHOME", pythonRoot, 1)
         setenv("PYTHONPATH", pythonPath, 1)
         setenv("PYTHONNOUSERSITE", "1", 1)
@@ -1248,12 +1257,27 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
         // every cache entry to a single writable tree. Big win:
         // second-launch `import manim` drops from ~3 s to ~800 ms.
         setenv("PYTHONDONTWRITEBYTECODE", "0", 1)
-        if let docs = FileManager.default.urls(for: .documentDirectory,
-                                               in: .userDomainMask).first {
-            let pycPrefix = docs.appendingPathComponent(".pycache", isDirectory: true).path
+        // Bytecode cache → a **Caches** dir, NOT Documents. Putting it in
+        // Documents dropped a ~37 MB `.pycache` into the user-visible,
+        // File-Provider-synced folder (and `ncdu` hid it as a dotdir, so it
+        // looked like "missing" disk space). Caches is non-synced & purgeable.
+        let pycBase = AppPaths.appGroupContainer
+            ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        if let pycBase = pycBase {
+            let pycPrefix = pycBase.appendingPathComponent("Library/Caches/pycache",
+                                                           isDirectory: true).path
             try? FileManager.default.createDirectory(atPath: pycPrefix,
                                                      withIntermediateDirectories: true)
             setenv("PYTHONPYCACHEPREFIX", pycPrefix, 1)
+        }
+        // Sweep away any stale `.pycache` left in the old (Documents) spots so it
+        // stops bloating the synced area.
+        try? FileManager.default.removeItem(at: AppPaths.documentsURL
+            .appendingPathComponent(".pycache", isDirectory: true))
+        if let sandboxDocs = FileManager.default.urls(for: .documentDirectory,
+                                                      in: .userDomainMask).first {
+            try? FileManager.default.removeItem(at: sandboxDocs
+                .appendingPathComponent(".pycache", isDirectory: true))
         }
         setenv("MPLCONFIGDIR", toolDir, 1)
 
@@ -1298,10 +1322,10 @@ os.environ.setdefault("MPLCONFIGDIR", \(pythonQuoted(toolDir)))
         if let cached = toolOutputDirectoryURL {
             return cached
         }
-        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            throw RuntimeError.message("Unable to resolve documents directory for Python tool output.")
-        }
-        let outputURL = documentsURL.appendingPathComponent("ToolOutputs", isDirectory: true)
+        // Inside the App Group Workspace so renders appear in the Files
+        // Location. Detection still works — it keys off the "/ToolOutputs/"
+        // path substring, which this nested path still contains.
+        let outputURL = AppPaths.toolOutputsURL
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
         toolOutputDirectoryURL = outputURL
         return outputURL
@@ -1887,6 +1911,35 @@ try:
     except Exception as _fc_pre_err:
         _log(f"[manim-font] pre-import fontconfig setup failed: {_fc_pre_err}")
 
+    # Experimental: GPU (Metal) cairo backend for manim, opt-in via the Settings
+    # toggle. Swap the `cairo` module for the CairoMetal shim BEFORE manim imports
+    # cairo. Reversible + safe: any failure falls back to the normal CPU cairo.
+    if str(globals().get('__codebench_manim_gpu', '0')) == '1':
+        try:
+            import os as _os
+            import cairo_metal as _cmetal
+            _cmdir = _os.path.dirname(getattr(_cmetal, '__file__', '') or '')
+            _cmml = _os.path.join(_cmdir, 'cairo_metal_runtime', 'default.metallib')
+            if _os.path.exists(_cmml):
+                _os.environ['CM_METALLIB'] = _cmml
+            _cmsrc = _os.path.join(_cmdir, 'cairo_metal_runtime', 'fill.metal')
+            if _os.path.exists(_cmsrc):
+                _os.environ['CM_METAL_SRC'] = _cmsrc
+            # Self-test gates activation: if the GPU can't render a test
+            # pattern, fall back to CPU rather than produce a broken render.
+            _ok, _dev, _ = _cmetal.gpu_selftest()
+            if not _ok:
+                raise RuntimeError("GPU init check did not pass")
+            sys.modules['cairo'] = _cmetal
+            globals()['__codebench_manim_gpu_active'] = True
+            _log(f"[manim] GPU (Metal) rendering on {_dev}")
+        except Exception as _gpe:
+            globals()['__codebench_manim_gpu_active'] = False
+            # Detail to the Xcode console only; the user-facing line avoids the
+            # word "error" so a successful CPU render isn't flagged as failed.
+            print(f"[manim] GPU unavailable ({type(_gpe).__name__}: {_gpe}); using CPU", flush=True)
+            _log("[manim] GPU rendering not available - using CPU renderer")
+
     # Configure manim for iOS (if available)
     try:
         import manim
@@ -1908,12 +1961,30 @@ try:
         # is running. Our own [manim-debug] / [diag] / [fallback]
         # prefixes are filtered to NSLog by the Swift terminal layer.
         manim.config.verbosity = "ERROR"
-        # MUST use standard quality presets — custom pixel values break frame_rate!
-        # Manim's quality presets set pixel_width, pixel_height, AND frame_rate together.
+        # Quality presets. 0–4 use manim's built-in presets (each sets
+        # pixel_width, pixel_height AND frame_rate together). 8K (idx 5) has no
+        # built-in preset, so we set the pixels explicitly AND set frame_rate
+        # explicitly — custom pixels alone would leave frame_rate at manim's
+        # default, the gotcha the old code avoided by capping at 1080p. High-res
+        # is now memory-safe via the capped/downsampled GIF buffer + frame
+        # streaming + malloc pressure relief (ported from ManimStudio's 8K path).
         _mq = int(globals().get('__codebench_manim_quality', '0') or '0')
-        _quality_map = {0: 'low_quality', 1: 'medium_quality', 2: 'high_quality'}
-        manim.config.quality = _quality_map.get(_mq, 'low_quality')
-        _log(f"manim quality={manim.config.quality} res={manim.config.pixel_width}x{manim.config.pixel_height} fps={manim.config.frame_rate}")
+        _mfps = int(globals().get('__codebench_manim_fps', '0') or '0')
+        if _mq == 5:
+            manim.config.pixel_width = 7680
+            manim.config.pixel_height = 4320
+            manim.config.frame_rate = float(_mfps) if _mfps > 0 else 30.0
+        else:
+            _quality_map = {0: 'low_quality', 1: 'medium_quality',
+                            2: 'high_quality', 3: 'production_quality',
+                            4: 'fourk_quality'}
+            manim.config.quality = _quality_map.get(_mq, 'low_quality')
+            # Honor the FPS selector: manim's quality preset RESETS frame_rate to
+            # its own default (15/30/60), so re-apply the chosen fps AFTER setting
+            # quality -- otherwise the FPS setting silently does nothing for 0-4.
+            if _mfps > 0:
+                manim.config.frame_rate = float(_mfps)
+        _log(f"manim quality idx={_mq} res={manim.config.pixel_width}x{manim.config.pixel_height} fps={manim.config.frame_rate}")
 
         # iOS: Pango segfaults in cairo_scaled_font_glyph_extents when the
         # fallback font ("Times 9.999") can't be resolved via fontconfig.
@@ -2036,35 +2107,104 @@ try:
             # Also patch write_frame to collect frames for GIF
             from manim.scene.scene_file_writer import SceneFileWriter
             _orig_write_frame = SceneFileWriter.write_frame
-            _collected_frames = []  # shared frame buffer
+            _collected_frames = []  # shared frame buffer (for the GIF output)
+            # CAP + DOWNSAMPLE (ported from ManimStudio's 8K-safe path). Holding
+            # every full-res frame as a PIL image is the dominant memory cost of a
+            # render and OOM-kills the app at high resolution — this is why 4K+
+            # used to be refused outright. The frames are ONLY used to assemble the
+            # GIF (which is ~480px wide anyway), so we cap the count and downsample
+            # at capture time, bounding GIF memory to a small constant regardless
+            # of render resolution or scene length. Full-res frames still stream to
+            # the mp4 via the original writer (never accumulated).
+            _MAX_COLLECT = 240
+            _GIF_MAX_W = 480
 
             def _capture_write_frame(self_fw, frame_or_renderer, num_frames=1):
-                # Intercept write_frame to collect PIL frames for GIF
-                try:
-                    if isinstance(frame_or_renderer, np.ndarray):
-                        frame = frame_or_renderer
-                    elif hasattr(frame_or_renderer, 'get_frame'):
-                        frame = frame_or_renderer.get_frame()
-                    else:
-                        frame = None
-                    if frame is not None and frame.size > 0:
-                        from PIL import Image as _PILImage
-                        # frame is RGBA uint8 numpy array
-                        if frame.shape[-1] == 4:
-                            img = _PILImage.fromarray(frame, 'RGBA').convert('RGB')
+                if len(_collected_frames) < _MAX_COLLECT:
+                    try:
+                        if isinstance(frame_or_renderer, np.ndarray):
+                            frame = frame_or_renderer
+                        elif hasattr(frame_or_renderer, 'get_frame'):
+                            frame = frame_or_renderer.get_frame()
                         else:
-                            img = _PILImage.fromarray(frame, 'RGB')
-                        # Sample every few frames to keep GIF small
-                        _collected_frames.append(img)
-                except Exception:
-                    pass
-                # Still call original (for save_last_frame PNG)
+                            frame = None
+                        if frame is not None and frame.size > 0:
+                            from PIL import Image as _PILImage
+                            if frame.shape[-1] == 4:
+                                img = _PILImage.fromarray(frame, 'RGBA').convert('RGB')
+                            else:
+                                img = _PILImage.fromarray(frame, 'RGB')
+                            # Downsample at capture so we never hold full-res frames.
+                            if img.width > _GIF_MAX_W:
+                                _r = _GIF_MAX_W / img.width
+                                img = img.resize((_GIF_MAX_W, int(img.height * _r)),
+                                                 _PILImage.LANCZOS)
+                            _collected_frames.append(img)
+                    except Exception:
+                        pass
+                # Always run the original so the mp4 / save_last_frame PNG is written.
                 try:
                     _orig_write_frame(self_fw, frame_or_renderer, num_frames)
                 except Exception:
                     pass
 
             SceneFileWriter.write_frame = _capture_write_frame
+
+            # GPU mode root-cause fix: CairoRenderer.get_frame() does
+            # `np.array(self.camera.pixel_array)` — a COPY taken BEFORE write_frame
+            # runs. Our GPU copy-back happened inside write_frame, i.e. AFTER that
+            # snapshot, so the encoded copy stayed black even though the GPU drew.
+            # Flush the GPU frame into camera.pixel_array BEFORE the snapshot.
+            if str(globals().get('__codebench_manim_gpu', '0')) == '1':
+                try:
+                    from manim.renderer.cairo_renderer import CairoRenderer as _CR
+                    if not getattr(_CR, '_offlinai_gpu_getframe', False):
+                        _CR._offlinai_gpu_getframe = True
+                        _orig_get_frame = _CR.get_frame
+                        def _gpu_get_frame(self, _o=_orig_get_frame):
+                            try:
+                                sys.modules['cairo']._flush_all()
+                            except Exception:
+                                pass
+                            return _o(self)
+                        _CR.get_frame = _gpu_get_frame
+                except Exception as _ge:
+                    print(f"[manim] GPU get_frame hook not installed: {type(_ge).__name__}: {_ge}", flush=True)
+
+            # --- temporary render profiler: shows where the render time goes ---
+            # (low overhead: perf_counter around the key stages, summarized once
+            #  at render end). Installed for both CPU and GPU so they compare.
+            import time as _time
+            globals().setdefault('__cb_prof', {})
+            def _prof_wrap(_obj, _name, _key):
+                _o = getattr(_obj, _name, None)
+                if _o is None or getattr(_o, '_cb_prof', False):
+                    return
+                def _w(*a, **k):
+                    _t = _time.perf_counter()
+                    try:
+                        return _o(*a, **k)
+                    finally:
+                        _pp = globals()['__cb_prof']
+                        _pp[_key] = _pp.get(_key, 0.0) + (_time.perf_counter() - _t)
+                _w._cb_prof = True
+                setattr(_obj, _name, _w)
+            try:
+                from manim.camera.camera import Camera as _CamP
+                _prof_wrap(_CamP, 'set_cairo_context_path', '1_path_build_geometry')
+                _prof_wrap(_CamP, 'apply_fill', '2_fill')
+                _prof_wrap(_CamP, 'apply_stroke', '3_stroke')
+                from manim.renderer.cairo_renderer import CairoRenderer as _CRP2
+                _prof_wrap(_CRP2, 'get_frame', '4_get_frame_and_gpu_copyback')
+                from manim.scene.scene_file_writer import SceneFileWriter as _SFWP
+                _prof_wrap(_SFWP, 'write_frame', '5_write_frame_encode')
+                try:
+                    import manimpango as _mpP
+                    _prof_wrap(_mpP, 'text2svg', '0_pango_text2svg')
+                except Exception:
+                    pass
+            except Exception as _pe:
+                print(f"[manim] profiler install failed: {_pe}", flush=True)
 
             def _offlinai_manim_render(self, *args, **kwargs):
                 global __codebench_plot_path
@@ -2084,34 +2224,32 @@ try:
                     if _avail_fn is not None:
                         _avail_fn.restype = _ct.c_size_t
                         _avail = int(_avail_fn())
-                        # Tier table (matches offlinai_shell.py's _manim_cmd):
-                        #   480p   → 380 MB
-                        #   720p   → 1 GB
-                        #   1080p  → 2 GB (24/30) or 3 GB (60)
-                        #   4K     → 4 GB (refused outright)
+                        # Resolution-tiered peak-memory estimate. With frame
+                        # streaming to ffmpeg + the capped/downsampled GIF buffer
+                        # (write_frame patch above) + malloc pressure relief, even
+                        # 4K/8K fit when there's enough headroom — so we no longer
+                        # hard-refuse them; we only refuse if the device genuinely
+                        # can't fit the per-frame working set (which is transient
+                        # and freed each frame, so these are generous).
                         _h = int(getattr(_m.config, "pixel_height", 480) or 480)
                         _fps = int(getattr(_m.config, "frame_rate", 15) or 15)
-                        if _h >= 2000:
-                            _need = 4 * 1024 * 1024 * 1024
-                        elif _h >= 1000:
+                        if _h >= 4000:        # 8K
+                            _need = 3 * 1024 * 1024 * 1024
+                        elif _h >= 2000:      # 4K
+                            _need = 2 * 1024 * 1024 * 1024
+                        elif _h >= 1000:      # 1080p / 1440p
                             _need = 3 * 1024 * 1024 * 1024 if _fps >= 30 else 2 * 1024 * 1024 * 1024
-                        elif _h >= 700:
+                        elif _h >= 700:       # 720p
                             _need = 1024 * 1024 * 1024
-                        elif _h >= 400:
+                        elif _h >= 400:       # 480p
                             _need = 384 * 1024 * 1024
                         else:
                             _need = 200 * 1024 * 1024
-                        # 4K: hard refuse regardless of available.
-                        if _h >= 2000:
-                            print(f"[manim] 4K rendering is not supported on iOS — "
-                                  f"the per-frame working set exceeds the jetsam "
-                                  f"ceiling. Use 1080p or lower.", flush=True)
-                            return
-                        if _avail and _need * 1.25 > _avail:
-                            print(f"[manim] refusing to render: estimated "
-                                  f"{_need // (1024*1024)} MB peak but only "
-                                  f"{_avail // (1024*1024)} MB available before "
-                                  f"iOS would terminate the app. Lower the "
+                        if _avail and _need > _avail:
+                            print(f"[manim] not enough memory for "
+                                  f"{getattr(_m.config, 'pixel_width', '?')}x{_h}: "
+                                  f"~{_need // (1024*1024)} MB needed but only "
+                                  f"{_avail // (1024*1024)} MB free. Lower the "
                                   f"manim quality in Settings.",
                                   flush=True)
                             return
@@ -2322,10 +2460,27 @@ try:
                     print(f"[manim] font registration failed: {type(_fe).__name__}: {_fe}", flush=True)
                 _m.config.from_animation_number = 0
                 _m.config.upto_animation_number = -1
-                # Re-apply quality preset to ensure correct frame_rate
+                # Re-apply quality preset right before render to guarantee the
+                # frame_rate/resolution survive any config churn during setup.
+                # MUST mirror the 6-tier preset block above — a stale low/med/
+                # high-only map here silently downgrades 1440p/4K/8K back to
+                # low_quality (and resets 8K's explicit pixels to 480p), which
+                # is exactly "selecting the manim quality does nothing".
                 _q = int(globals().get('__codebench_manim_quality', '0') or '0')
-                _qmap = {0: 'low_quality', 1: 'medium_quality', 2: 'high_quality'}
-                _m.config.quality = _qmap.get(_q, 'low_quality')
+                _qfps = int(globals().get('__codebench_manim_fps', '0') or '0')
+                if _q == 5:
+                    _m.config.pixel_width = 7680
+                    _m.config.pixel_height = 4320
+                    _m.config.frame_rate = float(_qfps) if _qfps > 0 else 30.0
+                else:
+                    _qmap = {0: 'low_quality', 1: 'medium_quality',
+                             2: 'high_quality', 3: 'production_quality',
+                             4: 'fourk_quality'}
+                    _m.config.quality = _qmap.get(_q, 'low_quality')
+                    # Re-apply the chosen FPS after the quality preset (which
+                    # resets frame_rate) so the FPS selector actually takes effect.
+                    if _qfps > 0:
+                        _m.config.frame_rate = float(_qfps)
                 _collected_frames.clear()
                 # ── Render with guaranteed teardown ─────────────────
                 # The user-reported symptom: when a render is killed
@@ -2451,6 +2606,11 @@ try:
                         except Exception: pass
                     except Exception: pass
                 print(f"[manim-debug] frames_written={len(_collected_frames)} skip={getattr(self.renderer, 'skip_animations', '?') if getattr(self, 'renderer', None) else '?'} sections_skip={getattr(self.renderer.file_writer.sections[-1], 'skip_animations', '?') if getattr(self, 'renderer', None) and hasattr(self.renderer, 'file_writer') and self.renderer.file_writer.sections else '?'}")
+                _pp = globals().get('__cb_prof', {})
+                if _pp:
+                    _psum = "  ".join(f"{_k}={_v:.1f}s" for _k, _v in sorted(_pp.items()))
+                    _log(f"[manim] PROFILE {_psum}")
+                    print(f"[manim] PROFILE {_psum}", flush=True)
                 try:
                     # Result discovery uses the paths captured BEFORE
                     # the teardown (self.renderer was cleared in the
@@ -3204,13 +3364,54 @@ try:
         except Exception:
             pass
         _cb_dir = _cb_os.path.dirname(_cb_script_path)
-        if _cb_dir and _cb_dir not in _cb_sys.path:
-            _cb_sys.path.insert(0, _cb_dir)
+        if _cb_dir:
+            # A script saved with the same name as an installed package -- e.g.
+            # a Blender script saved as "bpy.py" -- must NOT shadow the real
+            # site-packages module. The workspace dir reaches sys.path two ways:
+            # its absolute path, and '' / '.' (which resolve to the cwd, which is
+            # also the workspace). Drop EVERY such early entry, then re-add the
+            # workspace at the TAIL so `import bpy` finds the bundled framework
+            # while local sibling imports still resolve. Deliberate deviation
+            # from `python <file>` sys.path[0] semantics: in an editor with a
+            # rich bundled package set, accidental shadowing of an installed
+            # package by a same-named script is far more common than intentional
+            # override.
+            try:
+                _cb_rdir = _cb_os.path.realpath(_cb_dir)
+            except Exception:
+                _cb_rdir = _cb_dir
+            _cb_keep = []
+            for _cb_p in _cb_sys.path:
+                _cb_drop = _cb_p in ("", ".", _cb_dir)
+                if not _cb_drop:
+                    try:
+                        _cb_drop = _cb_os.path.realpath(_cb_p) == _cb_rdir
+                    except Exception:
+                        _cb_drop = False
+                if not _cb_drop:
+                    _cb_keep.append(_cb_p)
+            _cb_keep.append(_cb_dir)
+            _cb_sys.path[:] = _cb_keep
 
     # Execute user code
     _log("Executing user code...")
     exec(_offlinai_code, globals(), globals())
     _log("User code finished")
+
+    # Headless bpy auto-preview: a desktop-style script that builds a scene but
+    # never saves/renders shows nothing on iOS (there is no live viewport). If
+    # bpy was imported and nothing was already emitted this run, open the
+    # interactive 3D preview -- the same channel a `.blend` save / render uses.
+    try:
+        import sys as _cb_sys2
+        if 'bpy' in _cb_sys2.modules and not __codebench_plot_path:
+            import codebench_blend_view as _cb_cbv
+            if _cb_cbv.autoshow():
+                print("[bpy] auto-preview shown", flush=True)
+    except Exception as _cb_e:
+        import traceback as _cb_tb
+        print("[bpy] auto-preview error: %r" % (_cb_e,), flush=True)
+        _cb_tb.print_exc()
 
     # Auto-detect and render manim Scene subclasses if user didn't call render() manually.
     #

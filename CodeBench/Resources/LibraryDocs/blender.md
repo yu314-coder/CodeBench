@@ -83,12 +83,32 @@ automatically.
 Cycles (SVM, CPU + Metal GPU), OpenImageDenoise, Embree, OpenSubdiv, OpenVDB,
 Alembic, Bullet physics, Mantaflow fluid, FFTW ocean, exact boolean
 (manifold + GMP), Freestyle, OpenColorIO, OBJ / PLY / STL / glTF I/O, geometry
-nodes, and the full modifier stack.
+nodes, **FFmpeg video output** (H.264 / MPEG-4 / FFV1 — see below), and the full
+modifier stack.
 
-**Not available:** Cycles OSL (needs a JIT, forbidden on iOS), USD, and FFmpeg
-video output. Check any feature with `bpy.app.build_options.<name>` — e.g.
+**Not available:** Cycles OSL (needs a JIT, forbidden on iOS) and USD. Check any
+feature with `bpy.app.build_options.<name>` — e.g.
 `bpy.app.build_options.cycles`. (OIDN is the exception: use
 `import _cycles; _cycles.with_openimagedenoise`.)
+
+## Render to video (FFmpeg)
+
+Animate, then render straight to a movie file. **Set `media_type = 'VIDEO'` before
+`file_format = 'FFMPEG'`** — only then does the format enum expose movie codecs.
+
+```python
+scene.render.image_settings.media_type = "VIDEO"   # ← must come first
+scene.render.image_settings.file_format = "FFMPEG"
+scene.render.ffmpeg.format = "MPEG4"                # .mp4 container
+scene.render.ffmpeg.codec  = "H264"                 # H264 · MPEG4 · FFV1 (lossless, use MKV)
+scene.render.filepath = "anim"                      # ~/Documents, NOT /tmp
+scene.frame_start, scene.frame_end = 1, 48
+bpy.ops.render.render(animation=True)               # → anim0001-0048.mp4
+```
+
+H.264/H.265 use Apple's hardware **VideoToolbox** encoder; `FFV1` is lossless;
+encoding runs single-threaded on iOS for stability; audio isn't muxed yet
+(video-only). The `.mp4` opens in the preview pane / Files.
 
 ## Gotchas on iOS
 

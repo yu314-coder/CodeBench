@@ -85,17 +85,25 @@ import llama   // GGML_TYPE_F16 and other ggml constants
             return
         }
 
-        // Apple on-device marker (terminal `/model apple`): flip the shared
-        // flag the editor's AI picker also reads, publish the active name, done.
-        if (obj["apple_on_device"] as? Bool) == true {
-            if FoundationModelsRunner.isAvailable() {
-                UserDefaults.standard.set(true, forKey: "CodeBench.aiUseAppleOnDevice")
-                try? "Apple Intelligence (on-device)\n".write(
+        // Apple Foundation Models marker (terminal `/model apple` | `cloudpro`):
+        // set the shared tier the editor's picker also reads, publish the active
+        // name, done. {"apple_tier":"onDevice"|"cloudPro"} (legacy
+        // {"apple_on_device":true} → onDevice).
+        let markerTier: FoundationModelsRunner.Tier? = {
+            if let s = obj["apple_tier"] as? String { return FoundationModelsRunner.Tier(rawValue: s) }
+            if (obj["apple_on_device"] as? Bool) == true { return .onDevice }
+            return nil
+        }()
+        if let t = markerTier {
+            if FoundationModelsRunner.isAvailable(t) {
+                UserDefaults.standard.set(t.rawValue, forKey: "CodeBench.aiAppleTier")
+                let name = (t == .cloudPro) ? "Apple Cloud Pro" : "Apple Intelligence (on-device)"
+                try? "\(name)\n".write(
                     toFile: signalDir + "current_model.txt", atomically: true, encoding: .utf8)
-                writeModelDone(status: 0, message: "using Apple Intelligence (on-device)")
+                writeModelDone(status: 0, message: "using \(name)")
             } else {
-                let reason = FoundationModelsRunner.unavailableReason() ?? "not available"
-                writeModelDone(status: -1, message: "Apple on-device model unavailable — \(reason)")
+                let reason = FoundationModelsRunner.unavailableReason(t) ?? "not available"
+                writeModelDone(status: -1, message: "Apple model unavailable — \(reason)")
             }
             return
         }
@@ -104,8 +112,8 @@ import llama   // GGML_TYPE_F16 and other ggml constants
             writeModelDone(status: -1, message: "ai-load: malformed request.json")
             return
         }
-        // Loading a real GGUF turns Apple on-device back off.
-        UserDefaults.standard.set(false, forKey: "CodeBench.aiUseAppleOnDevice")
+        // Loading a real GGUF turns the Apple tier back off.
+        UserDefaults.standard.removeObject(forKey: "CodeBench.aiAppleTier")
         guard FileManager.default.fileExists(atPath: path) else {
             writeModelDone(status: -1, message: "ai-load: no such file: \(path)")
             return
@@ -292,9 +300,15 @@ import llama   // GGML_TYPE_F16 and other ggml constants
 
         // Route to Apple's on-device model when the editor's AI picker selected
         // it (shared flag) and it's actually available; else the bundled GGUF.
-        let useApple = UserDefaults.standard.bool(forKey: "CodeBench.aiUseAppleOnDevice")
-                    && FoundationModelsRunner.isAvailable()
-        let generator: TextGenerator? = useApple ? foundationRunner : runner
+        let appleTier = UserDefaults.standard.string(forKey: "CodeBench.aiAppleTier")
+            .flatMap(FoundationModelsRunner.Tier.init(rawValue:))
+        let generator: TextGenerator?
+        if let t = appleTier, FoundationModelsRunner.isAvailable(t) {
+            foundationRunner.tier = t
+            generator = foundationRunner
+        } else {
+            generator = runner
+        }
         guard let generator = generator else {
             writeDone(status: -2, message: "ai: no model loaded. Load one from the Models tab first, or pick Apple Intelligence (on-device).")
             return

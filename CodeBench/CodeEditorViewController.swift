@@ -876,19 +876,22 @@ final class CodeEditorViewController: UIViewController {
     private var previewTabSources: [String] = []
     private let maxPreviewTabs = 12
 
-    // MARK: - AI engine: Apple on-device (Foundation Models) option
-    /// When on, the editor AI uses Apple's on-device model (Foundation Models)
-    /// instead of the bundled GGUF runner. Persisted; only honored when the
-    /// model is actually available (iOS 26+ and a capable device).
-    private var aiUseAppleOnDevice: Bool {
-        get { UserDefaults.standard.bool(forKey: "CodeBench.aiUseAppleOnDevice") }
-        set { UserDefaults.standard.set(newValue, forKey: "CodeBench.aiUseAppleOnDevice") }
+    // MARK: - AI engine: Apple Foundation Models tier picker
+    /// Selected Apple Foundation Models tier (`.onDevice` = AFM 3 Core/Core
+    /// Advanced; `.cloudPro` = AFM 3 Cloud Pro), or nil to use the bundled GGUF
+    /// runner. Persisted; only honored when that tier is actually available.
+    /// Shared key with AIEngine so the terminal `ai` REPL honors the same pick.
+    private var aiAppleTier: FoundationModelsRunner.Tier? {
+        get { UserDefaults.standard.string(forKey: "CodeBench.aiAppleTier")
+                .flatMap(FoundationModelsRunner.Tier.init(rawValue:)) }
+        set { UserDefaults.standard.set(newValue?.rawValue, forKey: "CodeBench.aiAppleTier") }
     }
     private let foundationRunner = FoundationModelsRunner()
-    /// Which engine the editor AI should use right now: Apple on-device when
-    /// selected AND available, else the bundled GGUF runner (nil if none loaded).
+    /// Which engine the editor AI should use right now: the selected Apple tier
+    /// when available, else the bundled GGUF runner (nil if none loaded).
     private func activeAIGenerator() -> TextGenerator? {
-        if aiUseAppleOnDevice, FoundationModelsRunner.isAvailable() {
+        if let t = aiAppleTier, FoundationModelsRunner.isAvailable(t) {
+            foundationRunner.tier = t
             return foundationRunner
         }
         return llamaRunner
@@ -6057,20 +6060,21 @@ except Exception:
                 : "Pick a model to load right now.",
             preferredStyle: .actionSheet)
 
-        // Apple's on-device model (the family behind Apple Intelligence / Siri),
-        // shown only when it's usable here (iOS 26+ and a capable device).
-        // Selecting it routes the AI edit box to it; picking a GGUF switches back.
-        // On an iOS 27 device this transparently uses the iOS 27 model.
-        if FoundationModelsRunner.isAvailable() {
-            let on = self.aiUseAppleOnDevice
-            sheet.addAction(UIAlertAction(
-                title: "\(on ? "✓ " : "  ")Apple Intelligence (on-device)",
-                style: .default) { _ in
-                self.aiUseAppleOnDevice = true
+        // Apple Foundation Models tiers (AFM 3). Selecting one routes the AI edit
+        // box (and terminal `ai`) to it; picking a GGUF below switches back.
+        func addAppleTier(_ t: FoundationModelsRunner.Tier, _ label: String) {
+            guard FoundationModelsRunner.isAvailable(t) else { return }
+            let on = (self.aiAppleTier == t)
+            sheet.addAction(UIAlertAction(title: "\(on ? "✓ " : "  ")\(label)", style: .default) { _ in
+                self.aiAppleTier = t
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                self.showToast("Using Apple's on-device model", near: sender)
+                self.showToast("Using \(label)", near: sender)
             })
         }
+        addAppleTier(.onDevice, "Apple Intelligence (on-device)")
+        #if canImport(CoreAI)   // iOS 27 SDK only
+        if #available(iOS 27, *) { addAppleTier(.cloudPro, "Apple Cloud Pro (cloud)") }
+        #endif
 
         for url in availableModels {
             let isCurrent = (url.path == mruPath)
@@ -6082,7 +6086,7 @@ except Exception:
             let title = "\(prefix)\(url.lastPathComponent) — \(sizeStr)"
             sheet.addAction(UIAlertAction(title: title, style: .default) { _ in
                 let slot = isCurrent ? mruSlot : 0  // fallback: slot 0 if unknown
-                self.aiUseAppleOnDevice = false   // picking a GGUF switches off Apple on-device
+                self.aiAppleTier = nil   // picking a GGUF switches off the Apple tier
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 NotificationCenter.default.post(
                     name: .codeBenchRequestLoadModel,
@@ -8224,9 +8228,9 @@ except Exception:
         // ── 1. Status header (non-interactive label-style row) ──
         let headerTitle: String
         let headerSubtitle: String
-        if aiUseAppleOnDevice, FoundationModelsRunner.isAvailable() {
-            headerTitle = "Using · Apple Intelligence"
-            headerSubtitle = "On-device model (no GGUF needed)"
+        if let t = aiAppleTier, FoundationModelsRunner.isAvailable(t) {
+            headerTitle = (t == .cloudPro) ? "Using · Apple Cloud Pro" : "Using · Apple Intelligence"
+            headerSubtitle = (t == .cloudPro) ? "AFM 3 Cloud Pro (server · metered)" : "AFM 3 on-device (no GGUF needed)"
         } else if let loaded = loadedModelSlot {
             headerTitle = "Loaded · \(loaded.title)"
             headerSubtitle = loaded.subtitle
@@ -8258,9 +8262,9 @@ except Exception:
                 title: slot.title,
                 subtitle: slot.subtitle,
                 image: UIImage(systemName: iconName),
-                state: (isLoaded && !aiUseAppleOnDevice) ? .on : .off
+                state: (isLoaded && aiAppleTier == nil) ? .on : .off
             ) { [weak self] _ in
-                self?.aiUseAppleOnDevice = false   // picking a GGUF leaves Apple on-device
+                self?.aiAppleTier = nil   // picking a GGUF switches off the Apple tier
                 self?.onModelSelected?(slot)
             }
         }
@@ -8321,31 +8325,43 @@ except Exception:
             children: [chooseFile, openManager]
         )
 
-        // ── Apple's on-device model (iOS 26+) — the family behind Apple
-        // Intelligence / Siri. Shown even when unavailable (with the reason),
-        // so it's never a silent omission. On an iOS 27 device this uses the
-        // iOS 27 model automatically. Selecting it drives BOTH this editor AI
-        // box and the terminal `ai` REPL (shared flag).
+        // ── Apple Foundation Models (AFM 3) tiers — the family behind Apple
+        // Intelligence / Siri. Shown even when unavailable (with the reason), so
+        // it's never a silent omission. Selecting a tier drives BOTH this editor
+        // AI box and the terminal `ai` REPL (shared "CodeBench.aiAppleTier" key).
+        //   • on-device: AFM 3 Core / Core Advanced — iOS 26+, free, offline.
+        //   • Cloud Pro: AFM 3 Cloud Pro — iOS 27 only (Private Cloud Compute,
+        //     metered). The entry only compiles under the iOS 27 SDK.
         var appleSection: [UIMenu] = []
         if #available(iOS 26, *) {
-            let available = FoundationModelsRunner.isAvailable()
-            let selected  = aiUseAppleOnDevice && available
-            let appleAction = UIAction(
-                title: "Apple Intelligence (on-device)",
-                subtitle: available
-                    ? "On-device · private · free"
-                    : "Unavailable — \(FoundationModelsRunner.unavailableReason() ?? "not ready")",
-                image: UIImage(systemName: "sparkles"),
-                attributes: available ? [] : .disabled,
-                state: selected ? .on : .off
-            ) { [weak self] _ in
-                guard let self else { return }
-                self.aiUseAppleOnDevice = true
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                self.updateModelName("Apple Intelligence")
-                self.modelSelectorButton.menu = self.buildModelMenu()
+            func appleEntry(_ t: FoundationModelsRunner.Tier,
+                            _ title: String, _ blurb: String, _ icon: String) -> UIAction {
+                let available = FoundationModelsRunner.isAvailable(t)
+                let selected  = (aiAppleTier == t) && available
+                return UIAction(
+                    title: title,
+                    subtitle: available ? blurb
+                        : "Unavailable — \(FoundationModelsRunner.unavailableReason(t) ?? "not ready")",
+                    image: UIImage(systemName: icon),
+                    attributes: available ? [] : .disabled,
+                    state: selected ? .on : .off
+                ) { [weak self] _ in
+                    guard let self else { return }
+                    self.aiAppleTier = t
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    self.updateModelName(t == .cloudPro ? "Apple Cloud Pro" : "Apple Intelligence")
+                    self.modelSelectorButton.menu = self.buildModelMenu()
+                }
             }
-            appleSection = [UIMenu(options: .displayInline, children: [appleAction])]
+            var appleActions = [appleEntry(.onDevice,
+                "Apple Intelligence (on-device)", "AFM 3 · on-device · private · free", "sparkles")]
+            #if canImport(CoreAI)   // CoreAI ships only in the iOS 27 SDK
+            if #available(iOS 27, *) {
+                appleActions.append(appleEntry(.cloudPro,
+                    "Apple Cloud Pro (cloud)", "AFM 3 Cloud Pro · reasoning · metered", "cloud"))
+            }
+            #endif
+            appleSection = [UIMenu(options: .displayInline, children: appleActions)]
         }
 
         return UIMenu(

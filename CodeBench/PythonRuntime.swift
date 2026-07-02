@@ -608,19 +608,43 @@ final class PythonRuntime {
             .filter { !$0.isEmpty }
         guard !filtered.isEmpty else { return [] }
 
+        // IMPORT-FREE probe. The old version import_module()'d every name —
+        // numpy, matplotlib, plotly, PIL, scipy, sklearn, manim — through the
+        // shared interpreter whenever the Libraries panel refreshed: 5-15 s of
+        // blocked terminal and hundreds of MB resident for the whole session
+        // (the same class of bug as the old eager symbol index; it also ate
+        // the headroom `import bpy` needs). find_spec() answers
+        // installed/missing + path from metadata without executing anything;
+        // already-imported modules still report their real __file__ (keeps
+        // the "shim" distinction for loaded compatibility layers).
         let script = """
-import importlib, json
+import sys, json
+import importlib.util
 _codebench_lib_status = []
 for _name in \(pythonArrayLiteral(filtered)):
     try:
-        _mod = importlib.import_module(_name)
-        _file = getattr(_mod, "__file__", "")
-        _shim = not bool(_file)
-        _codebench_lib_status.append({
-            "name": _name,
-            "state": "shim" if _shim else "installed",
-            "detail": _file if _file else "built-in compatibility layer"
-        })
+        _m = sys.modules.get(_name)
+        if _m is not None:
+            _file = getattr(_m, "__file__", "")
+            _codebench_lib_status.append({
+                "name": _name,
+                "state": "shim" if not _file else "installed",
+                "detail": _file if _file else "built-in compatibility layer"
+            })
+            continue
+        _spec = importlib.util.find_spec(_name)
+        if _spec is None:
+            _codebench_lib_status.append({
+                "name": _name,
+                "state": "missing",
+                "detail": "not found on sys.path"
+            })
+        else:
+            _codebench_lib_status.append({
+                "name": _name,
+                "state": "installed",
+                "detail": _spec.origin or "namespace package"
+            })
     except Exception as _exc:
         _codebench_lib_status.append({
             "name": _name,

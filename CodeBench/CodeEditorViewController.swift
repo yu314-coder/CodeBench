@@ -8924,7 +8924,24 @@ except Exception:
         ])
     }
 
+    /// Duplicate-delivery collapse for HTML previews: the run-completion
+    /// hook, the chart-watcher dir-event, and preview-tab activation can
+    /// all deliver the SAME fresh file within a couple of seconds. Each
+    /// delivery used to stop/blank/re-read (multi-MB, synchronously, on
+    /// the main thread) and reload the webview — during a chatty bpy run
+    /// that reloaded previews ~15×, freezing the editor + terminal.
+    private var lastHTMLOutputLoad: (path: String, mtime: Date, at: Date)?
+    private var htmlLoadGeneration: UInt64 = 0
+
     private func showImageOutput(path: String?) {
+        if let p = path, p.lowercased().hasSuffix(".html"),
+           let last = lastHTMLOutputLoad, last.path == p,
+           Date().timeIntervalSince(last.at) < 3.0,
+           ((try? FileManager.default.attributesOfItem(atPath: p)[.modificationDate] as? Date) ?? .distantPast) == last.mtime {
+            currentOutputPath = p
+            if !isCompactWidth, isPreviewableForTab(p) { registerOrActivatePreviewTab(p) }
+            return          // same file, unchanged, just shown — nothing new to render
+        }
         // Hide everything first
         outputImageView.isHidden = true
         outputImageView.image = nil
@@ -9040,13 +9057,30 @@ except Exception:
             // For huge HTML (>20 MB), fall back to loadFileURL to
             // avoid copying into a Swift String unnecessarily.
             let parentDir = url.deletingLastPathComponent()
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            let fileSize = (attrs?[.size] as? Int) ?? 0
+            lastHTMLOutputLoad = (path,
+                                  (attrs?[.modificationDate] as? Date) ?? .distantPast,
+                                  Date())
             // The fresh webview from prepareOutputWebViewForLoad() (when
             // no-cache is ON) already guarantees a clean session, so load
-            // directly.
-            if fileSize > 0 && fileSize < 20 * 1024 * 1024,
-               let html = try? String(contentsOf: url, encoding: .utf8) {
-                outputWebView.loadHTMLString(html, baseURL: parentDir)
+            // directly. Read the file OFF the main thread — a view.html
+            // with embedded geometry is easily several MB, and the old
+            // synchronous String(contentsOf:) stalled the UI per load.
+            if fileSize > 0 && fileSize < 20 * 1024 * 1024 {
+                htmlLoadGeneration &+= 1
+                let gen = htmlLoadGeneration
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let html = try? String(contentsOf: url, encoding: .utf8)
+                    DispatchQueue.main.async {
+                        guard let self = self, self.htmlLoadGeneration == gen else { return }
+                        if let html = html {
+                            self.outputWebView.loadHTMLString(html, baseURL: parentDir)
+                        } else {
+                            self.outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
+                        }
+                    }
+                }
             } else {
                 outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
             }

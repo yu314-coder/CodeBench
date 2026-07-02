@@ -95,7 +95,7 @@ final class GameViewController: UIViewController {
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
     private let sidebarView = UIView()
-    private let sidebarBackground = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+    private let sidebarBackground = UIVisualEffectView(effect: LiquidGlass.effect())
     private let newChatButton = UIButton(type: .system)
     private let conversationSearchBar = UISearchBar()
     private let conversationsTable = UITableView(frame: .zero, style: .plain)
@@ -137,6 +137,7 @@ final class GameViewController: UIViewController {
     /// the tab bar. Polls Mach host_statistics64 every 1.5 s.
     private let memoryGraph = MemoryGraphView()
     private var activeContentTab = 0  // 0 = Editor, 1 = Libraries, 2 = System Info
+    private var dashboardWantsHidden = false  // intent flag so a stale hide-fade completion can't blank the dashboard after a show()
     private var filesBrowserController: FilesBrowserViewController?
     private var docsController: LibraryDocsViewController?  // still used by sidebar compact docs
     private var editorController: CodeEditorViewController?
@@ -156,6 +157,18 @@ final class GameViewController: UIViewController {
     private let pythonStatusLabel = UILabel()
     private let pythonRefreshButton = UIButton(type: .system)
     private let pythonStatusIconLabel = UILabel()
+    // ── ⌘, settings: generation + editor controls (README-aligned) ──
+    private let temperatureSlider = UISlider()
+    private let temperatureValueLabel = UILabel()
+    private let vimModeToggle = UISwitch()
+    private let inlineCompletionToggle = UISwitch()
+    private let temperatureDefaultsKey = "generation.temperature"
+    private let vimModeDefaultsKey = "editor.vimMode.enabled"
+    private let inlineCompletionDefaultsKey = "editor.inlineCompletion.enabled"
+    // ⌘, sheet Model row — stored so it can be refreshed to the current model
+    // each time the sheet opens (the sheet itself is built only once at launch).
+    private let settingsModelNameLabel = UILabel()
+    private let settingsModelSubtitleLabel = UILabel()
     private var isRefreshingPythonStatus = false
     private let pythonLibraryProbeNames = ["numpy", "matplotlib", "plotly", "PIL", "scipy", "sklearn", "manim"]
     private var pythonLibraryStates: [String: PythonRuntime.LibraryProbe.State] = [:]
@@ -186,6 +199,21 @@ final class GameViewController: UIViewController {
     private let settingsBackdrop = UIView()
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var contentStackBottomConstraint: NSLayoutConstraint?
+    /// Width of the slim sidebar rail / drawer.
+    private let sidebarRailWidth: CGFloat = 64
+    /// Leading offset of the floating sidebar drawer. 0 = on-screen,
+    /// -railWidth = slid off to the left (hidden). Animated by updateSidebarChrome().
+    private var sidebarLeadingConstraint: NSLayoutConstraint?
+    /// Leading inset of the whole content area. On regular width the docked
+    /// rail pushes content in by the rail width; on compact the drawer
+    /// overlays, so this stays 0 (content keeps full width — no squish).
+    private var rootStackLeadingConstraint: NSLayoutConstraint?
+    /// Dimmed, tap-to-dismiss scrim shown behind the drawer on compact width.
+    private let sidebarScrim = UIView()
+    /// Persistent floating button that re-opens the drawer on compact width.
+    /// Created once and only faded in/out — never added/removed — so the
+    /// drawer can never become unreachable (the old expand-button bug).
+    private let sidebarToggleButton = UIButton(type: .system)
     private var selectedModelSlot: ModelSlot = .qwen35_4b
     private let gameTriggerKeyword = "game"
     private var easterGameView: UIView?
@@ -3718,7 +3746,17 @@ final class GameViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor.systemBackground
+        // The app ships a dark-only design — the sidebar, editor (#0a0a0f),
+        // dashboard (#131417) and every surface are hard-coded dark. Force
+        // the whole UIKit trait environment to dark so system dynamic colors
+        // (and any child view controller) can never resolve to their light /
+        // white variants. This is the root cause of the intermittent
+        // "all-white content pane": in light / auto appearance
+        // `UIColor.systemBackground` and `WorkspaceStyle.solidBackground`
+        // both resolved to white while the hard-coded-dark sidebar stayed
+        // dark. `overrideUserInterfaceStyle` propagates to all child VCs.
+        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = WorkspaceStyle.solidBackground
 
         // Background pre-load the most-recently-used GGUF model so
         // the first AI prompt doesn't pay a 5-10 s warm-up. Guarded
@@ -3806,22 +3844,11 @@ final class GameViewController: UIViewController {
     ///   • settings panel becomes a sheet instead of a side popover
     /// In regular-width the original iPad layout is restored.
     private func applyCompactLayoutIfNeeded() {
-        let compact = isCompactLayout
-        // Only mutate if the desired state actually differs from the
-        // current one — avoids redundant animations when the trait
-        // change is just a darkmode flip or font-scale tweak.
-        let shouldHide = compact
-        if isSidebarHidden != shouldHide {
-            isSidebarHidden = shouldHide
-            sidebarView.isHidden = shouldHide
-            sidebarWidthConstraint?.constant = shouldHide ? 0 : 64
-            view.layoutIfNeeded()
-            if shouldHide {
-                showSidebarExpandButton()
-            } else {
-                hideSidebarExpandButton()
-            }
-        }
+        // Compact (iPhone) starts with the drawer closed; regular (iPad)
+        // keeps the rail docked open. updateSidebarChrome() is idempotent
+        // and self-healing, so it's safe to call on every trait change.
+        isSidebarHidden = isCompactLayout
+        updateSidebarChrome(animated: false)
     }
 
     @objc private func handleDidEnterBackground() {
@@ -3872,7 +3899,7 @@ final class GameViewController: UIViewController {
         // Refresh gradient background
         backgroundLayer.colors = WorkspaceStyle.gradientColors
         // Refresh sidebar
-        sidebarBackground.effect = UIBlurEffect(style: WorkspaceStyle.sidebarBlurStyle)
+        sidebarBackground.effect = LiquidGlass.effect()
         sidebarView.layer.borderColor = WorkspaceStyle.glassStroke.cgColor
         // Refresh title/status colors
         titleLabel.textColor = WorkspaceStyle.primaryText
@@ -3911,6 +3938,9 @@ final class GameViewController: UIViewController {
             scrollChatToBottom()
         }
         autoLoadLastModelIfNeeded()
+        // First fill of the Home dashboard (it's visible at launch).
+        refreshDashboardContent()
+        dashboardView.startMetrics()
     }
 
     override func viewDidLayoutSubviews() {
@@ -3967,8 +3997,10 @@ final class GameViewController: UIViewController {
     }
 
     private func applyLiquidGlass() {
-        // Sidebar: subtle dark blur for depth
-        let sidebarBlur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
+        // Sidebar: real Liquid Glass on iOS 26+ (dark material before) —
+        // the overlay drops to a lighter wash when true glass is doing
+        // the work so the refraction actually shows through.
+        let sidebarBlur = UIVisualEffectView(effect: LiquidGlass.effect())
         sidebarBlur.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.insertSubview(sidebarBlur, at: 0)
         NSLayoutConstraint.activate([
@@ -3977,7 +4009,7 @@ final class GameViewController: UIViewController {
             sidebarBlur.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
             sidebarBlur.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
         ])
-        sidebarView.backgroundColor = UIColor(white: 0.10, alpha: 0.85)
+        sidebarView.backgroundColor = UIColor(white: 0.10, alpha: LiquidGlass.isModern ? 0.55 : 0.85)
 
         // The settings panel styles itself (adaptive material blur + grabber +
         // backdrop) in `buildSettingsPanel()`. We deliberately do NOT add a blur
@@ -4001,31 +4033,79 @@ final class GameViewController: UIViewController {
     private func configureUI() {
         configureControlStyles()
 
-        // VS Code layout: sidebar (icon rail + panel) | editor area
-        let sidebar = buildSidebarSection()
-        let rootStack = UIStackView(arrangedSubviews: [sidebar, contentView])
+        // VS Code layout. The sidebar is a FLOATING overlay (not a stack
+        // column) so it can behave two ways from one model:
+        //   • regular width (iPad): docked rail — content is inset by the rail
+        //     width so they sit side by side, exactly like the old push layout.
+        //   • compact width (iPhone): a drawer that slides in OVER the content
+        //     (content keeps full width — no squish) with a tap-to-dismiss
+        //     scrim. updateSidebarChrome() drives both from one state var.
+        buildSidebarSection()   // configures the sidebarView property (added to view below)
+        let rootStack = UIStackView(arrangedSubviews: [contentView])
         rootStack.axis = .horizontal
         rootStack.spacing = 0
         rootStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(rootStack)
 
-        // Sidebar width constraint (used by toggleSidebarVisibility)
-        // Slim sidebar — 64pt per Claude Design styles.css `.canvas { grid-template-columns: 64px 1fr }`.
-        // Was 220pt with an embedded file browser + workspace title row;
-        // the file browser is gone (Files is now reached via the Home
-        // dashboard's tool card), the title row is replaced with the
-        // CB workspace badge.
-        sidebarWidthConstraint = sidebarView.widthAnchor.constraint(equalToConstant: 64)
+        // Scrim sits above the content but below the drawer; only opaque +
+        // tappable while the drawer is open on compact width.
+        sidebarScrim.backgroundColor = UIColor(white: 0, alpha: 1)
+        sidebarScrim.alpha = 0
+        sidebarScrim.isUserInteractionEnabled = false
+        sidebarScrim.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sidebarScrim)
+        sidebarScrim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleSidebarVisibility)))
+
+        // Drawer floats on top of the scrim. Slim sidebar — 64pt per Claude
+        // Design styles.css `.canvas { grid-template-columns: 64px 1fr }`.
+        view.addSubview(sidebarView)
+        sidebarWidthConstraint = sidebarView.widthAnchor.constraint(equalToConstant: sidebarRailWidth)
         sidebarWidthConstraint?.isActive = true
+        let sidebarLeading = sidebarView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 0)
+        sidebarLeadingConstraint = sidebarLeading
+        let rootStackLeading = rootStack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 0)
+        rootStackLeadingConstraint = rootStackLeading
+
+        // Persistent floating re-open button (compact only). Added once,
+        // faded in/out by updateSidebarChrome — never removed — so the drawer
+        // can never become unreachable.
+        sidebarToggleButton.setImage(UIImage(systemName: "sidebar.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+        sidebarToggleButton.tintColor = .label
+        sidebarToggleButton.backgroundColor = UIColor(white: 0.16, alpha: 0.92)
+        sidebarToggleButton.layer.cornerRadius = 9
+        sidebarToggleButton.layer.cornerCurve = .continuous
+        sidebarToggleButton.alpha = 0
+        sidebarToggleButton.isUserInteractionEnabled = false
+        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebarToggleButton.addTarget(self, action: #selector(toggleSidebarVisibility), for: .touchUpInside)
+        view.addSubview(sidebarToggleButton)
 
         let contentStack = buildContentStack()
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
             rootStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            rootStack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            rootStackLeading,
             rootStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             rootStack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+
+            // Floating drawer: full-height, pinned to the leading edge, slid
+            // in/out via sidebarLeading's constant.
+            sidebarLeading,
+            sidebarView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            sidebarView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+
+            // Scrim covers the whole window so the dim reaches edge to edge.
+            sidebarScrim.topAnchor.constraint(equalTo: view.topAnchor),
+            sidebarScrim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            sidebarScrim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sidebarScrim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Re-open button: top-leading safe-area corner.
+            sidebarToggleButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 6),
+            sidebarToggleButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
+            sidebarToggleButton.widthAnchor.constraint(equalToConstant: 36),
+            sidebarToggleButton.heightAnchor.constraint(equalToConstant: 36),
 
             contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 0),
             contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 0),
@@ -4076,17 +4156,72 @@ final class GameViewController: UIViewController {
     /// Reveal the Workspace Dashboard again — called from the sidebar's
     /// home button. Cross-fades over whatever tab is currently visible.
     @objc func showWorkspaceDashboard() {
-        guard dashboardView.isHidden else { return }
-        dashboardView.alpha = 0
+        // Deterministic: cancel any in-flight fade and show immediately, so a
+        // pending hide() completion can't blank it afterwards.
+        dashboardWantsHidden = false
+        dashboardView.layer.removeAllAnimations()
+        if dashboardView.isHidden { dashboardView.alpha = 0 }
         dashboardView.isHidden = false
         UIView.animate(withDuration: 0.18) { self.dashboardView.alpha = 1 }
+        refreshDashboardContent()
+        dashboardView.startMetrics()
+    }
+
+    /// Feed the Home dashboard real workspace state: the most-recently
+    /// modified code files become the "Continue" card + recents rail, and
+    /// the stats/insights/tip refresh. Without this the dashboard was a
+    /// static launcher — setRecentFiles was never called from anywhere.
+    /// The file scan runs off-main and is capped, so showing Home stays
+    /// instant even on a large workspace.
+    private func refreshDashboardContent() {
+        dashboardView.refreshStats()
+        // Live AI-model status for the Home model card: loaded beats
+        // on-disk beats not-downloaded, always for the user's slot.
+        if let loaded = loadedModelSlot {
+            dashboardView.setModelStatus(name: loaded.title, state: .loaded)
+        } else if modelURLs[selectedModelSlot] != nil {
+            dashboardView.setModelStatus(name: selectedModelSlot.title, state: .onDisk)
+        } else {
+            dashboardView.setModelStatus(name: selectedModelSlot.title, state: .notDownloaded)
+        }
+        let ws = AppPaths.workspaceURL
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let fm = FileManager.default
+            let codeExts: Set<String> = ["py", "c", "cpp", "h", "hpp", "swift", "tex", "md",
+                                         "txt", "json", "js", "html", "css", "sh", "f90", "ipynb"]
+            var found: [(URL, Date)] = []
+            if let en = fm.enumerator(at: ws,
+                                      includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                                      options: [.skipsHiddenFiles]) {
+                var seen = 0
+                for case let url as URL in en {
+                    seen += 1
+                    if seen > 4000 { break }   // cap: huge trees stay cheap
+                    guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                          rv.isRegularFile == true,
+                          codeExts.contains(url.pathExtension.lowercased()) else { continue }
+                    found.append((url, rv.contentModificationDate ?? .distantPast))
+                }
+            }
+            let top = found.sorted { $0.1 > $1.1 }.prefix(8).map { $0.0 }
+            DispatchQueue.main.async { self?.dashboardView.setRecentFiles(Array(top)) }
+        }
     }
 
     private func hideWorkspaceDashboard() {
+        dashboardWantsHidden = true
         guard !dashboardView.isHidden else { return }
         UIView.animate(withDuration: 0.15,
-                       animations: { self.dashboardView.alpha = 0 }) { _ in
-            self.dashboardView.isHidden = true
+                       animations: { self.dashboardView.alpha = 0 }) { [weak self] _ in
+            guard let self else { return }
+            // Only commit to hidden if a show() didn't sneak in during the
+            // fade; otherwise restore full opacity.
+            if self.dashboardWantsHidden {
+                self.dashboardView.isHidden = true
+                self.dashboardView.pauseMetrics()   // no sampling off-screen
+            } else {
+                self.dashboardView.alpha = 1
+            }
         }
     }
 
@@ -4360,9 +4495,13 @@ final class GameViewController: UIViewController {
         }
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissSettingsPanel))
-        tapGesture.cancelsTouchesInView = false
-        contentView.addGestureRecognizer(tapGesture)
+        // NOTE: previously a tap-to-dismiss UITapGestureRecognizer was attached
+        // to the WHOLE contentView here. Because the settings panel is a subview
+        // of contentView, that gesture fired on taps on the panel ITSELF —
+        // dismissing the sheet (and swallowing the touch) the moment you tried to
+        // use a control. Dismiss-on-tap-outside is now handled correctly by the
+        // dimmed `settingsBackdrop`, which sits just *behind* the panel and only
+        // receives taps that miss it. So the contentView-wide gesture is gone.
     }
 
     // MARK: - Sidebar content views
@@ -4558,7 +4697,7 @@ final class GameViewController: UIViewController {
             homeNavButton, editorNavButton, librariesNavButton,
             systemNavButton, settingsNavButton])
         stack.axis = .vertical
-        stack.spacing = 2
+        stack.spacing = 4   // a touch more breathing room between items
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         // Default selection: Home
@@ -4604,12 +4743,12 @@ final class GameViewController: UIViewController {
 
     private func applySidebarNavStyle(_ button: UIButton, selected: Bool) {
         let violet = UIColor(red: 0xa8/255.0, green: 0x55/255.0, blue: 0xf7/255.0, alpha: 1.0)
-        let inactiveFg = UIColor(red: 0x7a/255.0, green: 0x7a/255.0, blue: 0x90/255.0, alpha: 1.0)
+        let inactiveFg = UIColor(red: 0x93/255.0, green: 0x93/255.0, blue: 0xa8/255.0, alpha: 1.0)  // slightly brighter → more legible labels
         var config = button.configuration
         config?.baseForegroundColor = selected ? violet : inactiveFg
         button.configuration = config
         button.backgroundColor = selected
-            ? violet.withAlphaComponent(0.08)
+            ? violet.withAlphaComponent(0.14)   // clearer selected fill
             : .clear
 
         // Left-edge accent stripe — 2.5pt wide, violet, with glow.
@@ -4624,9 +4763,9 @@ final class GameViewController: UIViewController {
             stripe.backgroundColor = violet
             stripe.layer.cornerRadius = 1.25
             stripe.layer.shadowColor = violet.cgColor
-            stripe.layer.shadowOpacity = 0.55
+            stripe.layer.shadowOpacity = 0.7
             stripe.layer.shadowOffset = .zero
-            stripe.layer.shadowRadius = 4
+            stripe.layer.shadowRadius = 6
             stripe.layer.masksToBounds = false
             stripe.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(stripe)
@@ -4634,7 +4773,7 @@ final class GameViewController: UIViewController {
                 stripe.leadingAnchor.constraint(equalTo: button.leadingAnchor),
                 stripe.topAnchor.constraint(equalTo: button.topAnchor, constant: 14),
                 stripe.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -14),
-                stripe.widthAnchor.constraint(equalToConstant: 2.5),
+                stripe.widthAnchor.constraint(equalToConstant: 3),
             ])
         }
     }
@@ -4655,14 +4794,12 @@ final class GameViewController: UIViewController {
     /// No-op on iPad — the sidebar stays pinned there because the
     /// regular-width screen has room for both.
     private func autoHideSidebarIfCompact() {
-        guard isCompactLayout, !isSidebarHidden else { return }
+        guard isCompactLayout else { return }
+        // Always run updateSidebarChrome (even if already hidden) so the
+        // re-open button is guaranteed present — the self-heal for the old
+        // "toggle sometimes disappears so the drawer can't be reopened" bug.
         isSidebarHidden = true
-        UIView.animate(withDuration: 0.22) {
-            self.sidebarView.isHidden = true
-            self.sidebarWidthConstraint?.constant = 0
-            self.view.layoutIfNeeded()
-        }
-        showSidebarExpandButton()
+        updateSidebarChrome(animated: true)
     }
 
     @objc private func navHomeTapped() {
@@ -4748,7 +4885,7 @@ final class GameViewController: UIViewController {
                       placeholder: "untitled.py") { [weak self] name in
             guard let self = self else { return }
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            let workspace = docs?.appendingPathComponent("Workspace")
+            let workspace: URL? = AppPaths.workspaceURL
             try? FileManager.default.createDirectory(
                 at: workspace ?? URL(fileURLWithPath: "/tmp"),
                 withIntermediateDirectories: true)
@@ -4766,7 +4903,7 @@ final class GameViewController: UIViewController {
                       placeholder: "new-folder") { [weak self] name in
             guard let self = self else { return }
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            let workspace = docs?.appendingPathComponent("Workspace")
+            let workspace: URL? = AppPaths.workspaceURL
             try? FileManager.default.createDirectory(
                 at: workspace?.appendingPathComponent(name)
                     ?? URL(fileURLWithPath: "/tmp"),
@@ -4790,7 +4927,7 @@ final class GameViewController: UIViewController {
         // Build the item list: every file in ~/Documents/Workspace
         // plus a curated set of built-in commands.
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let workspace = docs?.appendingPathComponent("Workspace")
+        let workspace: URL? = AppPaths.workspaceURL
         var items: [CommandPaletteViewController.Item] = []
 
         if let workspace = workspace,
@@ -5160,70 +5297,90 @@ final class GameViewController: UIViewController {
 
     @objc private func contentTabTapped(_ sender: UIButton) {
         let index = sender.tag
-        guard index != activeContentTab else { return }
+        let containers = [editorContainer, librariesContainer, systemInfoContainer, settingsContainer]
+        guard containers.indices.contains(index) else { return }
+        let changed = (index != activeContentTab)
+        let prevIndex = activeContentTab
         activeContentTab = index
 
-        // Update tab appearances
-        let tabs = [editorTabButton, librariesTabButton, systemTabButton, settingsTabButton]
-        for (i, tab) in tabs.enumerated() {
-            let isActive = i == index
-            var config = tab.configuration
-            config?.baseForegroundColor = isActive
-                ? UIColor(white: 0.96, alpha: 1)
-                : UIColor(white: 0.50, alpha: 1)
-            tab.configuration = config
-            // Animate the background fade — feels much smoother than
-            // the previous instant swap.
-            UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseOut) {
-                tab.backgroundColor = isActive
-                    ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0)
-                    : .clear
-            }
+        // Create the tab's controller BEFORE revealing its container, so a
+        // container is never shown empty (a cause of the blank content pane).
+        // Editor is normally built in viewDidAppear; guard here too in case a
+        // tab switch races ahead of it.
+        switch index {
+        case 0: if editorController == nil { setupEditorController() }
+        case 1: if librariesController == nil { setupLibrariesController() }
+        case 2: if systemInfoController == nil { setupSystemInfoController() }
+        case 3: if settingsController == nil { setupSettingsController() }
+        default: break
+        }
 
-            // Remove old indicator
-            tab.viewWithTag(999)?.removeFromSuperview()
-
-            // Add indicator to active tab — same shape as the initial
-            // build (rounded 3pt pill, inset 14pt from the edges) so
-            // tab activation visually matches first-load rendering.
-            if isActive {
-                let indicator = UIView()
-                indicator.tag = 999
-                indicator.backgroundColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1.0)
-                indicator.layer.cornerRadius = 1.5
-                indicator.translatesAutoresizingMaskIntoConstraints = false
-                tab.addSubview(indicator)
-                NSLayoutConstraint.activate([
-                    indicator.leadingAnchor.constraint(equalTo: tab.leadingAnchor, constant: 14),
-                    indicator.trailingAnchor.constraint(equalTo: tab.trailingAnchor, constant: -14),
-                    indicator.bottomAnchor.constraint(equalTo: tab.bottomAnchor),
-                    indicator.heightAnchor.constraint(equalToConstant: 3),
-                ])
-                indicator.alpha = 0
-                UIView.animate(withDuration: 0.22, delay: 0,
-                               usingSpringWithDamping: 0.78,
-                               initialSpringVelocity: 0,
-                               options: [],
-                               animations: { indicator.alpha = 1 })
+        // Tab-button chrome / indicator. The top tab bar is intentionally
+        // off-screen (the sidebar is the real nav), so this is cosmetic —
+        // only run it on an actual change.
+        if changed {
+            let tabs = [editorTabButton, librariesTabButton, systemTabButton, settingsTabButton]
+            for (i, tab) in tabs.enumerated() {
+                let isActive = i == index
+                var config = tab.configuration
+                config?.baseForegroundColor = isActive
+                    ? UIColor(white: 0.96, alpha: 1)
+                    : UIColor(white: 0.50, alpha: 1)
+                tab.configuration = config
+                UIView.animate(withDuration: 0.18, delay: 0, options: .curveEaseOut) {
+                    tab.backgroundColor = isActive
+                        ? UIColor(red: 0.098, green: 0.102, blue: 0.114, alpha: 1.0)
+                        : .clear
+                }
+                tab.viewWithTag(999)?.removeFromSuperview()
+                if isActive {
+                    let indicator = UIView()
+                    indicator.tag = 999
+                    indicator.backgroundColor = UIColor(red: 0.400, green: 0.588, blue: 0.929, alpha: 1.0)
+                    indicator.layer.cornerRadius = 1.5
+                    indicator.translatesAutoresizingMaskIntoConstraints = false
+                    tab.addSubview(indicator)
+                    NSLayoutConstraint.activate([
+                        indicator.leadingAnchor.constraint(equalTo: tab.leadingAnchor, constant: 14),
+                        indicator.trailingAnchor.constraint(equalTo: tab.trailingAnchor, constant: -14),
+                        indicator.bottomAnchor.constraint(equalTo: tab.bottomAnchor),
+                        indicator.heightAnchor.constraint(equalToConstant: 3),
+                    ])
+                    indicator.alpha = 0
+                    UIView.animate(withDuration: 0.22, delay: 0,
+                                   usingSpringWithDamping: 0.78,
+                                   initialSpringVelocity: 0,
+                                   options: [],
+                                   animations: { indicator.alpha = 1 })
+                }
             }
         }
 
-        // Switch content with a directional slide. The new tab
-        // enters from the side closest to the previous tab — feels
-        // like UISlider's segmented control where content tracks
-        // the active indicator. ManageReusable: cross-dissolve looked
-        // identical regardless of direction; the slide gives a sense
-        // of place ("System is to the right of Libraries").
-        let containers = [editorContainer, librariesContainer, systemInfoContainer, settingsContainer]
+        // ── Reveal exactly the right container (the core blank-pane fix) ──
+        // Toggle `isHidden` ONLY when it actually changes. Setting the same
+        // value on a UIStackView arranged subview repeatedly corrupts its
+        // internal hidden-view count, which can leave a container stuck
+        // hidden even after `isHidden = false` — that's the black/blank
+        // content area. Always re-assert the active container visible and
+        // clear any alpha/transform left stranded by an interrupted slide.
         let nextContainer = containers[index]
-        let prevIndex = containers.firstIndex(where: { !$0.isHidden }) ?? 0
+        for (i, c) in containers.enumerated() {
+            let shouldHide = (i != index)
+            if c.isHidden != shouldHide { c.isHidden = shouldHide }
+            if shouldHide { c.alpha = 1; c.transform = .identity }
+        }
+        nextContainer.alpha = 1
+        nextContainer.transform = .identity
+
+        // Re-selecting the current tab (e.g. returning from the Home
+        // dashboard): it's already revealed above — no slide needed.
+        guard changed else { return }
+
+        // Directional slide for an actual tab change.
         let goingRight = index > prevIndex
         let offX: CGFloat = goingRight ? 18 : -18
         nextContainer.alpha = 0
         nextContainer.transform = CGAffineTransform(translationX: offX, y: 0)
-        for (i, c) in containers.enumerated() {
-            c.isHidden = i != index
-        }
         UIView.animate(withDuration: 0.20, delay: 0,
                        usingSpringWithDamping: 0.92,
                        initialSpringVelocity: 0,
@@ -5232,17 +5389,6 @@ final class GameViewController: UIViewController {
             nextContainer.alpha = 1
             nextContainer.transform = .identity
         }, completion: nil)
-
-        // Lazy setup Libraries (combined Docs + Install + Installed list)
-        if index == 1 && librariesController == nil {
-            setupLibrariesController()
-        }
-        if index == 2 && systemInfoController == nil {
-            setupSystemInfoController()
-        }
-        if index == 3 && settingsController == nil {
-            setupSettingsController()
-        }
     }
 
     private func setupSettingsController() {
@@ -5316,14 +5462,18 @@ final class GameViewController: UIViewController {
         let headerRow = UIStackView(arrangedSubviews: [titleStack, UIView(), closeBtn])
         headerRow.axis = .horizontal; headerRow.alignment = .center
 
-        // ── MODEL ──
-        let modelReady = loadedModelSlot != nil ? "Ready" : "Not loaded"
-        let modelCtx = preferredContextSize()
+        // ── MODEL (read-only info; refreshed each time the sheet opens) ──
+        settingsModelNameLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        settingsModelNameLabel.textColor = .label
+        settingsModelSubtitleLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        settingsModelSubtitleLabel.textColor = .secondaryLabel
+        settingsModelSubtitleLabel.numberOfLines = 0
+        refreshSettingsModelInfo()
+        let modelInfoStack = UIStackView(arrangedSubviews: [settingsModelNameLabel, settingsModelSubtitleLabel])
+        modelInfoStack.axis = .vertical
+        modelInfoStack.spacing = 2
         let modelSection = makeGroupedSection(header: "Model", rows: [
-            makeGroupedDisclosureRow(
-                title: selectedModelSlot.title,
-                subtitle: "\(selectedModelSlot.subtitle) · \(modelCtx) ctx · \(modelReady)",
-                action: #selector(dismissSettingsPanel))
+            makeGroupedRow(titleView: modelInfoStack)
         ])
 
         // ── PERSONA ──
@@ -5374,75 +5524,54 @@ final class GameViewController: UIViewController {
         thinkingToggleLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         maxTokensLabel.textColor = .label
         maxTokensLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+
+        // Temperature — a real, persisted generation control (0.0–1.5).
+        let storedTemp = (UserDefaults.standard.object(forKey: temperatureDefaultsKey) as? Float) ?? 0.7
+        temperatureSlider.minimumValue = 0.0
+        temperatureSlider.maximumValue = 1.5
+        temperatureSlider.value = storedTemp
+        temperatureSlider.minimumTrackTintColor = WorkspaceStyle.accent
+        temperatureSlider.addTarget(self, action: #selector(temperatureChanged(_:)), for: .valueChanged)
+        let tempTitle = UILabel()
+        tempTitle.text = "Temperature"
+        tempTitle.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        tempTitle.textColor = .label
+        temperatureValueLabel.text = String(format: "%.2f", storedTemp)
+        temperatureValueLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .regular)
+        temperatureValueLabel.textColor = .secondaryLabel
+        let tempHeader = UIStackView(arrangedSubviews: [tempTitle, UIView(), temperatureValueLabel])
+        tempHeader.axis = .horizontal; tempHeader.alignment = .center
+
         let genSection = makeGroupedSection(header: "Generation", rows: [
+            makeGroupedStackedRow(titleView: tempHeader, control: temperatureSlider),
+            makeGroupedRow(titleView: maxTokensLabel, accessory: maxTokensStepper),
             makeGroupedStackedRow(titleView: effortLabel, control: effortSegment),
             makeGroupedRow(titleView: thinkingToggleLabel, accessory: thinkingToggle),
-            makeGroupedRow(titleView: maxTokensLabel, accessory: maxTokensStepper),
-        ], footer: "Show Thinking displays the model's chain-of-thought reasoning steps.")
+        ], footer: "Temperature controls randomness — lower is more deterministic. Show Thinking displays the model's chain-of-thought.")
 
-        // ── APPEARANCE ──
-        themeSegment.selectedSegmentIndex = ThemeManager.shared.mode.rawValue
-        themeSegment.addTarget(self, action: #selector(themeSegmentChanged(_:)), for: .valueChanged)
-        let themeTitle = UILabel()
-        themeTitle.text = "Theme"
-        themeTitle.font = UIFont.systemFont(ofSize: 17, weight: .regular)
-        themeTitle.textColor = .label
+        // ── EDITOR (vim mode + inline completion) ──
+        let storedVim = UserDefaults.standard.bool(forKey: vimModeDefaultsKey)
+        let storedInline = UserDefaults.standard.bool(forKey: inlineCompletionDefaultsKey)
+        let vimLabel = UILabel()
+        vimLabel.text = "Vim Mode"
+        vimLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        vimLabel.textColor = .label
+        vimModeToggle.isOn = storedVim
+        vimModeToggle.onTintColor = WorkspaceStyle.accent
+        vimModeToggle.addTarget(self, action: #selector(vimModeChanged(_:)), for: .valueChanged)
 
-        hapticsToggleLabel.text = "Haptic Feedback"
-        hapticsToggleLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
-        hapticsToggleLabel.textColor = .label
-        hapticsToggle.isOn = HapticService.shared.enabled
-        hapticsToggle.onTintColor = WorkspaceStyle.accent
-        hapticsToggle.addTarget(self, action: #selector(hapticsToggleChanged(_:)), for: .valueChanged)
+        let inlineLabel = UILabel()
+        inlineLabel.text = "Inline Completion"
+        inlineLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        inlineLabel.textColor = .label
+        inlineCompletionToggle.isOn = storedInline
+        inlineCompletionToggle.onTintColor = WorkspaceStyle.accent
+        inlineCompletionToggle.addTarget(self, action: #selector(inlineCompletionChanged(_:)), for: .valueChanged)
 
-        let appearSection = makeGroupedSection(header: "Appearance", rows: [
-            makeGroupedStackedRow(titleView: themeTitle, control: themeSegment),
-            makeGroupedRow(titleView: hapticsToggleLabel, accessory: hapticsToggle),
-        ])
-
-        // ── TOOLS ──
-        autoLoadLabel.textColor = .label
-        autoLoadLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
-        pythonToolsLabel.textColor = .label
-        pythonToolsLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
-
-        let runtimeTitle = UILabel()
-        runtimeTitle.text = "Python Runtime"
-        runtimeTitle.font = UIFont.systemFont(ofSize: 17, weight: .regular)
-        runtimeTitle.textColor = .label
-        let runtimeTitleStack = UIStackView(arrangedSubviews: [pythonStatusIconLabel, runtimeTitle])
-        runtimeTitleStack.axis = .horizontal; runtimeTitleStack.spacing = 6; runtimeTitleStack.alignment = .center
-
-        let libraryChipsView = makeLibraryChipsView()
-
-        pythonStatusLabel.textColor = .secondaryLabel
-        pythonStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-        pythonStatusLabel.numberOfLines = 0
-
-        let toolsSection = makeGroupedSection(header: "Tools", rows: [
-            makeGroupedRow(titleView: autoLoadLabel, accessory: autoLoadToggle),
-            makeGroupedRow(titleView: pythonToolsLabel, accessory: pythonToolsToggle),
-            makeGroupedRow(titleView: runtimeTitleStack, accessory: pythonRefreshButton),
-            wrapRowContent(libraryChipsView),
-        ], footerView: pythonStatusLabel)
-
-        // ── KNOWLEDGE BASE ──
-        let ragDocCount = RAGEngine.shared.documents.count
-        let ragChunkCount = RAGEngine.shared.totalChunkCount
-        let kbSection = makeGroupedSection(header: "Knowledge Base", rows: [
-            makeGroupedRow(title: "Documents", accessory: makeValueLabel("\(ragDocCount)")),
-            makeGroupedRow(title: "Chunks", accessory: makeValueLabel("\(ragChunkCount)")),
-            makeGroupedButtonRow(title: "Import Document", symbol: "doc.badge.plus",
-                                 action: #selector(ragImportTapped)),
-        ])
-
-        // ── ACTIONS ──
-        let actionsSection = makeGroupedSection(header: nil, rows: [
-            makeGroupedButtonRow(title: "Compare Models", symbol: "arrow.left.arrow.right",
-                                 action: #selector(compareModelsTapped)),
-            makeGroupedButtonRow(title: "Export Conversation", symbol: "square.and.arrow.up",
-                                 action: #selector(settingsExportConversationTapped)),
-        ])
+        let editorSection = makeGroupedSection(header: "Editor", rows: [
+            makeGroupedRow(titleView: vimLabel, accessory: vimModeToggle),
+            makeGroupedRow(titleView: inlineLabel, accessory: inlineCompletionToggle),
+        ], footer: "Vim Mode enables modal editing in the code editor. Inline Completion shows greyed-out suggestions as you type.")
 
         // ── ABOUT ──
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -5455,12 +5584,9 @@ final class GameViewController: UIViewController {
         let allSections = UIStackView(arrangedSubviews: [
             headerRow,
             modelSection,
-            personaSection,
             genSection,
-            appearSection,
-            toolsSection,
-            kbSection,
-            actionsSection,
+            editorSection,
+            personaSection,
             aboutSection
         ])
         allSections.axis = .vertical
@@ -9028,50 +9154,45 @@ Output format rules:
 
     @objc private func toggleSidebarVisibility() {
         isSidebarHidden.toggle()
-        UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0.5) {
-            self.sidebarView.isHidden = self.isSidebarHidden
-            self.sidebarWidthConstraint?.constant = self.isSidebarHidden ? 0 : 64
-            self.view.layoutIfNeeded()
-        }
-        // Show a small expand button when sidebar is collapsed
-        if isSidebarHidden {
-            showSidebarExpandButton()
-        } else {
-            hideSidebarExpandButton()
-        }
+        updateSidebarChrome(animated: true)
         HapticService.shared.tapLight()
     }
 
-    private var sidebarExpandButton: UIButton?
+    /// Single source of truth for the sidebar drawer. Drives the floating
+    /// overlay (compact) or docked rail (regular) purely from
+    /// `isSidebarHidden` + the current size class. Idempotent and
+    /// self-healing: safe to call from any state, and it always restores the
+    /// re-open button so the drawer can never become unreachable.
+    private func updateSidebarChrome(animated: Bool) {
+        // Keep the drawer chrome above any content/overlays that may have been
+        // brought forward (settings panel, dashboard).
+        view.bringSubviewToFront(sidebarScrim)
+        view.bringSubviewToFront(sidebarView)
+        view.bringSubviewToFront(sidebarToggleButton)
 
-    private func showSidebarExpandButton() {
-        guard sidebarExpandButton == nil else { return }
-        let btn = UIButton(type: .system)
-        btn.setImage(UIImage(systemName: "sidebar.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)), for: .normal)
-        btn.tintColor = .secondaryLabel
-        btn.backgroundColor = UIColor(white: 0.2, alpha: 0.8)
-        btn.layer.cornerRadius = 8
-        btn.layer.cornerCurve = .continuous
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(toggleSidebarVisibility), for: .touchUpInside)
-        view.addSubview(btn)
-        NSLayoutConstraint.activate([
-            btn.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 4),
-            btn.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            btn.widthAnchor.constraint(equalToConstant: 36),
-            btn.heightAnchor.constraint(equalToConstant: 36),
-        ])
-        sidebarExpandButton = btn
-        btn.alpha = 0
-        UIView.animate(withDuration: 0.2) { btn.alpha = 1 }
-    }
+        let compact = isCompactLayout
+        let hidden = isSidebarHidden
+        // Drawer position: slid off-screen (-railWidth) when hidden, flush (0) shown.
+        sidebarLeadingConstraint?.constant = hidden ? -sidebarRailWidth : 0
+        // Content inset: only the docked rail (regular + shown) pushes content
+        // aside; the compact drawer overlays, so content keeps full width.
+        rootStackLeadingConstraint?.constant = (!compact && !hidden) ? sidebarRailWidth : 0
+        sidebarView.isHidden = false
 
-    private func hideSidebarExpandButton() {
-        guard let btn = sidebarExpandButton else { return }
-        UIView.animate(withDuration: 0.2, animations: { btn.alpha = 0 }) { _ in
-            btn.removeFromSuperview()
+        let scrimVisible = compact && !hidden
+        let toggleVisible = compact && hidden
+        let apply = {
+            self.sidebarScrim.alpha = scrimVisible ? 0.45 : 0
+            self.sidebarToggleButton.alpha = toggleVisible ? 1 : 0
+            self.view.layoutIfNeeded()
         }
-        sidebarExpandButton = nil
+        if animated {
+            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.5, options: [], animations: apply)
+        } else {
+            apply()
+        }
+        sidebarScrim.isUserInteractionEnabled = scrimVisible
+        sidebarToggleButton.isUserInteractionEnabled = toggleVisible
     }
 
     @objc private func newChatTapped() {
@@ -9093,6 +9214,13 @@ Output format rules:
     @objc private func settingsTapped() {
         let shouldShow = settingsPanel.isHidden
         if shouldShow {
+            // Bring to front for HIT-TESTING. The panel renders on top via
+            // layer.zPosition, but hit-testing ignores zPosition and uses
+            // subview order — without this, another contentView subview added
+            // later sits "in front" for touches and the panel's controls
+            // (toggles, slider, buttons) never receive taps.
+            contentView.bringSubviewToFront(settingsBackdrop)
+            contentView.bringSubviewToFront(settingsPanel)
             settingsBackdrop.alpha = 0
             settingsBackdrop.isHidden = false
             settingsPanel.alpha = 0
@@ -9106,6 +9234,7 @@ Output format rules:
                 self.settingsBackdrop.alpha = 1
             }
             refreshPythonLibraryStatusIfNeeded(force: false)
+            refreshSettingsModelInfo()      // show the actually-current model, not the launch default
         } else {
             dismissSettingsPanel()
         }
@@ -9123,6 +9252,38 @@ Output format rules:
             self.settingsPanel.transform = .identity
             self.settingsBackdrop.isHidden = true
         })
+    }
+
+    // MARK: - ⌘, settings handlers (temperature / vim / inline completion)
+
+    @objc private func temperatureChanged(_ sender: UISlider) {
+        let v = (sender.value * 20).rounded() / 20      // snap to 0.05 steps
+        sender.value = v
+        temperatureValueLabel.text = String(format: "%.2f", v)
+        UserDefaults.standard.set(v, forKey: temperatureDefaultsKey)
+        runner.setTemperature(v)        // apply to the next generation, no reload
+    }
+
+    @objc private func vimModeChanged(_ sender: UISwitch) {
+        UserDefaults.standard.set(sender.isOn, forKey: vimModeDefaultsKey)
+        NotificationCenter.default.post(name: Notification.Name("codeBenchVimModeChanged"), object: sender.isOn)
+        HapticService.shared.tapLight()
+    }
+
+    @objc private func inlineCompletionChanged(_ sender: UISwitch) {
+        UserDefaults.standard.set(sender.isOn, forKey: inlineCompletionDefaultsKey)
+        NotificationCenter.default.post(name: Notification.Name("codeBenchInlineCompletionChanged"), object: sender.isOn)
+        HapticService.shared.tapLight()
+    }
+
+    /// Refresh the ⌘, sheet's Model row to the actually-current model. The sheet
+    /// is built once at launch, so without this it shows the launch-time default
+    /// forever. Called from `settingsTapped` each time the sheet opens.
+    private func refreshSettingsModelInfo() {
+        let slot = loadedModelSlot ?? selectedModelSlot
+        let ready = loadedModelSlot != nil ? "Ready" : "Not loaded"
+        settingsModelNameLabel.text = slot.title
+        settingsModelSubtitleLabel.text = "\(slot.subtitle) · \(preferredContextSize()) ctx · \(ready)"
     }
 
     @objc private func thinkingToggleChanged() {
@@ -9334,7 +9495,7 @@ Output format rules:
                                         kvUnified: is9B,
                                         typeK: is9B ? GGML_TYPE_Q8_0 : GGML_TYPE_F16,
                                         typeV: is9B ? GGML_TYPE_Q8_0 : GGML_TYPE_F16,
-                                        temperature: 0.7,
+                                        temperature: (UserDefaults.standard.object(forKey: temperatureDefaultsKey) as? Float) ?? 0.7,
                                         topP: 0.9,
                                         topK: 50,
                                         repeatLastN: 64,
@@ -10162,10 +10323,7 @@ extension GameViewController: WorkspaceDashboardDelegate {
 
     /// Path to the user's workspace, where scratch / template files
     /// created by dashboard cards live.
-    private var workspaceURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Workspace", isDirectory: true)
-    }
+    private var workspaceURL: URL { AppPaths.workspaceURL }
 
     /// Create `name` in the workspace with `body` if it doesn't
     /// already exist, then open it in the editor. The "if-absent"
@@ -10210,7 +10368,7 @@ extension GameViewController: WorkspaceDashboardDelegate {
             // switch the main pane to the editor so the user can
             // see selected files load into it. If the sidebar's
             // already open, this is a no-op.
-            if sidebarView.isHidden { toggleSidebarVisibility() }
+            if isSidebarHidden { toggleSidebarVisibility() }
             contentTabTapped(editorTabButton)
 
         case .terminal:
@@ -10235,6 +10393,24 @@ extension GameViewController: WorkspaceDashboardDelegate {
             contentTabTapped(editorTabButton)
             if editorController == nil { setupEditorController() }
             editorController?.showAIChatPanel()
+
+        case .modelAction:
+            // Smart model card: the action matches the state shown.
+            if loadedModelSlot != nil {
+                // Loaded → straight into the AI chat.
+                contentTabTapped(editorTabButton)
+                if editorController == nil { setupEditorController() }
+                editorController?.showAIChatPanel()
+            } else if modelURLs[selectedModelSlot] != nil {
+                // On disk but cold → load it; land in the editor so the
+                // model-status header shows the load progress.
+                contentTabTapped(editorTabButton)
+                if editorController == nil { setupEditorController() }
+                loadModel(for: selectedModelSlot)
+            } else {
+                // Not downloaded → the full Models manager.
+                openModelsManager()
+            }
 
         case .libraries:
             contentTabTapped(librariesTabButton)

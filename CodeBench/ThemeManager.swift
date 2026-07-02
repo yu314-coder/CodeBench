@@ -50,14 +50,18 @@ final class ThemeManager {
     }
 
     var isDark: Bool {
-        switch mode {
-        case .system:
-            return UITraitCollection.current.userInterfaceStyle == .dark
-        case .light:
-            return false
-        case .dark:
-            return true
-        }
+        // Dark-only for now. The light-theme color variants are incomplete:
+        // `solidBackground` (and friends) return white while the sidebar,
+        // editor and dashboard stay hard-coded dark, so light / auto
+        // appearance rendered the main content pane solid white. Force dark
+        // until a complete light theme exists, so `solidBackground` etc. can
+        // never be white. (Restore the `mode`-based switch below at that point.)
+        return true
+        // switch mode {
+        // case .system: return UITraitCollection.current.userInterfaceStyle == .dark
+        // case .light:  return false
+        // case .dark:   return true
+        // }
     }
 
     private init() {}
@@ -236,5 +240,68 @@ struct WorkspaceStyle {
         ThemeManager.shared.isDark
             ? UIColor(red: 0.188, green: 0.188, blue: 0.192, alpha: 1.0) // #303032
             : UIColor(red: 0.88, green: 0.88, blue: 0.88, alpha: 1.0)
+    }
+}
+
+// MARK: - Liquid Glass design system
+
+/// One place for the app's glass chrome. On iOS 26+ this is Apple's
+/// REAL Liquid Glass (`UIGlassEffect` — refractive, depth-aware); on
+/// older systems it gracefully falls back to the closest dark material
+/// blur, so every call site reads identically and never needs its own
+/// availability dance.
+///
+/// Usage: `LiquidGlass.apply(to: card, corner: 16)` replaces a solid
+/// `backgroundColor` — content stays in the host view, the glass slab
+/// slides underneath it (subview index 0). Decorative CAGradientLayers
+/// the host inserted at sublayer 0 (corner glows etc.) end up BEHIND
+/// the glass and diffuse through it, which looks intentional and good.
+enum LiquidGlass {
+
+    /// True when the OS renders real Liquid Glass.
+    static var isModern: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    /// The shared chrome effect: glass on 26+, ultra-thin dark material before.
+    static func effect() -> UIVisualEffect {
+        if #available(iOS 26.0, *) { return UIGlassEffect() }
+        return UIBlurEffect(style: .systemUltraThinMaterialDark)
+    }
+
+    /// Mount a rounded glass slab under `host`'s content and clear the
+    /// host's own background. `dim` adds a dark scrim inside the glass
+    /// so text keeps contrast over busy backdrops (0 disables).
+    @discardableResult
+    static func apply(to host: UIView, corner: CGFloat, dim: CGFloat = 0.30) -> UIVisualEffectView {
+        let ev = UIVisualEffectView(effect: effect())
+        ev.translatesAutoresizingMaskIntoConstraints = false
+        ev.layer.cornerRadius = corner
+        ev.layer.cornerCurve = .continuous
+        ev.clipsToBounds = true
+        ev.isUserInteractionEnabled = false   // taps fall through to the host control
+        host.insertSubview(ev, at: 0)
+        NSLayoutConstraint.activate([
+            ev.topAnchor.constraint(equalTo: host.topAnchor),
+            ev.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            ev.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            ev.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        if dim > 0 {
+            let scrim = UIView()
+            scrim.backgroundColor = UIColor(red: 0.03, green: 0.03, blue: 0.06, alpha: dim)
+            scrim.translatesAutoresizingMaskIntoConstraints = false
+            scrim.isUserInteractionEnabled = false
+            ev.contentView.addSubview(scrim)
+            NSLayoutConstraint.activate([
+                scrim.topAnchor.constraint(equalTo: ev.contentView.topAnchor),
+                scrim.leadingAnchor.constraint(equalTo: ev.contentView.leadingAnchor),
+                scrim.trailingAnchor.constraint(equalTo: ev.contentView.trailingAnchor),
+                scrim.bottomAnchor.constraint(equalTo: ev.contentView.bottomAnchor),
+            ])
+        }
+        host.backgroundColor = .clear
+        return ev
     }
 }

@@ -4099,15 +4099,31 @@ except Exception:
         // Fetch the latest text from Monaco (async) before running
         monacoView.getText { [weak self] code in
             guard let self else { return }
-            self.codeTextView.text = code  // update mirror
-            // Flush to disk before running — users expect that "run"
-            // saves, matching every other code editor.
+            // Flush to disk before running — users expect that "run" saves,
+            // matching every other code editor. Two guards on top:
+            //   • dirty-check: a CLEAN buffer writes nothing — and when the
+            //     file changed on disk since load (external edit: Files app,
+            //     git, an AI tool), run the NEWER disk content and refresh
+            //     the buffer, instead of resurrecting the stale buffer.
+            //   • snapshotSafe: an empty/unloaded snapshot never truncates.
+            var runCode = code
             if let url = self.currentFileURL {
-                try? code.write(to: url, atomically: true, encoding: .utf8)
-                self.lastSavedText = code
-                self.pendingSaveText = nil
+                if code != self.lastSavedText {
+                    if Self.snapshotSafe(code, over: url, prior: self.lastSavedText) {
+                        try? code.write(to: url, atomically: true, encoding: .utf8)
+                        self.lastSavedText = code
+                        self.pendingSaveText = nil
+                    }
+                } else if let disk = try? String(contentsOf: url, encoding: .utf8),
+                          disk != code {
+                    runCode = disk
+                    self.lastSavedText = disk
+                    self.pendingSaveText = nil
+                    self.monacoView.setCode(disk, language: self.currentLanguage.monacoName)
+                }
             }
-            self._runWithCode(code)
+            self.codeTextView.text = runCode  // update mirror
+            self._runWithCode(runCode)
         }
     }
 

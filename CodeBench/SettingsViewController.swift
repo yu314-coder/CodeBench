@@ -160,8 +160,8 @@ final class SettingsViewController: UIViewController {
                                                  footer: "Applies to new renders only — existing videos keep their original settings.",
                                                  rows: [
             segmentRow(title: "Quality",
-                       options: ["Low (480p)", "Med (720p)", "High (1080p)"],
-                       subtitle: "Higher quality renders slower and uses more storage.",
+                       options: ["480p", "720p", "1080p", "1440p", "4K", "8K"],
+                       subtitle: "Higher quality renders slower and uses more storage. 4K/8K need lots of free RAM — the renderer checks first and falls back if memory is tight.",
                        selected: Settings.manimQualityIndex) { idx in
                 Settings.manimQualityIndex = idx
             },
@@ -170,6 +170,12 @@ final class SettingsViewController: UIViewController {
                       value: Float(Settings.manimFPS),
                       min: 10, max: 60, step: 5, unit: "fps") { v in
                 Settings.manimFPS = Int(v)
+            },
+            switchRow(title: "GPU rendering (Metal)",
+                      icon: "cpu",
+                      subtitle: "Experimental: render manim on the GPU via CairoMetal. Falls back to CPU automatically if it can't initialize. Applies to the next render.",
+                      isOn: Settings.manimGPU) { on in
+                Settings.manimGPU = on
             },
         ]))
 
@@ -1025,7 +1031,7 @@ final class SettingsViewController: UIViewController {
     private func workspaceShortPath() -> String {
         let docs = (try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
                                                  appropriateFor: nil, create: false).path) ?? "~/Documents"
-        let workspace = "\(docs)/Workspace"
+        let workspace = AppPaths.workspaceURL.path
         return workspace.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
@@ -1438,6 +1444,12 @@ enum Settings {
     static var manimFPS: Int {
         get { d.object(forKey: "manim_fps") as? Int ?? 15 }
         set { d.set(newValue, forKey: "manim_fps"); post() }
+    }
+    // Experimental GPU (Metal) manim backend. Off by default; PythonRuntime
+    // reads "manim_gpu" and swaps in the CairoMetal shim (with CPU fallback).
+    static var manimGPU: Bool {
+        get { d.object(forKey: "manim_gpu") as? Bool ?? false }
+        set { d.set(newValue, forKey: "manim_gpu"); post() }
     }
 
     // MARK: About — set once at launch by GameViewController.

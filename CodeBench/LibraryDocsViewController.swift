@@ -846,7 +846,7 @@ extension LibraryDocsViewController {
             // Numerical & scientific
             numpySection, scipySection, sympySection, networkxSection,
             // Machine learning
-            sklearnSection, torchSection, transformersSection, huggingfaceSection,
+            sklearnSection, torchSection, torchMetalSection, transformersSection, huggingfaceSection,
             // Plotting & graphics
             matplotlibSection, pilSection, manimSection,
             // Media
@@ -1375,7 +1375,7 @@ extension LibraryDocsViewController {
                 example: "from manim import *\nimport numpy as np\nclass Field(Scene):\n    def construct(self):\n        func = lambda p: np.array([-p[1], p[0], 0]) * 0.3\n        field = ArrowVectorField(func, x_range=[-4,4,0.8], y_range=[-3,3,0.8])\n        self.play(Create(field), run_time=2)\n        self.wait()\n        stream = StreamLines(func, x_range=[-4,4], y_range=[-3,3], stroke_width=2)\n        self.play(FadeOut(field))\n        self.add(stream)\n        stream.start_animation(warm_up=True, flow_speed=1.5)\n        self.wait(3)"),
             LibraryModule(name: "Camera & Rendering", summary: "Camera, MovingCamera, ThreeDCamera, quality presets, H.264 output",
                 importLine: "from manim import MovingCameraScene, ThreeDScene",
-                items: ["Camera", "MovingCamera", "ThreeDCamera", "MultiCamera", "set_camera_orientation(phi, theta)", "begin_ambient_camera_rotation(rate)", "move_camera()", "camera.frame.animate", "480p/720p/1080p presets", "h264_videotoolbox", "mpeg4 fallback"],
+                items: ["Camera", "MovingCamera", "ThreeDCamera", "MultiCamera", "set_camera_orientation(phi, theta)", "begin_ambient_camera_rotation(rate)", "move_camera()", "camera.frame.animate", "480p–8K presets", "h264_videotoolbox", "mpeg4 fallback"],
                 example: "from manim import *\nclass CameraDemo(MovingCameraScene):\n    def construct(self):\n        circle = Circle(color=BLUE, fill_opacity=0.5)\n        squares = VGroup(*[Square(side_length=0.3, color=random_color()).shift(\n            np.random.uniform(-3,3)*RIGHT + np.random.uniform(-2,2)*UP\n        ) for _ in range(20)])\n        self.play(Create(circle), LaggedStart(*[FadeIn(s) for s in squares]))\n        self.play(self.camera.frame.animate.scale(0.3).move_to(circle))\n        self.play(self.camera.frame.animate.scale(5))\n        self.play(self.camera.frame.animate.scale(0.6).move_to(ORIGIN))")
         ])
     }
@@ -1663,6 +1663,20 @@ extension LibraryDocsViewController {
                 importLine: "import torch",
                 items: ["torch.manual_seed(42)", "torch.cuda.manual_seed_all(42)", "torch.backends.cudnn.deterministic = True", "torch.use_deterministic_algorithms(True)", "g = torch.Generator(device='mps')", "g.manual_seed(42)", "torch.randn(3, generator=g)"],
                 example: "import torch\ntorch.manual_seed(42)\nprint(torch.randn(3))\ntorch.manual_seed(42)\nprint(torch.randn(3))  # same numbers"),
+        ])
+    }
+
+    // MARK: torch(metal) — Metal GPU acceleration for PyTorch
+    private static var torchMetalSection: LibrarySection {
+        LibrarySection(name: "torch(metal)", icon: "bolt.fill", modules: [
+            LibraryModule(name: "enable — one call", summary: "Route heavy PyTorch ops to the Apple GPU (MPS). No other code changes.",
+                importLine: "import torch, torchmetal",
+                items: ["torchmetal.enable()  — turn Metal routing on", "torchmetal.disable() — restore stock CPU torch", "patches matmul / mm / bmm / addmm + Tensor.__matmul__", "patches F.linear / softmax / layer_norm / gelu", "patches F.scaled_dot_product_attention", "size + dtype gated — small ops stay on CPU", "automatic CPU fallback for unsupported ops"],
+                example: "import torch, torchmetal\ntorchmetal.enable()           # heavy ops now run on the Metal GPU\n\na = torch.randn(2048, 2048, dtype=torch.float16)\nb = torch.randn(2048, 2048, dtype=torch.float16)\nc = a @ b                     # MPSMatrixMultiplication on the GPU\nprint(c.shape)\n\ntorchmetal.disable()          # back to stock CPU torch"),
+            LibraryModule(name: "why / when it helps", summary: "Biggest win is fp16 matmul; large fp32 matmul / linear / attention also speed up.",
+                importLine: "import torch, torchmetal, time",
+                items: ["fp16 matmul: stock CPU torch has no fast fp16 GEMM → hundreds of × faster", "fp32 matmul / linear / attention: faster at large sizes", "tiny / elementwise ops stay on CPU (launch overhead)", "App-Store-safe: public MPS only + custom Metal kernels", "metallib loads automatically from the app bundle"],
+                example: "import torch, torchmetal, time\nA = torch.randn(2048, 2048, dtype=torch.float16)\nB = torch.randn(2048, 2048, dtype=torch.float16)\ntorchmetal.enable()\n_ = A @ B                     # warm up\nt = time.time()\nfor _ in range(3): C = A @ B\nprint('Metal fp16 matmul:', (time.time() - t) / 3 * 1000, 'ms')"),
         ])
     }
 

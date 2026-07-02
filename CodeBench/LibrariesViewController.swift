@@ -343,6 +343,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     private static let CATEGORY_MAP: [String: String] = [
         // Machine Learning
         "torch":             "Machine Learning",
+        "torch_metal":       "Machine Learning",
         "transformers":      "Machine Learning",
         "accelerate":        "Machine Learning",
         "peft":              "Machine Learning",
@@ -351,6 +352,8 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         "huggingface_hub":   "Machine Learning",
         "sklearn":           "Machine Learning",
         "torchgen":          "Machine Learning",
+        "faiss":             "Machine Learning",
+        "sentencepiece":     "Machine Learning",
 
         // Scientific Computing
         "numpy":             "Scientific Computing",
@@ -382,6 +385,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         // Media
         "pil":               "Media (image / video / audio / docs)",
         "pillow":            "Media (image / video / audio / docs)",
+        "cv2":               "Media (image / video / audio / docs)",
         "av":                "Media (image / video / audio / docs)",
         "cairo":             "Media (image / video / audio / docs)",
         "cairocffi":         "Media (image / video / audio / docs)",
@@ -496,11 +500,25 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         "sitecustomize":     "CodeBench helpers",
     ]
 
+    /// PyPI/dist display names → the import-name key used in CATEGORY_MAP /
+    /// PACKAGE_INFO. The `.dist-info` shipped for the cross-built C/C++ libs makes
+    /// the libs tab show the PyPI name (opencv-python, faiss-cpu) instead of the
+    /// import name, so map those back to one curated entry keyed by import name.
+    private static let KEY_ALIASES: [String: String] = [
+        "opencv_python": "cv2",
+        "faiss_cpu":     "faiss",
+    ]
+
+    /// Normalize a displayed package name to its curated lookup key.
+    fileprivate static func canonicalKey(_ name: String) -> String {
+        let k = name.lowercased().replacingOccurrences(of: "-", with: "_")
+        return KEY_ALIASES[k] ?? k
+    }
+
     /// Accessible to PackageDetailViewController in this file so the
     /// detail view's hero header can pick the same category icon.
     fileprivate static func categorize(_ name: String) -> String {
-        let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
-        return CATEGORY_MAP[key] ?? "Other"
+        return CATEGORY_MAP[canonicalKey(name)] ?? "Other"
     }
 
     /// SF Symbol name + accent color for each category. Used to give
@@ -858,6 +876,16 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         scan(bundleSite, origin: "Bundled")
         if let userSite = userSite { scan(userSite, origin: "User") }
 
+        // torch(metal) ships as top-level files (torch_metal*.so +
+        // torchmetal.py), NOT a package directory, so the directory
+        // scan above misses it. Surface it as a card whenever the
+        // Metal extension is actually bundled.
+        let hasTorchMetal = (try? fm.contentsOfDirectory(atPath: bundleSite))?
+            .contains { $0.hasPrefix("torch_metal") && $0.hasSuffix(".so") } ?? false
+        if hasTorchMetal, !pkgs.contains(where: { $0.name.lowercased() == "torch_metal" }) {
+            pkgs.append(Pkg(name: "torch_metal", version: "MPS", origin: "Bundled"))
+        }
+
         // Sort within each origin alphabetically.
         pkgs.sort { $0.name.lowercased() < $1.name.lowercased() }
         return pkgs
@@ -1025,9 +1053,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             .replacingOccurrences(of: " ", with: "-")
             .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? pkg.name
         let pypi = URL(string: "https://pypi.org/project/\(slug)/")
-        let modName = pkg.name
-            .replacingOccurrences(of: "-", with: "_")
-            .lowercased()
+        let modName = InstalledLibsViewController.canonicalKey(pkg.name)
         let body = "version  \(pkg.version)\norigin   \(pkg.origin)  (pip-installed)"
         let alert = UIAlertController(title: pkg.name, message: body,
                                       preferredStyle: .actionSheet)
@@ -1342,7 +1368,9 @@ final class PackageDetailViewController: UIViewController {
         stack.spacing = 10
         stack.distribution = .fillEqually
 
-        let modName = pkg.name.replacingOccurrences(of: "-", with: "_").lowercased()
+        // canonicalKey maps PyPI display names → import names (opencv-python→cv2,
+        // faiss-cpu→faiss) so the copied statement is actually importable.
+        let modName = InstalledLibsViewController.canonicalKey(pkg.name)
         var copyCfg = UIButton.Configuration.gray()
         copyCfg.baseBackgroundColor = UIColor(white: 0.18, alpha: 1)
         copyCfg.baseForegroundColor = UIColor(white: 0.95, alpha: 1)
@@ -1395,12 +1423,11 @@ final class PackageDetailViewController: UIViewController {
     /// Read-only peek at a curated summary (for the list's card subtitle).
     /// Returns nil when the package has no curated entry.
     fileprivate static func blurbSummary(for name: String) -> String? {
-        let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
-        return PACKAGE_INFO[key]?.summary
+        return PACKAGE_INFO[InstalledLibsViewController.canonicalKey(name)]?.summary
     }
 
     private static func lookup(_ name: String) -> Info {
-        let key = name.lowercased().replacingOccurrences(of: "-", with: "_")
+        let key = InstalledLibsViewController.canonicalKey(name)
         return PACKAGE_INFO[key] ?? Info(
             summary: "A bundled Python package — either an explicit "
                 + "dependency of a larger package (matplotlib, manim, "
@@ -1416,7 +1443,7 @@ final class PackageDetailViewController: UIViewController {
 
         // ─── Machine Learning ──────────────────────────────────────
         "torch": Info(
-            summary: "PyTorch 2.1.2 native iOS arm64 build. Provides "
+            summary: "PyTorch 2.1.0 native iOS arm64 build. Provides "
                 + "tensors, autograd, nn.Module, torch.optim (SGD, "
                 + "AdamW, Adam, RMSprop, …), JIT, FFT, and full "
                 + "LAPACK via Apple's Accelerate framework. First "
@@ -1429,15 +1456,116 @@ final class PackageDetailViewController: UIViewController {
                 + "patched via sitecustomize (USE_NUMPY=0 build).\n"
                 + "• DataLoader(num_workers>0) — set to 0 (workers "
                 + "use fork).\n"
-                + "• GPU acceleration: torch.matmul / mm / bmm / "
-                + "addmm / F.linear / F.scaled_dot_product_attention "
-                + "are auto-routed to Apple Metal via the bundled "
-                + "_torch_metal_bridge (fp32 / fp16 / bf16).",
+                + "• GPU (Metal): heavy ops — matmul / mm / bmm / addmm, "
+                + "F.linear / softmax / layer_norm / gelu / SDPA — run on "
+                + "the Apple GPU. Two routes: the always-on bridge, and the "
+                + "explicit `torchmetal` router (import torchmetal; "
+                + "torchmetal.enable() — see the torch_metal card). Biggest "
+                + "win: fp16 matmul (CPU torch has no fast fp16 GEMM).",
             example: """
             import torch
             x = torch.randn(64, 128)
             y = x @ x.T        # auto-dispatched to Metal GPU
             print(y.shape)     # torch.Size([64, 64])
+            """
+        ),
+        "torch_metal": Info(
+            summary: "torch(metal) — GPU acceleration for PyTorch via "
+                + "Apple Metal (MPS). A thin routing layer: call "
+                + "torchmetal.enable() and heavy torch ops (matmul, "
+                + "linear, softmax, layer_norm, gelu, scaled_dot_"
+                + "product_attention) run on the GPU through MPSMatrix"
+                + "Multiplication + custom Metal kernels, with automatic "
+                + "CPU fallback for small or unsupported ops. App-Store-"
+                + "safe (uses only public MPS).",
+            iosNotes: "• Turn it on with `import torchmetal; torchmetal."
+                + "enable()` — no other code changes; it monkey-patches "
+                + "torch.matmul / mm / bmm / addmm, Tensor.__matmul__, "
+                + "and F.linear / softmax / layer_norm / gelu / scaled_"
+                + "dot_product_attention.\n"
+                + "• Drop-in: your code is unchanged — keep using `torch` "
+                + "exactly as normal (no `.to('mps')`, no device juggling). "
+                + "Anything it doesn't handle falls back, so results match "
+                + "stock torch (within fp tolerance).\n"
+                + "• Accelerates INFERENCE; under autograd (training) it "
+                + "falls back to CPU torch — wrap in torch.no_grad() / "
+                + "model.eval() for the GPU path.\n"
+                + "• Biggest win is fp16 matmul — stock CPU torch has no "
+                + "fast fp16 GEMM, so this is hundreds of × faster.\n"
+                + "• Size + dtype gated: tiny ops stay on CPU (kernel-"
+                + "launch overhead). Call torchmetal.disable() to turn "
+                + "routing back off.\n"
+                + "• The Metal library loads automatically from the app "
+                + "bundle — no setup needed.",
+            example: """
+            import torch, torchmetal
+            torchmetal.enable()          # route heavy ops to the Metal GPU
+
+            a = torch.randn(2048, 2048, dtype=torch.float16)
+            b = torch.randn(2048, 2048, dtype=torch.float16)
+            c = a @ b                    # runs on the GPU (MPS)
+            print(c.shape)
+
+            torchmetal.disable()         # back to stock CPU torch
+            """
+        ),
+        "cv2": Info(
+            summary: "OpenCV 4.10.0 — computer vision, cross-compiled "
+                + "native for iOS arm64. A curated module set: core, "
+                + "imgproc, imgcodecs, photo, features2d, calib3d, "
+                + "objdetect, video, ml, flann (no dnn / gui / videoio — "
+                + "those need a desktop GUI + codec stack). Image read/"
+                + "write, filtering, transforms, feature detection, "
+                + "contours, classic object detection.",
+            iosNotes: "• CPU only. OpenCV's GPU code is CUDA / OpenCL — "
+                + "neither exists on iOS, and OpenCV has no Metal backend — "
+                + "so it uses multi-core (GCD) + NEON SIMD instead.\n"
+                + "• No cv2.imshow / highgui (no desktop windows): write to "
+                + "a file or hand a numpy array to the preview.\n"
+                + "• `import cv2` reports 4.10.0; pip sees it as "
+                + "opencv-python (dist-info installed).",
+            example: """
+            import cv2, numpy as np
+            img = np.zeros((120, 240, 3), np.uint8)
+            cv2.circle(img, (120, 60), 40, (0, 200, 255), -1)
+            cv2.imwrite("Documents/circle.png", img)
+            """
+        ),
+        "faiss": Info(
+            summary: "FAISS 1.9.0 (CPU) — vector similarity search, "
+                + "cross-compiled native for iOS arm64. Build vector "
+                + "indexes (IndexFlat, IVF, HNSW, PQ) and run fast nearest-"
+                + "neighbour search over embeddings — the retrieval half of "
+                + "on-device RAG.",
+            iosNotes: "• CPU build (faiss-cpu); the GPU index is CUDA-only "
+                + "and does not exist on iOS. Distance math runs on Apple "
+                + "Accelerate BLAS.\n"
+                + "• Single-threaded — iOS has no libomp, so OpenMP calls "
+                + "are served by a serial shim.\n"
+                + "• pip sees it as faiss-cpu (dist-info installed).",
+            example: """
+            import faiss, numpy as np
+            x = np.random.rand(1000, 64).astype("float32")
+            index = faiss.IndexFlatL2(64)
+            index.add(x)
+            D, I = index.search(x[:5], 4)   # 4 nearest neighbours each
+            print(I)
+            """
+        ),
+        "sentencepiece": Info(
+            summary: "SentencePiece 0.2.0 — Google's unsupervised text "
+                + "tokenizer (BPE / unigram), cross-compiled native for "
+                + "iOS arm64. The tokenizer behind Llama, T5, Gemma and "
+                + "many other models: encode text ↔ ids and load .model "
+                + "files. Training a new model on-device works too.",
+            iosNotes: "• Pure CPU, no special iOS caveats — encode / decode "
+                + "and loading a trained .model behave as upstream.\n"
+                + "• pip sees it as sentencepiece (dist-info installed).",
+            example: """
+            import sentencepiece as spm
+            sp = spm.SentencePieceProcessor()
+            # sp.load("tokenizer.model")        # a model from Llama / T5 / …
+            # print(sp.encode("hello world"))   # → token ids
             """
         ),
         "transformers": Info(
@@ -1571,12 +1699,15 @@ final class PackageDetailViewController: UIViewController {
 
         // ─── Scientific Computing ──────────────────────────────────
         "numpy": Info(
-            summary: "NumPy 2.3.5 — native iOS arm64 build. Full "
-                + "ndarray, linear algebra, FFT, random, broadcasting. "
-                + "Cross-compiled from upstream NumPy with our build "
-                + "scripts (see numpy_ios/).",
-            iosNotes: "• Behavior matches upstream NumPy exactly — no "
-                + "iOS-specific shims at the API level.\n"
+            summary: "NumPy 2.3.5 — native iOS arm64 build, accelerated "
+                + "by Apple's Accelerate framework (hardware BLAS + LAPACK "
+                + "on the AMX matrix coprocessor). Full ndarray, fast "
+                + "linear algebra (matmul, solve, svd, eig), FFT, random, "
+                + "broadcasting. Cross-compiled from upstream (see numpy_ios/).",
+            iosNotes: "• matmul / @ and np.linalg.* run on the AMX "
+                + "coprocessor via Accelerate — this is CPU, not GPU, and "
+                + "needs no other library: numpy alone is fully accelerated.\n"
+                + "• Behavior matches upstream NumPy at the API level.\n"
                 + "• torch ↔ numpy interop patched via sitecustomize "
                 + "(USE_NUMPY=0 PyTorch build).",
             example: """
@@ -1745,7 +1876,15 @@ final class PackageDetailViewController: UIViewController {
                 + "libffi (all native iOS arm64). 2D vector graphics + "
                 + "text shaping. Backs matplotlib SVG output, manim, "
                 + "and many others.",
-            iosNotes: nil,
+            iosNotes: "• Default `import cairo` (pycairo) renders on the "
+                + "CPU (software image backend).\n"
+                + "• GPU option: `import cairo_metal as cairo` is a "
+                + "pycairo-compatible GPU cairo on Apple Metal (stencil-"
+                + "then-cover, IOSurface-backed), pixel-diffed against real "
+                + "cairo. Standalone repo: github.com/yu314-coder/cairometal.\n"
+                + "• GPU cairo does NOT speed up manim — manim's bottleneck "
+                + "is single-threaded Python (mobject interpolation), not "
+                + "cairo fill (~5% of a frame).",
             example: """
             import cairo
             surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)

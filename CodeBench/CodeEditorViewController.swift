@@ -5879,10 +5879,15 @@ except Exception:
         super.viewWillDisappear(animated)
         // Pull the most recent text from Monaco and flush. Async getText
         // followed by a write — the view might be deallocated before the
-        // completion fires, so capture everything we need up front.
+        // completion fires, so capture everything we need up front (the
+        // closure is deliberately self-free). Skip when unchanged, and
+        // never let an empty/unloaded snapshot truncate the file.
         if let url = currentFileURL {
-            monacoView.getText { [url] text in
-                try? text.write(to: url, atomically: true, encoding: .utf8)
+            let prior = lastSavedText
+            monacoView.getText { [url, prior] text in
+                if text != prior, Self.snapshotSafe(text, over: url, prior: prior) {
+                    try? text.write(to: url, atomically: true, encoding: .utf8)
+                }
             }
         }
         flushAutoSave()
@@ -6519,9 +6524,15 @@ except Exception:
     }
 
     @objc private func flushAutoSaveNotif() {
+        // Background/resign-active flush. Same snapshot hazard as
+        // viewWillDisappear: the webview may already be torn down or blank
+        // when this fires, so never let an empty snapshot truncate the file.
         if let url = currentFileURL {
-            monacoView.getText { [url] text in
-                try? text.write(to: url, atomically: true, encoding: .utf8)
+            let prior = lastSavedText
+            monacoView.getText { [url, prior] text in
+                if text != prior, Self.snapshotSafe(text, over: url, prior: prior) {
+                    try? text.write(to: url, atomically: true, encoding: .utf8)
+                }
             }
         }
         flushAutoSave()
@@ -8378,6 +8389,27 @@ except Exception:
     /// right after our own setCode).
     private var lastSavedText: String?
 
+    /// Guard for the SNAPSHOT-based save paths (getText at file-switch,
+    /// viewWillDisappear, forceFlushFromMonaco, saveCurrentFile). A snapshot
+    /// can come back EMPTY even though the file has content: Monaco still
+    /// booting (setCode parked in pendingSetCode), the WKWebView content
+    /// process reclaimed while backgrounded, or a reload leaving `__editor`
+    /// fresh and blank. Writing that snapshot TRUNCATES the file on disk —
+    /// this zeroed workspace .py files on tab switch. Allow an empty write
+    /// only when the last known-good text was already empty (a real user
+    /// "select-all + delete" reaches disk via the event-driven autosave,
+    /// which is not gated by this) or the file is empty/absent anyway.
+    /// Static + self-free so teardown-time closures can use it safely.
+    private static func snapshotSafe(_ text: String, over url: URL, prior: String?) -> Bool {
+        if !text.isEmpty { return true }
+        if let prior, prior.isEmpty { return true }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        if size == 0 { return true }
+        NSLog("[editor] SKIPPED writing empty buffer over %@ (%dB on disk) — buffer not loaded?",
+              url.lastPathComponent, size)
+        return false
+    }
+
     func loadFile(url: URL) {
         // .ipynb files open in the dedicated notebook editor, embedded
         // INLINE inside `editorContainer` in place of `monacoView`.
@@ -8441,7 +8473,8 @@ except Exception:
         if let oldURL = currentFileURL {
             let priorLastSaved = lastSavedText
             monacoView.getText { [oldURL, priorLastSaved] text in
-                if text != priorLastSaved {
+                if text != priorLastSaved,
+                   Self.snapshotSafe(text, over: oldURL, prior: priorLastSaved) {
                     try? text.write(to: oldURL, atomically: true, encoding: .utf8)
                 }
             }
@@ -8699,7 +8732,8 @@ except Exception:
             self.autoSaveTimer?.cancel()
             self.autoSaveTimer = nil
             self.pendingSaveText = nil
-            if text != self.lastSavedText {
+            if text != self.lastSavedText,
+               Self.snapshotSafe(text, over: url, prior: self.lastSavedText) {
                 do {
                     try text.write(to: url, atomically: true, encoding: .utf8)
                     self.lastSavedText = text
@@ -8768,6 +8802,7 @@ except Exception:
         guard let url = currentFileURL else { return }
         monacoView.getText { [weak self] text in
             guard let self else { return }
+            guard Self.snapshotSafe(text, over: url, prior: self.lastSavedText) else { return }
             do {
                 try text.write(to: url, atomically: true, encoding: .utf8)
                 self.lastSavedText = text

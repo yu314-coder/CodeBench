@@ -269,6 +269,36 @@ final class MonacoEditorView: UIView {
             completionHandler: nil)
     }
 
+    // ── ⌘, editor settings: Vim mode + inline completion ──
+    // The toggles live in GameViewController's settings sheet; these keys mirror
+    // its UserDefaults keys so the editor can self-apply on load.
+    private static let vimModeKey = "editor.vimMode.enabled"
+    private static let inlineCompletionKey = "editor.inlineCompletion.enabled"
+
+    /// Enable/disable Vim modal editing (monaco-vim, lazy-loaded in editor.html).
+    func setVimMode(_ on: Bool) {
+        guard isReady, Self.monacoEnabled else { return }
+        webView.evaluateJavaScript(
+            "window.__editor && window.__editor.setVimMode(\(on)); true;",
+            completionHandler: nil)
+    }
+
+    /// Enable/disable greyed-out inline (ghost-text) completion.
+    func setInlineCompletions(_ on: Bool) {
+        guard isReady, Self.monacoEnabled else { return }
+        webView.evaluateJavaScript(
+            "window.__editor && window.__editor.setInlineCompletions(\(on)); true;",
+            completionHandler: nil)
+    }
+
+    /// Re-apply the persisted Vim / inline-completion prefs. Called on
+    /// editor-ready; safe to call anytime.
+    func applyEditorPrefs() {
+        let d = UserDefaults.standard
+        setVimMode(d.bool(forKey: Self.vimModeKey))
+        setInlineCompletions(d.bool(forKey: Self.inlineCompletionKey))
+    }
+
     /// Force focus on Monaco's editing area. Use after a modal
     /// presentation/dismissal that may have left the WebView's
     /// first-responder chain dangling — the symptom is "tap the
@@ -364,6 +394,13 @@ final class MonacoEditorView: UIView {
         webView.evaluateJavaScript("window.__editor && window.__editor.setDebugCurrentLine(\(arg)); true;")
     }
 
+    /// Toggle read-only. Used to protect oversized files (shown truncated so a
+    /// 24 MB base64 blob can't hang Monaco) from being saved back truncated.
+    func setReadOnly(_ on: Bool) {
+        guard isReady, Self.monacoEnabled else { return }
+        webView.evaluateJavaScript("window.__editor && window.__editor.setReadOnly(\(on)); true;")
+    }
+
     // MARK: - Helpers
 
     /// Escape for JS template literal: backslash, backtick, `${`, and carriage returns.
@@ -394,6 +431,8 @@ extension MonacoEditorView: WKScriptMessageHandler {
             }
             // Push symbol index now that JS is ready
             pushSymbolIndex()
+            // Apply persisted ⌘, editor prefs (Vim mode / inline completion)
+            applyEditorPrefs()
 
         case "jserror":
             // editor.html installs a window.onerror that posts these.

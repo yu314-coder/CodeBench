@@ -297,7 +297,6 @@ window.registerPythonProviders = function (monaco, editor) {
             s('import certifi',    'import certifi\n',                       'Import certifi (CA bundle).'),
             s('import pywebview',  'import webview\n',                       'Import pywebview (routes to in-app preview pane).'),
             s('import latex',      'import offlinai_latex\n',                'Import CodeBench LaTeX bridge (Busytex).'),
-            s('import ai',         'import offlinai_ai\n',                   'Import CodeBench local-AI bridge.'),
             s('import plotly',     'import plotly.express as px\nimport plotly.graph_objects as go\n','Import Plotly Express + graph_objects.'),
             s('import PIL',        'from PIL import Image\n',                'Import Pillow Image.'),
             s('import urllib3',    'import urllib3\n',                       'Import urllib3.'),

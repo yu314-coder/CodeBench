@@ -408,6 +408,55 @@
                 });
             });
 
+            // ── Vim mode (monaco-vim, lazy-loaded from Monaco/) ──
+            let __vimMode = null;
+            let __vimStatusNode = null;
+            function __ensureVimStatus() {
+                if (__vimStatusNode) return __vimStatusNode;
+                const n = document.createElement('div');
+                n.id = 'vim-status';
+                n.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:22px;'
+                    + 'line-height:22px;padding:0 10px;font:12px ui-monospace,monospace;'
+                    + 'color:#9aa;background:rgba(0,0,0,0.35);z-index:60;'
+                    + 'pointer-events:none;white-space:pre;';
+                document.body.appendChild(n);
+                __vimStatusNode = n;
+                return n;
+            }
+
+            // ── Inline completion (offline, buffer-based) ────────
+            // Greyed-out ghost text: if what you've typed on this line is a
+            // prefix of another non-empty line in the file, suggest the rest.
+            let __inlineDisposable = null;
+            function __registerInline() {
+                if (__inlineDisposable) return;
+                __inlineDisposable = monaco.languages.registerInlineCompletionsProvider('*', {
+                    provideInlineCompletions(model, position) {
+                        const lineText = model.getLineContent(position.lineNumber);
+                        const prefix = lineText.substring(0, position.column - 1);
+                        if (prefix.trim().length < 3) return { items: [] };
+                        const total = model.getLineCount();
+                        for (let i = 1; i <= total; i++) {
+                            if (i === position.lineNumber) continue;
+                            const other = model.getLineContent(i);
+                            if (other.length > prefix.length && other.startsWith(prefix)
+                                && other.substring(prefix.length).trim().length > 0) {
+                                return { items: [{
+                                    insertText: other.substring(prefix.length),
+                                    range: new monaco.Range(position.lineNumber, position.column,
+                                                            position.lineNumber, position.column)
+                                }] };
+                            }
+                        }
+                        return { items: [] };
+                    },
+                    freeInlineCompletions() {}
+                });
+            }
+            function __unregisterInline() {
+                if (__inlineDisposable) { __inlineDisposable.dispose(); __inlineDisposable = null; }
+            }
+
             // Swift-callable API
             window.__editor = {
                 setCode(code, language) {
@@ -466,6 +515,28 @@
                         forceMoveMarkers: true,
                     }]);
                 },
+                setVimMode(on) {
+                    try {
+                        if (on) {
+                            if (__vimMode) return;
+                            require.config({ paths: { 'monaco-vim': 'Monaco/monaco-vim' } });
+                            require(['monaco-vim'], function (MonacoVim) {
+                                if (__vimMode) return;
+                                __vimMode = MonacoVim.initVimMode(editor, __ensureVimStatus());
+                            });
+                        } else {
+                            if (__vimMode) { __vimMode.dispose(); __vimMode = null; }
+                            if (__vimStatusNode) __vimStatusNode.textContent = '';
+                        }
+                    } catch (e) { postToSwift({ kind: 'error', message: 'vim: ' + e }); }
+                },
+                setInlineCompletions(on) {
+                    try {
+                        editor.updateOptions({ inlineSuggest: { enabled: !!on } });
+                        if (on) __registerInline(); else __unregisterInline();
+                    } catch (e) { postToSwift({ kind: 'error', message: 'inline: ' + e }); }
+                },
+                setReadOnly(on) { editor.updateOptions({ readOnly: !!on }); },
                 // ── Debugger / breakpoints ──────────────────────────────
                 setBreakpoints(lines) {
                     const decos = (lines || []).map(function (ln) {

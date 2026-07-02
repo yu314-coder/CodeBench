@@ -545,7 +545,7 @@ final class PythonRuntime {
                         sys.__stderr__.flush()
                     except Exception: pass
                     try:
-                        with open(_bc_path, "a") as _f:
+                        with open(_bc_path, "a", encoding="utf-8", errors="replace") as _f:
                             _f.write(f"{_time.time():.3f} {msg}\\n")
                     except Exception: pass
 
@@ -576,7 +576,7 @@ final class PythonRuntime {
                             sys.__stderr__.flush()
                         except Exception: pass
                         try:
-                            with open(_bc_path, "a") as _f:
+                            with open(_bc_path, "a", encoding="utf-8", errors="replace") as _f:
                                 _f.write(traceback.format_exc())
                         except Exception: pass
                         _time.sleep(0.5)
@@ -1911,7 +1911,7 @@ try:
                 "",
             ]
             os.makedirs(f"{__codebench_tool_dir}/fontcache", exist_ok=True)
-            with open(_fc_file_pre, "w") as _fcf_pre:
+            with open(_fc_file_pre, "w", encoding="utf-8", errors="replace") as _fcf_pre:
                 _fcf_pre.write(chr(10).join(_fc_lines_pre))
             os.environ["FONTCONFIG_FILE"] = _fc_file_pre
             os.environ["FONTCONFIG_PATH"] = __codebench_tool_dir
@@ -2076,7 +2076,7 @@ try:
                 ]
                 _fc_content = chr(10).join(_lines)
                 os.makedirs(f"{__codebench_tool_dir}/fontcache", exist_ok=True)
-                with open(_fc_file, "w") as _fcf:
+                with open(_fc_file, "w", encoding="utf-8", errors="replace") as _fcf:
                     _fcf.write(_fc_content)
                 os.environ["FONTCONFIG_FILE"] = _fc_file
                 os.environ["FONTCONFIG_PATH"] = __codebench_tool_dir

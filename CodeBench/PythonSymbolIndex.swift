@@ -1,8 +1,10 @@
 import Foundation
 
-/// Introspects installed Python libraries and builds a symbol index for autocomplete.
-/// On first launch, runs a Python script that imports each supported library and calls `dir()`
-/// to get its public members. Results are cached to disk.
+/// Builds a symbol index for autocomplete. On first launch it discovers
+/// every importable module NAME (cheap directory scan, no imports) and
+/// eagerly introspects a small stdlib-only set; third-party libraries are
+/// introspected lazily on first `module.` access so startup never imports
+/// heavy native code. Results are cached to disk.
 final class PythonSymbolIndex {
 
     static let shared = PythonSymbolIndex()
@@ -17,7 +19,9 @@ final class PythonSymbolIndex {
     private(set) var availableModules: Set<String> = []
 
     private var isBuilt = false
-    private let cacheKey = "python.symbol.index.v4"
+    // v5: eager list slimmed to stdlib-only (third-party is lazy) — the
+    // bump discards fat v4 caches from earlier builds.
+    private let cacheKey = "python.symbol.index.v5"
     private let queue = DispatchQueue(label: "codebench.python.symindex", qos: .utility)
 
     /// Modules whose members are being / have been fetched lazily, so we
@@ -29,23 +33,20 @@ final class PythonSymbolIndex {
         loadFromCache()
     }
 
-    /// Libraries whose members we introspect *eagerly* at build time, so
-    /// the most common `module.` completions are instant. Every other
-    /// importable module still appears in the name list (full discovery
-    /// below) and gets its members fetched lazily on first `.` access.
+    /// Modules whose members we introspect *eagerly* at build time.
+    /// STDLIB ONLY — never list a third-party library here. Eagerly
+    /// importing them (numpy/scipy/sklearn/matplotlib/manim/pandas/av/…)
+    /// pinned the interpreter for ~30 s at startup (dead terminal),
+    /// kept hundreds of MB of native code resident for the whole
+    /// session (jetsam-kills the app when the user then imports
+    /// bpy/torch), and bloated the symbol JSON pushed to the editor.
+    /// Third-party members are fetched lazily on first `module.`
+    /// access via `ensureMembers` (IntelliSense daemon) instead.
     private let knownModules: [String] = [
-        "numpy", "scipy", "sklearn", "matplotlib.pyplot", "matplotlib",
-        "sympy", "mpmath", "plotly", "networkx",
-        "PIL", "av", "cairo",
-        "manim", "manimpango",
-        "requests", "httpx", "bs4",  // BeautifulSoup
-        "pandas", "openpyxl", "webview", "flask",
         "json", "os", "sys", "math", "random", "time", "datetime",
         "re", "collections", "itertools", "functools",
         "pathlib", "typing", "dataclasses", "io", "csv", "sqlite3",
         "string", "textwrap", "hashlib", "base64", "pickle",
-        "tqdm", "rich", "click", "pygments", "yaml",
-        "jsonschema", "pydub", "svgelements", "offlinai_latex",
     ]
 
     /// Default (common) aliases users type — used for auto-alias resolution.

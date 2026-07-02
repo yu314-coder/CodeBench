@@ -84,7 +84,7 @@ import JavaScriptCore
     // MARK: Globals — console, fetch, fs, setTimeout
 
     /// Install browser-shaped globals (`console`, `fetch`, `setTimeout`)
-    /// plus a small `fs`-like helper scoped to ~/Documents. We don't try
+    /// plus a small `fs`-like helper scoped to ~. We don't try
     /// to ape Node.js' module system — users who want CommonJS can use
     /// the `require` helper that resolves against ~/Documents/node_modules.
     private func installGlobals(_ ctx: JSContext) {
@@ -234,7 +234,7 @@ import JavaScriptCore
         ctx.setObject(unsafeBitCast(fetchFn, to: AnyObject.self),
                       forKeyedSubscript: "fetch" as NSString)
 
-        // ─ fs — minimal, scoped to ~/Documents. Mirrors the Node.js
+        // ─ fs — minimal, scoped to ~. Mirrors the Node.js
         //   sync API names so existing snippets that assume Node mostly
         //   work. Path-traversal isn't restricted (the iOS sandbox
         //   already blocks anything outside the app container).
@@ -375,7 +375,7 @@ import JavaScriptCore
         return jsonRepr(v)
     }
 
-    /// Resolve a relative path against ~/Documents. Absolute paths pass
+    /// Resolve a relative path against ~. Absolute paths pass
     /// through (the iOS sandbox handles access control).
     private static func resolvePath(_ p: String) -> String {
         if p.hasPrefix("/") { return p }

@@ -35,6 +35,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ = AppDelegate._backgroundBridgeAnchor
         _ = AppDelegate._swiftBridgeAnchor
 
+        // Register the Workspace as a Files-app Location (no-op until the
+        // App Group is provisioned). Also migrates the Workspace into the
+        // shared container on first run.
+        FileProviderRegistration.registerIfPossible()
+
         // Register BGTaskScheduler handlers for the identifiers declared
         // in Info.plist. MUST happen synchronously in didFinishLaunching
         // — calling register() after launch raises a fatal exception
@@ -145,26 +150,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         cleanupToolOutputCache()
     }
 
-    /// Delete ToolOutputs directory (manim renders, plots, etc.) on app close.
-    /// These are ephemeral — the user can always re-run to regenerate.
+    /// Clean transient caches on app close.
     private func cleanupToolOutputCache() {
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let toolOutputs = docs.appendingPathComponent("ToolOutputs")
-        if fm.fileExists(atPath: toolOutputs.path) {
-            do {
-                let size = fm.allocatedSizeOfDirectory(at: toolOutputs)
-                try fm.removeItem(at: toolOutputs)
-                print("[Cleanup] Deleted ToolOutputs cache (\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))")
-            } catch {
-                print("[Cleanup] Failed to delete ToolOutputs: \(error.localizedDescription)")
-            }
+        // ToolOutputs now lives INSIDE the user-visible Workspace (the Files
+        // Location), so we no longer wipe it on terminate — that would delete
+        // the user's renders out from under them. We only clear any stale copy
+        // left behind in the old *sandbox* Documents (pre-migration), which is
+        // invisible and safe to remove.
+        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            try? fm.removeItem(at: docs.appendingPathComponent("ToolOutputs"))
         }
-        // Also clean temp LaTeX files
-        let latexSignals = NSTemporaryDirectory() + "latex_signals"
-        let latexWork = NSTemporaryDirectory() + "latex_work"
-        try? fm.removeItem(atPath: latexSignals)
-        try? fm.removeItem(atPath: latexWork)
+        // Also clean temp LaTeX files.
+        try? fm.removeItem(atPath: NSTemporaryDirectory() + "latex_signals")
+        try? fm.removeItem(atPath: NSTemporaryDirectory() + "latex_work")
     }
 }
 

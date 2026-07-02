@@ -17,6 +17,8 @@
 		9471A8561896430AA109E9BA /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F89F24366B2E40D390AEBB54 /* llama.xcframework */; };
 		A1B2C3D4E5F6789012345678 /* Monaco in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6789012345679 /* Monaco */; };
 		A63BD55BBE3746868E10CA1F /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE440FAB6ABE468783D3B3AD /* Accelerate.framework */; };
+		B9E8BB722FCD6E1700795FDF /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B9E8BB712FCD6E1700795FDF /* UniformTypeIdentifiers.framework */; };
+		B9E8BB802FCD6E1700795FDF /* FileProviderExt.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B9E8BB702FCD6E1700795FDF /* FileProviderExt.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		EF00000000000000000000E1 /* executorch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F1 /* executorch.xcframework */; };
 		EF00000000000000000000E3 /* backend_xnnpack.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F2 /* backend_xnnpack.xcframework */; };
 		EF00000000000000000000E5 /* backend_coreml.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F3 /* backend_coreml.xcframework */; };
@@ -26,6 +28,16 @@
 		EF00000000000000000000EC /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = EF00000000000000000000F7 /* libsqlite3.tbd */; };
 		ST00000000000000000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = ST00000000000000000001 /* SwiftTerm */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B9E8BB822FCD6E1700795FDF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B98F680D2F2E4478007FD74B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B9E8BB6F2FCD6E1700795FDF;
+			remoteInfo = FileProviderExt;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
 		8F797F20F7514EB9BD301A4F /* Embed Frameworks */ = {
@@ -40,6 +52,17 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B9E8BB812FCD6E1700795FDF /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B9E8BB802FCD6E1700795FDF /* FileProviderExt.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +75,8 @@
 		A1B2C3D4E5F6789012345679 /* Monaco */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Monaco; sourceTree = "<group>"; };
 		AE440FAB6ABE468783D3B3AD /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		B98F68152F2E4478007FD74B /* CodeBench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodeBench.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B9E8BB702FCD6E1700795FDF /* FileProviderExt.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FileProviderExt.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B9E8BB712FCD6E1700795FDF /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
 		EF00000000000000000000F1 /* executorch.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = executorch.xcframework; path = Frameworks/ExecuTorch/executorch.xcframework; sourceTree = "<group>"; };
 		EF00000000000000000000F2 /* backend_xnnpack.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = backend_xnnpack.xcframework; path = Frameworks/ExecuTorch/backend_xnnpack.xcframework; sourceTree = "<group>"; };
 		EF00000000000000000000F3 /* backend_coreml.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = backend_coreml.xcframework; path = Frameworks/ExecuTorch/backend_coreml.xcframework; sourceTree = "<group>"; };
@@ -62,10 +87,28 @@
 		F89F24366B2E40D390AEBB54 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = Frameworks/llama.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B9E8BB7C2FCD6E1700795FDF /* Exceptions for "FileProviderExt" folder in "FileProviderExt" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B9E8BB6F2FCD6E1700795FDF /* FileProviderExt */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B98F68172F2E4478007FD74B /* CodeBench */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = CodeBench;
+			sourceTree = "<group>";
+		};
+		B9E8BB732FCD6E1700795FDF /* FileProviderExt */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B9E8BB7C2FCD6E1700795FDF /* Exceptions for "FileProviderExt" folder in "FileProviderExt" target */,
+			);
+			path = FileProviderExt;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -90,6 +133,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B9E8BB6D2FCD6E1700795FDF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B9E8BB722FCD6E1700795FDF /* UniformTypeIdentifiers.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -107,6 +158,7 @@
 				EF00000000000000000000F5 /* threadpool.xcframework */,
 				EF00000000000000000000F6 /* CoreML.framework */,
 				EF00000000000000000000F7 /* libsqlite3.tbd */,
+				B9E8BB712FCD6E1700795FDF /* UniformTypeIdentifiers.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -120,6 +172,7 @@
 				4C1A8B7A7E0B4C4E9FA4D2F2 /* CodeBench/Resources/KaTeX */,
 				4C1A8B7A7E0B4C4E9FA4D2F4 /* CodeBench/Resources/LibraryDocs */,
 				A1B2C3D4E5F6789012345679 /* Monaco */,
+				B9E8BB732FCD6E1700795FDF /* FileProviderExt */,
 				AC6B6909E0DB480D961E1DBD /* Frameworks */,
 				B98F68162F2E4478007FD74B /* Products */,
 			);
@@ -129,6 +182,7 @@
 			isa = PBXGroup;
 			children = (
 				B98F68152F2E4478007FD74B /* CodeBench.app */,
+				B9E8BB702FCD6E1700795FDF /* FileProviderExt.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -146,10 +200,12 @@
 				FE439133A26945B5B2FB0E5B /* Install Python */,
 				B946978B2FA1E00000CDEDED /* ShellScript */,
 				8F797F20F7514EB9BD301A4F /* Embed Frameworks */,
+				B9E8BB812FCD6E1700795FDF /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B9E8BB832FCD6E1700795FDF /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B98F68172F2E4478007FD74B /* CodeBench */,
@@ -162,6 +218,28 @@
 			productReference = B98F68152F2E4478007FD74B /* CodeBench.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B9E8BB6F2FCD6E1700795FDF /* FileProviderExt */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B9E8BB7D2FCD6E1700795FDF /* Build configuration list for PBXNativeTarget "FileProviderExt" */;
+			buildPhases = (
+				B9E8BB6C2FCD6E1700795FDF /* Sources */,
+				B9E8BB6D2FCD6E1700795FDF /* Frameworks */,
+				B9E8BB6E2FCD6E1700795FDF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B9E8BB732FCD6E1700795FDF /* FileProviderExt */,
+			);
+			name = FileProviderExt;
+			packageProductDependencies = (
+			);
+			productName = FileProviderExt;
+			productReference = B9E8BB702FCD6E1700795FDF /* FileProviderExt.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -169,11 +247,14 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2620;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					B98F68142F2E4478007FD74B = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					B9E8BB6F2FCD6E1700795FDF = {
+						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
 			};
@@ -195,6 +276,7 @@
 			projectRoot = "";
 			targets = (
 				B98F68142F2E4478007FD74B /* CodeBench */,
+				B9E8BB6F2FCD6E1700795FDF /* FileProviderExt */,
 			);
 		};
 /* End PBXProject section */
@@ -208,6 +290,13 @@
 				4C1A8B7A7E0B4C4E9FA4D2F1 /* CodeBench/Resources/KaTeX in Resources */,
 				4C1A8B7A7E0B4C4E9FA4D2F3 /* CodeBench/Resources/LibraryDocs in Resources */,
 				A1B2C3D4E5F6789012345678 /* Monaco in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B9E8BB6E2FCD6E1700795FDF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -251,7 +340,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then\n  HOST_ARCH=$(uname -m)\n  if [ \"$HOST_ARCH\" = \"x86_64\" ]; then\n    export ARCHS=\"x86_64\"\n  else\n    export ARCHS=\"arm64\"\n  fi\nfi\nsource \"$PROJECT_DIR/Frameworks/Python.xcframework/build/utils.sh\"\ninstall_python Frameworks/Python.xcframework app_packages\n\n# Bundle ffmpeg dylibs for PyAV\nFFMPEG_SRC=\"$PROJECT_DIR/Frameworks/ffmpeg\"\nFFMPEG_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$FFMPEG_SRC\" ]; then\n  echo \"Bundling ffmpeg dylibs...\"\n  for dylib in \"$FFMPEG_SRC\"/*.dylib; do\n    [ -L \"$dylib\" ] && continue\n    name=$(basename \"$dylib\")\n    short=$(echo \"$name\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n    cp \"$dylib\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n    if [ -f \"$FFMPEG_DST/$short\" ]; then\n      install_name_tool -id \"@rpath/$short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      for dep in $(otool -L \"$FFMPEG_DST/$short\" 2>/dev/null | grep '/tmp/ffmpeg-ios' | awk '{print $1}'); do\n        dep_short=$(basename \"$dep\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n        install_name_tool -change \"$dep\" \"@rpath/$dep_short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      echo \"  Bundled: $short\"\n    fi\n  done\nfi\n\n# Bundle LaTeX frameworks (pdftex, kpathsea, ios_system)\nLATEX_SRC=\"$PROJECT_DIR/Frameworks/latex\"\nLATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$LATEX_SRC\" ]; then\n  echo \"Bundling LaTeX frameworks...\"\n  for xcfw in pdftex kpathsea ios_system; do\n    FW_DIR=\"$LATEX_SRC/$xcfw.xcframework\"\n    if [ -d \"$FW_DIR/ios-arm64/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64/$xcfw.framework\"\n    elif [ -d \"$FW_DIR/ios-arm64_armv7/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64_armv7/$xcfw.framework\"\n    else\n      continue\n    fi\n    rm -rf \"$LATEX_DST/$xcfw.framework\"\n    cp -R \"$SRC_FW\" \"$LATEX_DST/$xcfw.framework\"\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$LATEX_DST/$xcfw.framework\" 2>/dev/null || true\n    echo \"  Bundled: $xcfw.framework\"\n  done\n  # Copy texmf support files\n  TEXMF_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/latex/texmf\"\n  if [ -d \"$LATEX_SRC/texmf\" ]; then\n    mkdir -p \"$TEXMF_DST\"\n    cp -R \"$LATEX_SRC/texmf/\" \"$TEXMF_DST/\"\n    echo \"  Bundled: texmf ($(find $TEXMF_DST -type f | wc -l | tr -d ' ') files)\"\n  fi\nfi\n\n# Bundle KaTeX (JS + CSS + fonts) for LaTeX rendering in WKWebView\nKATEX_SRC=\"$PROJECT_DIR/Frameworks/katex\"\nKATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/katex\"\nif [ -d \"$KATEX_SRC\" ]; then\n  echo \"Bundling KaTeX...\"\n  mkdir -p \"$KATEX_DST/fonts\"\n  cp \"$KATEX_SRC/katex.min.js\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex.min.css\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex_template.html\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC\"/fonts/* \"$KATEX_DST/fonts/\" 2>/dev/null || true\n  echo \"  Bundled: KaTeX\"\nfi\n\n# Bundle Fortran runtime stubs for scipy (arpack/propack need _Fortran* symbols)\nFORTRAN_STUB_SRC=\"$PROJECT_DIR/Frameworks/fortran_stubs/libfortran_io_stubs.dylib\"\nFORTRAN_STUB_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/libfortran_io_stubs.dylib\"\nif [ -f \"$FORTRAN_STUB_SRC\" ]; then\n  cp \"$FORTRAN_STUB_SRC\" \"$FORTRAN_STUB_DST\"\n  install_name_tool -id \"@rpath/libfortran_io_stubs.dylib\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  echo \"  Bundled: libfortran_io_stubs.dylib\"\nfi\n\n# Rewrite av.*.framework LC_LOAD_DYLIB entries that hard-code /tmp/ffmpeg-ios\n# build paths → @rpath (ffmpeg dylibs are bundled above in Frameworks/).\nfor fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.av.*.framework; do\n  [ -d \"$fw\" ] || continue\n  bin=\"$fw/$(basename $fw .framework)\"\n  [ -f \"$bin\" ] || continue\n  for dep in $(otool -L \"$bin\" 2>/dev/null | awk '{print $1}' | grep \"/tmp/ffmpeg-ios\"); do\n    name=$(basename \"$dep\")\n    install_name_tool -change \"$dep\" \"@rpath/$name\" \"$bin\" 2>/dev/null || true\n  done\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\ndone\necho \"  Rewired av.*.framework → @rpath ffmpeg\"\n\n# Bundle scipy aux dylibs (scipy.special's _ufuncs.so / _gufuncs.so / etc.\n# load libsf_error_state.dylib via @rpath — dyld searches .app/Frameworks/).\nSCIPY_AUX_SRC=\"$PROJECT_DIR/Frameworks/scipy_aux\"\nif [ -d \"$SCIPY_AUX_SRC\" ]; then\n  for dylib in \"$SCIPY_AUX_SRC\"/*.dylib; do\n    [ -f \"$dylib\" ] || continue\n    name=$(basename \"$dylib\")\n    cp \"$dylib\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\"\n    install_name_tool -id \"@rpath/$name\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    echo \"  Bundled scipy aux: $name\"\n  done\nfi\n\n# Bundle cairo dylib for cairocffi / cairosvg (find_library('cairo') looks in the app's Frameworks/ via @rpath at runtime)\nCAIRO_SRC=\"$PROJECT_DIR/Frameworks/cairo/libcairo.dylib\"\nCAIRO_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/libcairo.dylib\"\nif [ -f \"$CAIRO_SRC\" ]; then\n  cp \"$CAIRO_SRC\" \"$CAIRO_DST\"\n  install_name_tool -id \"@rpath/libcairo.dylib\" \"$CAIRO_DST\" 2>/dev/null || true\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$CAIRO_DST\" 2>/dev/null || true\n  echo \"  Bundled: libcairo.dylib\"\nfi\n\n# Bundle torch dylibs (libtorch_python + libshm) for native `import torch`\nTORCH_LIB_SRC=\"$PROJECT_DIR/app_packages/site-packages/torch/lib\"\nTORCH_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$TORCH_LIB_SRC\" ]; then\n  echo \"Bundling torch dylibs...\"\n  for dylib in libtorch_python.dylib libshm.dylib; do\n    if [ -f \"$TORCH_LIB_SRC/$dylib\" ]; then\n      cp \"$TORCH_LIB_SRC/$dylib\" \"$TORCH_DST/$dylib\"\n      install_name_tool -id \"@rpath/$dylib\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      for dep in $(otool -L \"$TORCH_DST/$dylib\" 2>/dev/null | grep -oE '@loader_path/[^ ]+'); do\n        depname=$(basename \"$dep\")\n        install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      echo \"  Bundled: $dylib\"\n    fi\n  done\n  # install_python has already converted _C.cpython-*.so into a proper\n  # iOS .framework bundle at Frameworks/site-packages.torch._C.framework/.\n  # That framework's binary still references @loader_path/lib/libtorch_python.dylib,\n  # which won't resolve (the framework's @loader_path is its own dir, no lib/\n  # subdir). Rewrite to @rpath so dyld finds our sibling framework dylibs.\n  for fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C.framework \\\n            \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C_flatbuffer.framework; do\n    [ -d \"$fw\" ] || continue\n    bin=\"$fw/$(basename $fw .framework)\"\n    [ -f \"$bin\" ] || continue\n    for dep in $(otool -L \"$bin\" 2>/dev/null | grep -oE '@loader_path/lib/[^ ]+'); do\n      depname=$(basename \"$dep\")\n      install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$bin\" 2>/dev/null || true\n    done\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\n    echo \"  Rewired: $(basename $fw)\"\n  done\nfi\n";
+			shellScript = "set -e\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then\n  HOST_ARCH=$(uname -m)\n  if [ \"$HOST_ARCH\" = \"x86_64\" ]; then\n    export ARCHS=\"x86_64\"\n  else\n    export ARCHS=\"arm64\"\n  fi\nfi\nsource \"$PROJECT_DIR/Frameworks/Python.xcframework/build/utils.sh\"\ninstall_python Frameworks/Python.xcframework app_packages\n\n# Bundle ffmpeg dylibs for PyAV\nFFMPEG_SRC=\"$PROJECT_DIR/Frameworks/ffmpeg\"\nFFMPEG_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$FFMPEG_SRC\" ]; then\n  echo \"Bundling ffmpeg dylibs...\"\n  for dylib in \"$FFMPEG_SRC\"/*.dylib; do\n    [ -L \"$dylib\" ] && continue\n    name=$(basename \"$dylib\")\n    short=$(echo \"$name\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n    cp \"$dylib\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n    if [ -f \"$FFMPEG_DST/$short\" ]; then\n      install_name_tool -id \"@rpath/$short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      for dep in $(otool -L \"$FFMPEG_DST/$short\" 2>/dev/null | grep '/tmp/ffmpeg-ios' | awk '{print $1}'); do\n        dep_short=$(basename \"$dep\" | sed 's/\\([0-9]*\\)\\.[0-9]*\\.[0-9]*\\.dylib/\\1.dylib/')\n        install_name_tool -change \"$dep\" \"@rpath/$dep_short\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FFMPEG_DST/$short\" 2>/dev/null || true\n      echo \"  Bundled: $short\"\n    fi\n  done\nfi\n\n# Bundle LaTeX frameworks (pdftex, kpathsea, ios_system)\nLATEX_SRC=\"$PROJECT_DIR/Frameworks/latex\"\nLATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$LATEX_SRC\" ]; then\n  echo \"Bundling LaTeX frameworks...\"\n  for xcfw in pdftex kpathsea ios_system; do\n    FW_DIR=\"$LATEX_SRC/$xcfw.xcframework\"\n    if [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ] && [ -d \"$FW_DIR/ios-arm64-simulator/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64-simulator/$xcfw.framework\"\n    elif [ -d \"$FW_DIR/ios-arm64/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64/$xcfw.framework\"\n    elif [ -d \"$FW_DIR/ios-arm64_armv7/$xcfw.framework\" ]; then\n      SRC_FW=\"$FW_DIR/ios-arm64_armv7/$xcfw.framework\"\n    else\n      continue\n    fi\n    rm -rf \"$LATEX_DST/$xcfw.framework\"\n    cp -R \"$SRC_FW\" \"$LATEX_DST/$xcfw.framework\"\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$LATEX_DST/$xcfw.framework\" 2>/dev/null || true\n    echo \"  Bundled: $xcfw.framework\"\n  done\n  # Copy texmf support files\n  TEXMF_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/latex/texmf\"\n  if [ -d \"$LATEX_SRC/texmf\" ]; then\n    mkdir -p \"$TEXMF_DST\"\n    cp -R \"$LATEX_SRC/texmf/\" \"$TEXMF_DST/\"\n    echo \"  Bundled: texmf ($(find $TEXMF_DST -type f | wc -l | tr -d ' ') files)\"\n  fi\nfi\n\n# Bundle KaTeX (JS + CSS + fonts) for LaTeX rendering in WKWebView\nKATEX_SRC=\"$PROJECT_DIR/Frameworks/katex\"\nKATEX_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/katex\"\nif [ -d \"$KATEX_SRC\" ]; then\n  echo \"Bundling KaTeX...\"\n  mkdir -p \"$KATEX_DST/fonts\"\n  cp \"$KATEX_SRC/katex.min.js\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex.min.css\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC/katex_template.html\" \"$KATEX_DST/\" 2>/dev/null || true\n  cp \"$KATEX_SRC\"/fonts/* \"$KATEX_DST/fonts/\" 2>/dev/null || true\n  echo \"  Bundled: KaTeX\"\nfi\n\n# Bundle Fortran runtime stubs for scipy (arpack/propack need _Fortran* symbols)\nFORTRAN_STUB_SRC=\"$PROJECT_DIR/Frameworks/fortran_stubs/libfortran_io_stubs.dylib\"\nFORTRAN_STUB_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/libfortran_io_stubs.dylib\"\nif [ -f \"$FORTRAN_STUB_SRC\" ]; then\n  cp \"$FORTRAN_STUB_SRC\" \"$FORTRAN_STUB_DST\"\n  install_name_tool -id \"@rpath/libfortran_io_stubs.dylib\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$FORTRAN_STUB_DST\" 2>/dev/null || true\n  echo \"  Bundled: libfortran_io_stubs.dylib\"\nfi\n\n# Rewrite av.*.framework LC_LOAD_DYLIB entries that hard-code /tmp/ffmpeg-ios\n# build paths → @rpath (ffmpeg dylibs are bundled above in Frameworks/).\nfor fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.av.*.framework; do\n  [ -d \"$fw\" ] || continue\n  bin=\"$fw/$(basename $fw .framework)\"\n  [ -f \"$bin\" ] || continue\n  for dep in $(otool -L \"$bin\" 2>/dev/null | awk '{print $1}' | grep \"/tmp/ffmpeg-ios\"); do\n    name=$(basename \"$dep\")\n    install_name_tool -change \"$dep\" \"@rpath/$name\" \"$bin\" 2>/dev/null || true\n  done\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\ndone\necho \"  Rewired av.*.framework → @rpath ffmpeg\"\n\n# Bundle scipy aux dylibs (scipy.special's _ufuncs.so / _gufuncs.so / etc.\n# load libsf_error_state.dylib via @rpath — dyld searches .app/Frameworks/).\nSCIPY_AUX_SRC=\"$PROJECT_DIR/Frameworks/scipy_aux\"\nif [ -d \"$SCIPY_AUX_SRC\" ]; then\n  for dylib in \"$SCIPY_AUX_SRC\"/*.dylib; do\n    [ -f \"$dylib\" ] || continue\n    name=$(basename \"$dylib\")\n    cp \"$dylib\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\"\n    install_name_tool -id \"@rpath/$name\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/$name\" 2>/dev/null || true\n    echo \"  Bundled scipy aux: $name\"\n  done\nfi\n\n# Bundle cairo dylib for cairocffi / cairosvg (find_library('cairo') looks in the app's Frameworks/ via @rpath at runtime)\nCAIRO_SRC=\"$PROJECT_DIR/Frameworks/cairo/libcairo.dylib\"\nCAIRO_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks/libcairo.dylib\"\nif [ -f \"$CAIRO_SRC\" ]; then\n  cp \"$CAIRO_SRC\" \"$CAIRO_DST\"\n  install_name_tool -id \"@rpath/libcairo.dylib\" \"$CAIRO_DST\" 2>/dev/null || true\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$CAIRO_DST\" 2>/dev/null || true\n  echo \"  Bundled: libcairo.dylib\"\nfi\n\n# Auto-unpack the compressed libtorch_python.dylib if it is missing (ships as a .applzma blob; without the unpacked dylib `import torch` dies with @rpath/libtorch_python.dylib not loaded).\nif [ ! -f \"$PROJECT_DIR/app_packages/site-packages/torch/lib/libtorch_python.dylib\" ] && [ -f \"$PROJECT_DIR/Sources/PyTorch/torch_dylib/libtorch_python.dylib.applzma\" ]; then\n  echo \"Unpacking libtorch_python.dylib (missing) ...\"\n  xcrun --sdk macosx swift \"$PROJECT_DIR/scripts/unpack-torch-dylib.swift\" || echo \"WARN: torch unpack failed\"\nfi\n# Bundle torch dylibs (libtorch_python + libshm) for native `import torch`\nTORCH_LIB_SRC=\"$PROJECT_DIR/app_packages/site-packages/torch/lib\"\nTORCH_DST=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"\nif [ -d \"$TORCH_LIB_SRC\" ]; then\n  echo \"Bundling torch dylibs...\"\n  for dylib in libtorch_python.dylib libshm.dylib; do\n    if [ -f \"$TORCH_LIB_SRC/$dylib\" ]; then\n      cp \"$TORCH_LIB_SRC/$dylib\" \"$TORCH_DST/$dylib\"\n      install_name_tool -id \"@rpath/$dylib\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      for dep in $(otool -L \"$TORCH_DST/$dylib\" 2>/dev/null | grep -oE '@loader_path/[^ ]+'); do\n        depname=$(basename \"$dep\")\n        install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      done\n      codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$TORCH_DST/$dylib\" 2>/dev/null || true\n      echo \"  Bundled: $dylib\"\n    fi\n  done\n  # install_python has already converted _C.cpython-*.so into a proper\n  # iOS .framework bundle at Frameworks/site-packages.torch._C.framework/.\n  # That framework's binary still references @loader_path/lib/libtorch_python.dylib,\n  # which won't resolve (the framework's @loader_path is its own dir, no lib/\n  # subdir). Rewrite to @rpath so dyld finds our sibling framework dylibs.\n  for fw in \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C.framework \\\n            \"$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks\"/site-packages.torch._C_flatbuffer.framework; do\n    [ -d \"$fw\" ] || continue\n    bin=\"$fw/$(basename $fw .framework)\"\n    [ -f \"$bin\" ] || continue\n    for dep in $(otool -L \"$bin\" 2>/dev/null | grep -oE '@loader_path/lib/[^ ]+'); do\n      depname=$(basename \"$dep\")\n      install_name_tool -change \"$dep\" \"@rpath/$depname\" \"$bin\" 2>/dev/null || true\n    done\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$fw\" 2>/dev/null || true\n    echo \"  Rewired: $(basename $fw)\"\n  done\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -263,7 +352,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B9E8BB6C2FCD6E1700795FDF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B9E8BB832FCD6E1700795FDF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B9E8BB6F2FCD6E1700795FDF /* FileProviderExt */;
+			targetProxy = B9E8BB822FCD6E1700795FDF /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B98F68292F2E4479007FD74B /* Debug */ = {
@@ -395,8 +499,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CodeBench/CodeBench.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEPLOYMENT_POSTPROCESSING = NO;
 				DEVELOPMENT_TEAM = LYK4LV2859;
 				ENABLE_BITCODE = NO;
@@ -405,9 +510,9 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
-					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/ios-arm64",
-					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/ios-arm64",
-					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/ios-arm64_armv7",
+					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/$(LATEX_PDFTEX_SLICE)",
+					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/$(LATEX_KPATHSEA_SLICE)",
+					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/$(LATEX_IOSSYSTEM_SLICE)",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -420,6 +525,12 @@
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LATEX_IOSSYSTEM_SLICE = "ios-arm64_armv7";
+				"LATEX_IOSSYSTEM_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
+				LATEX_KPATHSEA_SLICE = "ios-arm64";
+				"LATEX_KPATHSEA_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
+				LATEX_PDFTEX_SLICE = "ios-arm64";
+				"LATEX_PDFTEX_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -460,8 +571,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CodeBench/CodeBench.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEPLOYMENT_POSTPROCESSING = NO;
 				DEVELOPMENT_TEAM = LYK4LV2859;
 				ENABLE_BITCODE = NO;
@@ -470,9 +582,9 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
-					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/ios-arm64",
-					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/ios-arm64",
-					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/ios-arm64_armv7",
+					"$(PROJECT_DIR)/Frameworks/latex/pdftex.xcframework/$(LATEX_PDFTEX_SLICE)",
+					"$(PROJECT_DIR)/Frameworks/latex/kpathsea.xcframework/$(LATEX_KPATHSEA_SLICE)",
+					"$(PROJECT_DIR)/Frameworks/latex/ios_system.xcframework/$(LATEX_IOSSYSTEM_SLICE)",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
@@ -485,6 +597,12 @@
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LATEX_IOSSYSTEM_SLICE = "ios-arm64_armv7";
+				"LATEX_IOSSYSTEM_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
+				LATEX_KPATHSEA_SLICE = "ios-arm64";
+				"LATEX_KPATHSEA_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
+				LATEX_PDFTEX_SLICE = "ios-arm64";
+				"LATEX_PDFTEX_SLICE[sdk=iphonesimulator*]" = "ios-arm64-simulator";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -520,6 +638,68 @@
 			};
 			name = Release;
 		};
+		B9E8BB7E2FCD6E1700795FDF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FileProviderExt/FileProviderExt.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = LYK4LV2859;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FileProviderExt/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = FileProviderExt;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench.FileProviderRep;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B9E8BB7F2FCD6E1700795FDF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FileProviderExt/FileProviderExt.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = LYK4LV2859;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FileProviderExt/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = FileProviderExt;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench.FileProviderRep;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -537,6 +717,15 @@
 			buildConfigurations = (
 				B98F682C2F2E4479007FD74B /* Debug */,
 				B98F682D2F2E4479007FD74B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B9E8BB7D2FCD6E1700795FDF /* Build configuration list for PBXNativeTarget "FileProviderExt" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B9E8BB7E2FCD6E1700795FDF /* Debug */,
+				B9E8BB7F2FCD6E1700795FDF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

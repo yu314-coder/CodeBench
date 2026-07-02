@@ -16,6 +16,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         window?.makeKeyAndVisible()
 
+        // Dark-only app: force the entire window — every view controller,
+        // every modal, and the onboarding flow — to dark so UIKit system
+        // dynamic colors can never resolve to their light / white variants.
+        // (Light / auto device appearance was turning the content pane solid
+        // white while the hard-coded-dark sidebar stayed dark; the in-app
+        // theme is dark everywhere.)
+        window?.overrideUserInterfaceStyle = .dark
+
         // Pre-warm a WKWebView so the first preview pane / pywebview
         // page comes up instantly instead of waiting on WebContent
         // process launch (which is 150-400 ms cold).
@@ -43,6 +51,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
+    /// About to switch away (very often to the Files app) — push the latest
+    /// Workspace state so the CodeBench Location is up to date when they look.
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        FileProviderRegistration.signalChange()
+    }
+
+    /// Returning to CodeBench — re-signal in case the Location drifted.
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        FileProviderRegistration.signalChange()
+    }
+
     /// Already-running app, user opens another file via Files /
     /// Share Sheet / drag-drop while CodeBench is foreground.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
@@ -56,19 +75,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// observer in CodeEditorViewController loads the most recent one.
     private func handleIncomingURLs(_ contexts: Set<UIOpenURLContext>) {
         let fm = FileManager.default
-        guard let docsBase = fm.urls(for: .documentDirectory,
-                                     in: .userDomainMask).first else { return }
-        let importedDir = docsBase.appendingPathComponent("Imported")
+        // Inside the App Group Workspace so imported files show in the Files
+        // Location alongside the user's projects.
+        let importedDir = AppPaths.importedURL
         try? fm.createDirectory(at: importedDir,
                                 withIntermediateDirectories: true)
 
         for ctx in contexts {
             let src = ctx.url
-            // Files app URLs are security-scoped — must start access
-            // before reading and stop after copying.
-            let scoped = src.startAccessingSecurityScopedResource()
-            defer { if scoped { src.stopAccessingSecurityScopedResource() } }
-
             // Pick a unique destination filename so re-importing doesn't
             // clobber an earlier copy.
             var dst = importedDir.appendingPathComponent(src.lastPathComponent)
@@ -81,17 +95,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 dst = importedDir.appendingPathComponent(candidateName)
                 n += 1
             }
+            let dstFinal = dst
 
-            do {
-                try fm.copyItem(at: src, to: dst)
-                NSLog("[scene] imported %@ → %@",
-                      src.lastPathComponent, dst.path)
-                NotificationCenter.default.post(name: .openExternalFile,
-                                                object: dst)
-            } catch {
-                NSLog("[scene] import failed for %@: %@",
-                      src.lastPathComponent,
-                      error.localizedDescription)
+            // Copy OFF the main thread. A large file (video, dataset, or a big
+            // HTML embedding a base64 video) makes a synchronous copyItem block
+            // the UI — the app looks frozen during "Open with…". The security-
+            // scoped access must stay open for the whole copy, so we start/stop
+            // it inside the background closure and post the notification back on
+            // main once the copy finishes.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let scoped = src.startAccessingSecurityScopedResource()
+                defer { if scoped { src.stopAccessingSecurityScopedResource() } }
+                do {
+                    try fm.copyItem(at: src, to: dstFinal)
+                    NSLog("[scene] imported %@ → %@", src.lastPathComponent, dstFinal.path)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: .openExternalFile, object: dstFinal)
+                    }
+                } catch {
+                    NSLog("[scene] import failed for %@: %@",
+                          src.lastPathComponent, error.localizedDescription)
+                }
             }
         }
     }

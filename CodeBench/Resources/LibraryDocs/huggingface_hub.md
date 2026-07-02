@@ -263,7 +263,7 @@ r = requests.get(meta.location, stream=True, timeout=60)
 
 ## iOS notes
 
-- Always set `HF_HOME` to `~/Documents/…` before any HF call — the default cache is in `~/Library/Caches/` which iOS may purge.
+- Always set `HF_HOME` to `~/…` before any HF call — the default cache is in `~/Library/Caches/` which iOS may purge.
 - The first download over ~200 MB may be interrupted by iOS foreground restrictions if the app backgrounds; `resume_download=True` (the default) picks up where it left off.
 - `snapshot_download(allow_patterns=[…])` is crucial for big repos — a full SD-XL snapshot is 18 GB but the 100 MB you actually need is often just `*.json` + one `*.safetensors`.
 - Use the **Inference API** (`InferenceClient`) for anything bigger than a tiny GPT-2 — running a 7B model on iOS needs 4-bit quant and careful memory management; letting HF host it is trivially faster.

@@ -50,7 +50,7 @@ rot = src.rotate(15, expand=True)
 
 ```python
 import os
-docs = os.path.expanduser("~/Documents")
+docs = os.path.expanduser("~")
 img = Image.open(os.path.join(docs, "photo.jpg"))
 print(img.size, img.mode)       # (W, H), "RGB"
 img.thumbnail((200, 200))       # in-place resize, keeps aspect

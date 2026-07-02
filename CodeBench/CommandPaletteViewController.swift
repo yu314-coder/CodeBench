@@ -25,7 +25,7 @@ final class CommandPaletteViewController: UIViewController {
         var subtitle: String {
             switch self {
             case .file(let url):
-                let docs = NSHomeDirectory() + "/Documents/Workspace/"
+                let docs = AppPaths.workspaceURL.path + "/"
                 return url.path.replacingOccurrences(of: docs, with: "")
             case .command(_, let s, _, _): return s
             }

@@ -26,10 +26,12 @@ extension MonacoEditorView {
     /// Path used by the Python `debug` builtin to load saved breakpoints.
     /// Must match `bp_dir` in offlinai_shell.py `_debug`.
     fileprivate var breakpointStoreDir: URL {
-        let docs = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return docs.deletingLastPathComponent()
+        // Must match the Python `debug` builtin's bp_dir =
+        // expanduser("~/.codebench/breakpoints"). In CodeBench-on-python-ios-lib
+        // $HOME is the App Group container (AppPaths.homeBase), so anchor there —
+        // NOT the sandbox home — or the gutter dots and the debugger's
+        // saved_breakpoints would point at different directories.
+        return AppPaths.homeBase
             .appendingPathComponent(".codebench", isDirectory: true)
             .appendingPathComponent("breakpoints", isDirectory: true)
     }

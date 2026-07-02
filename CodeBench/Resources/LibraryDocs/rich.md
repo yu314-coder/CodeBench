@@ -78,7 +78,7 @@ for _ in track(range(1000), description="Processing…"):
 
 ```python
 from rich.tree import Tree
-t = Tree("~/Documents")
+t = Tree("~")
 d = t.add("Workspace")
 d.add("main.py")
 d.add("pip_demo.py")

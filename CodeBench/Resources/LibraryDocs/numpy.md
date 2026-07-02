@@ -115,4 +115,4 @@ dists = np.linalg.norm(A[:, None, :] - B[None, :, :], axis=2)  # (100, 50)
 
 - Full **OpenBLAS** is bundled — `np.linalg.solve()` on a 1000×1000 matrix runs in <0.1s on an M-series iPad.
 - No GPU acceleration via numpy — use **torch** or **Metal** (via **moderngl**) for that.
-- Saving `.npy` / `.npz` files to `~/Documents` works normally.
+- Saving `.npy` / `.npz` files to `~` works normally.

@@ -507,6 +507,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
     /// so the scroll position and any selection are preserved — this is what
     /// stops the iPad "panel scrolls back to the top every second" behaviour.
     private func refreshLiveValues() {
+        refreshHeroChips()
         guard let visible = table.indexPathsForVisibleRows else { return }
         for ip in visible {
             guard ip.section < sections.count,
@@ -525,20 +526,26 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         }
     }
 
-    /// Hero card mounted at the top of the table — violet glyph in a
-    /// tinted disc, big rounded title, muted subtitle. Mirrors the
-    /// look of the Hidden Games launcher header.
+    /// Hero card mounted at the top of the table — violet glyph + title,
+    /// a row of LIVE stat chips (memory / free / fps, refreshed by the
+    /// same 1 Hz timer as the table — no extra timers), and a row of
+    /// one-tap quick actions so the most-used tools (Games, QR, smoke
+    /// test, perf HUD) aren't buried sections deep.
+    private var heroMemValue: UILabel?
+    private var heroFreeValue: UILabel?
+    private var heroFPSValue: UILabel?
+
     private func makeHeroHeader() -> UIView {
         let container = UIView()
         container.backgroundColor = .clear
 
         let card = UIView()
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = UIColor(red: 0.071, green: 0.071, blue: 0.102, alpha: 1.0)
         card.layer.cornerRadius = 18
         card.layer.cornerCurve = .continuous
         card.layer.borderColor = UIColor(red: 0.388, green: 0.400, blue: 0.945, alpha: 0.15).cgColor
         card.layer.borderWidth = 1
+        LiquidGlass.apply(to: card, corner: 18, dim: 0.30)
 
         let icon = UIImageView()
         icon.translatesAutoresizingMaskIntoConstraints = false
@@ -554,13 +561,13 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
         titleLbl.text = "Developer"
         titleLbl.font = .systemFont(ofSize: 24, weight: .bold).rounded
-        titleLbl.textColor = UIColor(red: 0.941, green: 0.941, blue: 0.961, alpha: 1.0)
+        titleLbl.textColor = Self.fg
 
         let subLbl = UILabel()
         subLbl.translatesAutoresizingMaskIntoConstraints = false
         subLbl.text = "Memory probes, Python diagnostics, easter eggs."
         subLbl.font = .systemFont(ofSize: 12, weight: .regular)
-        subLbl.textColor = UIColor(red: 0.420, green: 0.420, blue: 0.502, alpha: 1.0)
+        subLbl.textColor = Self.muted
         subLbl.numberOfLines = 2
 
         let textCol = UIStackView(arrangedSubviews: [titleLbl, subLbl])
@@ -568,8 +575,86 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
         textCol.axis = .vertical
         textCol.spacing = 3
 
+        // ── Live stat chips ───────────────────────────────────────────
+        func makeChip(_ caption: String) -> (UIView, UILabel) {
+            let wrap = UIView()
+            wrap.backgroundColor = UIColor(white: 1, alpha: 0.04)
+            wrap.layer.cornerRadius = 10
+            wrap.layer.cornerCurve = .continuous
+            wrap.layer.borderWidth = 1
+            wrap.layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
+            let cap = UILabel()
+            cap.text = caption
+            cap.font = .systemFont(ofSize: 9, weight: .semibold)
+            cap.textColor = Self.muted
+            let val = UILabel()
+            val.text = "—"
+            val.font = .monospacedSystemFont(ofSize: 13, weight: .bold)
+            val.textColor = Self.monoVal
+            val.adjustsFontSizeToFitWidth = true
+            val.minimumScaleFactor = 0.6
+            let col = UIStackView(arrangedSubviews: [cap, val])
+            col.axis = .vertical
+            col.spacing = 1
+            col.translatesAutoresizingMaskIntoConstraints = false
+            wrap.addSubview(col)
+            NSLayoutConstraint.activate([
+                col.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 7),
+                col.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 10),
+                col.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -10),
+                col.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -7),
+            ])
+            return (wrap, val)
+        }
+        let (memChip, memVal) = makeChip("APP MEM")
+        let (freeChip, freeVal) = makeChip("OS FREE")
+        let (fpsChip, fpsVal) = makeChip("FPS")
+        heroMemValue = memVal
+        heroFreeValue = freeVal
+        heroFPSValue = fpsVal
+        let chipsRow = UIStackView(arrangedSubviews: [memChip, freeChip, fpsChip])
+        chipsRow.axis = .horizontal
+        chipsRow.spacing = 8
+        chipsRow.distribution = .fillEqually
+        chipsRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // ── Quick actions ─────────────────────────────────────────────
+        func makeQuick(_ title: String, _ symbol: String, _ action: Selector) -> UIButton {
+            let b = UIButton(type: .system)
+            var cfg = UIButton.Configuration.plain()
+            cfg.image = UIImage(systemName: symbol,
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+            cfg.imagePlacement = .top
+            cfg.imagePadding = 4
+            var attr = AttributeContainer()
+            attr.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+            cfg.attributedTitle = AttributedString(title, attributes: attr)
+            cfg.baseForegroundColor = Self.actionTint
+            cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 2, bottom: 8, trailing: 2)
+            b.configuration = cfg
+            b.backgroundColor = Self.actionTint.withAlphaComponent(0.07)
+            b.layer.cornerRadius = 10
+            b.layer.cornerCurve = .continuous
+            b.layer.borderWidth = 1
+            b.layer.borderColor = Self.actionTint.withAlphaComponent(0.20).cgColor
+            b.addTarget(self, action: action, for: .touchUpInside)
+            return b
+        }
+        let actionsRow = UIStackView(arrangedSubviews: [
+            makeQuick("Games", "gamecontroller.fill", #selector(quickOpenGames)),
+            makeQuick("QR code", "qrcode", #selector(quickOpenQR)),
+            makeQuick("Smoke test", "checklist", #selector(quickSmokeTest)),
+            makeQuick("Perf HUD", "gauge.with.needle", #selector(quickToggleHUD)),
+        ])
+        actionsRow.axis = .horizontal
+        actionsRow.spacing = 8
+        actionsRow.distribution = .fillEqually
+        actionsRow.translatesAutoresizingMaskIntoConstraints = false
+
         card.addSubview(icon)
         card.addSubview(textCol)
+        card.addSubview(chipsRow)
+        card.addSubview(actionsRow)
         container.addSubview(card)
 
         NSLayoutConstraint.activate([
@@ -586,9 +671,51 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             textCol.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 16),
             textCol.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
             textCol.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
-            textCol.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -18),
+
+            chipsRow.topAnchor.constraint(equalTo: textCol.bottomAnchor, constant: 14),
+            chipsRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            chipsRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+
+            actionsRow.topAnchor.constraint(equalTo: chipsRow.bottomAnchor, constant: 10),
+            actionsRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            actionsRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            actionsRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
         ])
+        refreshHeroChips()
         return container
+    }
+
+    private func refreshHeroChips() {
+        heroMemValue?.text = Self.formatBytes(Self.physFootprint())
+        heroFreeValue?.text = Self.formatBytes(Self.osAvailable())
+        heroFPSValue?.text = liveFPS > 0 ? String(format: "%.0f", liveFPS) : "—"
+    }
+
+    // Quick-action handlers (mirror the equivalent table rows).
+    @objc private func quickOpenGames() {
+        let nav = UINavigationController(rootViewController: HiddenGamesLauncher())
+        nav.modalPresentationStyle = .fullScreen
+        present(nav, animated: true)
+    }
+    @objc private func quickOpenQR() { presentQRGenerator() }
+    @objc private func quickSmokeTest() {
+        runPython(
+            "import importlib, time\n" +
+            "mods=['numpy','scipy','pandas','statsmodels','sympy','networkx','matplotlib','PIL','sklearn','shapely','pint','uncertainties','qrcode']\n" +
+            "ok=[]; bad=[]\n" +
+            "for m in mods:\n" +
+            "    try:\n" +
+            "        t=time.time(); importlib.import_module(m); ok.append('  + %s (%.0f ms)' % (m,(time.time()-t)*1000))\n" +
+            "    except Exception as e:\n" +
+            "        bad.append('  x %s: %s: %s' % (m, type(e).__name__, e))\n" +
+            "print('PASS %d/%d' % (len(ok), len(mods)))\n" +
+            "print('\\n'.join(ok))\n" +
+            "print('\\nFAIL:\\n'+'\\n'.join(bad) if bad else '\\nall core libraries import cleanly')",
+            title: "Smoke test")
+    }
+    @objc private func quickToggleHUD() {
+        guard let host = SecretFeatures.keyHostView() else { return }
+        PerformanceHUD.shared.toggle(in: host)
     }
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
@@ -812,7 +939,7 @@ final class DeveloperPanelViewController: UIViewController, UITableViewDataSourc
             // ── Easter eggs (direct triggers) ─────────────────────
             Section(title: "Easter eggs (direct)", icon: "gift", rows: [
                 .action(title: "Open Hidden Games",
-                        subtitle: "2048 · Dungeon · Space Invaders") { vc in
+                        subtitle: "6 games: 2048 · Mines · Sokoban · Codle · Lights Out · Slide 15") { vc in
                     let games = HiddenGamesLauncher()
                     let nav = UINavigationController(rootViewController: games)
                     nav.modalPresentationStyle = .fullScreen

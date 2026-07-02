@@ -1258,7 +1258,7 @@ final class LineBuffer {
         "ls", "man", "mkdir", "mv", "pwd", "quit", "rm", "rmdir",
         "tail", "touch", "tree", "uptime", "wc", "which",
         // Archive tools
-        "7z", "zip", "unzip", "tar", "gzip", "gunzip",
+        "7z", "zip", "unzip", "tar", "gzip", "gunzip", "extract", "unar",
         // Firmware analysis / extraction (binwalk-style)
         "binwalk", "simg2img",
         // Disk-usage family

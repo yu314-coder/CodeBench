@@ -22,6 +22,7 @@
 
 import UIKit
 import WebKit
+import PDFKit
 
 final class DataQuickLookViewController: UIViewController {
 
@@ -74,9 +75,121 @@ final class DataQuickLookViewController: UIViewController {
             renderImage()
         case "npy", "npz":
             renderNumPy()
+        case "md", "markdown", "mdown", "mkd", "mdwn":
+            renderMarkdown()
+        case "pdf":
+            renderPDF()
+        case "html", "htm", "xhtml", "svg":
+            renderWebFile()
         default:
-            renderText(language: ext)
+            // Never dump a binary file's bytes as "text" — that's what made
+            // a PDF (or any binary) show as random characters. Detect binary
+            // and show a readable hex view instead.
+            if isProbablyBinary() {
+                renderHexDump()
+            } else {
+                renderText(language: ext)
+            }
         }
+    }
+
+    // MARK: - PDF (PDFKit)
+
+    private func renderPDF() {
+        guard let doc = PDFDocument(url: fileURL) else {
+            renderError("Could not open PDF."); return
+        }
+        let pdfView = PDFView()
+        pdfView.translatesAutoresizingMaskIntoConstraints = false
+        pdfView.document = doc
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.backgroundColor = .black
+        view.addSubview(pdfView)
+        NSLayoutConstraint.activate([
+            pdfView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    // MARK: - HTML / SVG (rendered, not source) — load the file directly
+
+    private func renderWebFile() {
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.backgroundColor = .systemBackground
+        webView.isOpaque = false
+        view.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        // loadFileURL renders HTML/SVG and grants read access to sibling
+        // assets (css/js/images) in the same directory.
+        webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
+    }
+
+    // MARK: - Binary detection + hex view
+
+    /// Heuristic: a NUL byte, or >10% control chars in the first 8 KB → binary.
+    /// (Valid UTF-8 text — incl. multibyte — passes; PDFs/images/.so/.zip fail.)
+    private func isProbablyBinary() -> Bool {
+        guard let fh = try? FileHandle(forReadingFrom: fileURL) else { return false }
+        defer { try? fh.close() }
+        let sample = fh.readData(ofLength: 8192)
+        if sample.isEmpty { return false }
+        if sample.contains(0) { return true }
+        var control = 0
+        for b in sample where b < 9 || (b > 13 && b < 32) { control += 1 }
+        return Double(control) / Double(sample.count) > 0.10
+    }
+
+    /// Classic offset / hex / ASCII dump of the first 64 KB — useful for
+    /// .bin/.so/.pyc/.gguf/etc. instead of a screenful of garbage text.
+    private func renderHexDump() {
+        guard let fh = try? FileHandle(forReadingFrom: fileURL) else {
+            renderError("Could not read file."); return
+        }
+        defer { try? fh.close() }
+        let cap = 64 * 1024
+        let bytes = [UInt8](fh.readData(ofLength: cap))
+        let total = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? bytes.count
+        var rows = ""
+        var off = 0
+        while off < bytes.count {
+            let end = min(off + 16, bytes.count)
+            let chunk = bytes[off..<end]
+            let hex = chunk.map { String(format: "%02x", $0) }.joined(separator: " ")
+            let asc = chunk.map { (32...126).contains($0) ? String(UnicodeScalar($0)) : "." }.joined()
+            rows += "<tr><td class='off'>\(String(format: "%08x", off))</td><td class='hex'>\(hex)</td><td class='asc'>\(htmlEscape(asc))</td></tr>"
+            off += 16
+        }
+        let note = total > bytes.count
+            ? "<div class='meta'>binary · showing first \(bytes.count) of \(total) bytes</div>"
+            : "<div class='meta'>binary · \(total) bytes</div>"
+        let html = """
+        <!doctype html><html><head><meta charset='utf-8'>
+        <meta name='viewport' content='width=device-width,initial-scale=1'>
+        <style>
+            body { margin:0; padding:14px; background:#0a0a0f; color:#f0f0f5;
+                   font:11px/1.45 'SF Mono', Menlo, monospace; }
+            .meta { color:#a8a8b8; margin-bottom:10px; font-size:11px;
+                    font-family:-apple-system, sans-serif; }
+            table { border-collapse:collapse; }
+            td { padding:1px 10px 1px 0; white-space:pre; vertical-align:top; }
+            .off { color:#6b6b80; }
+            .hex { color:#c9c9e0; }
+            .asc { color:#a855f7; }
+        </style></head><body>\(note)<table><tbody>\(rows)</tbody></table></body></html>
+        """
+        mountHTML(html)
     }
 
     // MARK: - CSV
@@ -273,14 +386,21 @@ final class DataQuickLookViewController: UIViewController {
         <!doctype html><html><head><meta charset='utf-8'>
         <meta name='viewport' content='width=device-width,initial-scale=1'>
         <style>
-            html, body { margin:0; padding:0; background:#0a0a0f; color:#f0f0f5; }
-            pre { margin:0; padding:14px; font:13px/1.5 'SF Mono', Menlo, monospace;
+            :root { color-scheme: light dark; }
+            html, body { margin:0; padding:0; background:#ffffff; color:#1f2328;
+                         -webkit-text-size-adjust:100%; }
+            pre { margin:0; padding:16px; font:13px/1.55 'SF Mono', Menlo, monospace;
                   white-space:pre; tab-size:4; word-wrap:break-word; }
-            /* Tiny syntax sugar — JSON keys + numbers */
-            .key { color:#a855f7; }
-            .str { color:#fbbf24; }
-            .num { color:#34d399; }
-            .bool, .null { color:#06b6d4; }
+            /* Syntax sugar — JSON keys + values (light defaults; dark overrides below) */
+            .key { color:#8250df; }
+            .str { color:#0a3069; }
+            .num { color:#0550ae; }
+            .bool, .null { color:#cf222e; }
+            @media (prefers-color-scheme: dark) {
+                html, body { background:#0d1117; color:#e6edf3; }
+                .key { color:#a855f7; } .str { color:#fbbf24; }
+                .num { color:#34d399; } .bool, .null { color:#06b6d4; }
+            }
         </style></head><body>
         <pre id='content'>\(escaped)</pre>
         <script>
@@ -302,6 +422,160 @@ final class DataQuickLookViewController: UIViewController {
         """
         mountHTML(html)
     }
+
+    // MARK: - Markdown (rendered, not raw source)
+
+    private func renderMarkdown() {
+        guard let raw = try? readCapped(bytes: 5 * 1024 * 1024) else {
+            renderError("Could not read file."); return
+        }
+        let body = Self.markdownToHTML(raw)
+        let html = """
+        <!doctype html><html><head><meta charset='utf-8'>
+        <meta name='viewport' content='width=device-width,initial-scale=1'>
+        <style>\(Self.markdownCSS)</style></head>
+        <body><article class='md'>\(body)</article></body></html>
+        """
+        mountHTML(html)
+    }
+
+    /// Compact, dependency-free Markdown → HTML for the quick-look. Handles
+    /// fenced code blocks, ATX headings, hr, blockquotes, ordered/unordered
+    /// lists, GFM tables, paragraphs, and inline bold/italic/code/strike/
+    /// links/images. (Validated against the swift toolchain before shipping.)
+    static func markdownToHTML(_ md: String) -> String {
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;")
+             .replacingOccurrences(of: "<", with: "&lt;")
+             .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        func rx(_ s: String, _ pat: String, _ tmpl: String) -> String {
+            guard let re = try? NSRegularExpression(pattern: pat) else { return s }
+            return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: tmpl)
+        }
+        func inl(_ s: String) -> String {
+            var t = s
+            t = rx(t, "!\\[([^\\]]*)\\]\\(([^)\\s]+)[^)]*\\)", "<img alt=\"$1\" src=\"$2\">")
+            t = rx(t, "\\[([^\\]]+)\\]\\(([^)\\s]+)[^)]*\\)", "<a href=\"$2\">$1</a>")
+            t = rx(t, "`([^`]+)`", "<code>$1</code>")
+            t = rx(t, "\\*\\*([^*]+)\\*\\*", "<strong>$1</strong>")
+            t = rx(t, "__([^_]+)__", "<strong>$1</strong>")
+            t = rx(t, "(^|[^*\\w])\\*([^*\\n]+)\\*", "$1<em>$2</em>")
+            t = rx(t, "~~([^~]+)~~", "<del>$1</del>")
+            return t
+        }
+        let lines = md.components(separatedBy: "\n")
+        var out = ""; var i = 0; var listOpen = false; var listTag = "ul"
+        func closeList() { if listOpen { out += "</\(listTag)>"; listOpen = false } }
+        func isSpecial(_ t: String) -> Bool {
+            return t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
+                || t.hasPrefix("- ") || t.hasPrefix("* ") || t.hasPrefix("+ ")
+                || t == "---" || t == "***" || t == "___"
+                || (t.range(of: "^\\d+\\. ", options: .regularExpression) != nil) || t.contains("|")
+        }
+        func cells(_ s: String) -> [String] {
+            var x = s.trimmingCharacters(in: .whitespaces)
+            if x.hasPrefix("|") { x.removeFirst() }; if x.hasSuffix("|") { x.removeLast() }
+            return x.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        while i < lines.count {
+            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") {
+                closeList(); let lang = String(t.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var code = ""; i += 1
+                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    code += esc(lines[i]) + "\n"; i += 1
+                }
+                i += 1; let cls = lang.isEmpty ? "" : " class=\"language-\(esc(lang))\""
+                out += "<pre><code\(cls)>\(code)</code></pre>"; continue
+            }
+            if t.isEmpty { closeList(); i += 1; continue }
+            if t.hasPrefix("#") {
+                let h = t.prefix(while: { $0 == "#" }).count
+                if h >= 1 && h <= 6 {
+                    closeList(); let txt = String(t.dropFirst(h)).trimmingCharacters(in: .whitespaces)
+                    out += "<h\(h)>\(inl(esc(txt)))</h\(h)>"; i += 1; continue
+                }
+            }
+            if t == "---" || t == "***" || t == "___" { closeList(); out += "<hr>"; i += 1; continue }
+            if t.hasPrefix(">") {
+                closeList(); var q = ""
+                while i < lines.count {
+                    let tt = lines[i].trimmingCharacters(in: .whitespaces)
+                    if !tt.hasPrefix(">") { break }
+                    q += inl(esc(String(tt.dropFirst()).trimmingCharacters(in: .whitespaces))) + " "; i += 1
+                }
+                out += "<blockquote>\(q)</blockquote>"; continue
+            }
+            if t.contains("|"), i + 1 < lines.count,
+               lines[i+1].range(of: "^\\s*\\|?[\\s:|-]+\\|?\\s*$", options: .regularExpression) != nil,
+               lines[i+1].contains("-") {
+                closeList(); let header = cells(lines[i])
+                out += "<table><thead><tr>"
+                for c in header { out += "<th>\(inl(esc(c)))</th>" }
+                out += "</tr></thead><tbody>"; i += 2
+                while i < lines.count {
+                    let row = lines[i].trimmingCharacters(in: .whitespaces)
+                    if row.isEmpty || !row.contains("|") { break }
+                    out += "<tr>"; for c in cells(lines[i]) { out += "<td>\(inl(esc(c)))</td>" }
+                    out += "</tr>"; i += 1
+                }
+                out += "</tbody></table>"; continue
+            }
+            if t.hasPrefix("- ") || t.hasPrefix("* ") || t.hasPrefix("+ ") {
+                if !listOpen || listTag != "ul" { closeList(); out += "<ul>"; listOpen = true; listTag = "ul" }
+                out += "<li>\(inl(esc(String(t.dropFirst(2)))))</li>"; i += 1; continue
+            }
+            if let r = t.range(of: "^\\d+\\.\\s+", options: .regularExpression) {
+                if !listOpen || listTag != "ol" { closeList(); out += "<ol>"; listOpen = true; listTag = "ol" }
+                out += "<li>\(inl(esc(String(t[r.upperBound...]))))</li>"; i += 1; continue
+            }
+            closeList(); var p = inl(esc(t)); i += 1
+            while i < lines.count {
+                let tt = lines[i].trimmingCharacters(in: .whitespaces)
+                if isSpecial(tt) { break }
+                p += " " + inl(esc(tt)); i += 1
+            }
+            out += "<p>\(p)</p>"
+        }
+        closeList(); return out
+    }
+
+    static let markdownCSS = """
+    :root { color-scheme: light dark; }
+    html,body{ margin:0; padding:0; }
+    body{ font:16px/1.65 -apple-system,'SF Pro Text',system-ui,sans-serif;
+          background:#ffffff; color:#1f2328; -webkit-text-size-adjust:100%; }
+    .md{ max-width:780px; margin:0 auto; padding:22px 20px 80px; word-wrap:break-word; }
+    .md h1,.md h2,.md h3,.md h4{ font-weight:700; line-height:1.25; margin:1.3em 0 .5em; }
+    .md h1{ font-size:1.85em; border-bottom:1px solid #d0d7de; padding-bottom:.3em; }
+    .md h2{ font-size:1.45em; border-bottom:1px solid #d0d7de; padding-bottom:.3em; }
+    .md h3{ font-size:1.2em; } .md h4{ font-size:1em; }
+    .md p{ margin:.7em 0; }
+    .md a{ color:#0969da; text-decoration:none; } .md a:hover{ text-decoration:underline; }
+    .md code{ font:13.5px/1.4 'SF Mono',Menlo,monospace; background:rgba(135,131,120,.18);
+              padding:.15em .35em; border-radius:5px; }
+    .md pre{ background:#f6f8fa; padding:14px; border-radius:8px; overflow:auto; }
+    .md pre code{ background:none; padding:0; font-size:13px; line-height:1.5; }
+    .md ul,.md ol{ margin:.6em 0; padding-left:1.7em; } .md li{ margin:.25em 0; }
+    .md blockquote{ margin:.8em 0; padding:.2em 1em; color:#59636e; border-left:4px solid #d0d7de; }
+    .md hr{ border:0; height:1px; background:#d0d7de; margin:1.6em 0; }
+    .md table{ border-collapse:collapse; margin:.8em 0; display:block; overflow:auto; }
+    .md th,.md td{ border:1px solid #d0d7de; padding:6px 13px; }
+    .md th{ background:#f6f8fa; font-weight:600; } .md tr:nth-child(2n) td{ background:#f6f8fa; }
+    .md img{ max-width:100%; }
+    @media (prefers-color-scheme: dark){
+      body{ background:#0d1117; color:#e6edf3; }
+      .md h1,.md h2{ border-color:#30363d; }
+      .md a{ color:#4493f8; }
+      .md code{ background:rgba(110,118,129,.4); }
+      .md pre{ background:#161b22; }
+      .md blockquote{ color:#9198a1; border-color:#30363d; }
+      .md hr{ background:#30363d; }
+      .md th,.md td{ border-color:#30363d; } .md th{ background:#161b22; }
+      .md tr:nth-child(2n) td{ background:#161b22; }
+    }
+    """
 
     // MARK: - WebView mount
 

@@ -563,7 +563,7 @@ final class CodeEditorViewController: UIViewController {
     /// selects the website data store: `.nonPersistent()` (ephemeral —
     /// nothing is read or written) when no-cache is ON, `.default()`
     /// (persistent) otherwise.
-    private func makeOutputWebView() -> WKWebView {
+    private func makeOutputWebView(forcePersistent: Bool = false) -> WKWebView {
         let config = WKWebViewConfiguration()
         // iOS 14+: per-navigation JS toggle on WKWebpagePreferences. The
         // older `preferences.javaScriptEnabled` is deprecated.
@@ -708,6 +708,16 @@ final class CodeEditorViewController: UIViewController {
         // pywebview pay nothing — the bootstrap just sets up an unused
         // global. See CodeBench/PywebviewBridge.swift.
         PywebviewBridge.configure(config)
+        // Local chart HTML (matplotlib→plotly showcase, anim players) must
+        // NOT run in the ephemeral "no cache" private session: WebKit's
+        // private-mode fingerprinting protection fuzzes canvas text metrics,
+        // which breaks plotly's WebGL glyph atlas — 3-D axis tick labels
+        // render as tofu boxes. (Same file renders fine in Safari's normal
+        // session.) The privacy toggle stays meaningful for pywebview WEB
+        // content; trusted local charts always get the persistent store.
+        if forcePersistent {
+            config.websiteDataStore = .default()
+        }
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.isOpaque = false
         wv.backgroundColor = .clear
@@ -8885,8 +8895,8 @@ except Exception:
     ///
     /// MUST be called before `PywebviewBridge.shared.bind(outputWebView)` and
     /// the load, so the bridge binds (and the page loads into) the new view.
-    private func prepareOutputWebViewForLoad() {
-        let wantEphemeral = PywebviewBridge.disableCache
+    private func prepareOutputWebViewForLoad(forcePersistent: Bool = false) {
+        let wantEphemeral = PywebviewBridge.disableCache && !forcePersistent
         let isEphemeral = !outputWebView.configuration.websiteDataStore.isPersistent
         if wantEphemeral {
             rebuildOutputWebView()          // fresh, empty session every run
@@ -8896,9 +8906,12 @@ except Exception:
             appendToTerminal("$ [pywebview] no-cache ON — fresh private session (no cookies/cache from before)\n",
                              isError: false)
         } else if isEphemeral {
-            rebuildOutputWebView()          // toggle went OFF → restore persistent store
+            // Restore the persistent store — either the toggle went OFF, or
+            // this is trusted local chart HTML (forcePersistent): private-
+            // mode canvas fuzzing breaks plotly's WebGL text atlas (tofu).
+            rebuildOutputWebView(forcePersistent: forcePersistent)
         }
-        // else: OFF + already persistent → keep it (remembers across runs)
+        // else: already persistent → keep it
     }
 
     /// Tear down the current output webview and stand up a fresh one (with a
@@ -8906,13 +8919,13 @@ except Exception:
     /// wiring `setupOutputPanel` installs: the script-message handlers, the
     /// superview, and the layout constraints. The pywebview bridge's
     /// navigation delegate is (re)attached by `bind()` on the subsequent load.
-    private func rebuildOutputWebView() {
+    private func rebuildOutputWebView(forcePersistent: Bool = false) {
         let old = outputWebView
         let wasHidden = old.isHidden
         old.stopLoading()
         old.removeFromSuperview()
 
-        let fresh = makeOutputWebView()
+        let fresh = makeOutputWebView(forcePersistent: forcePersistent)
         outputWebView = fresh
         fresh.isHidden = wasHidden
         // Re-add the per-instance script-message handlers (makeOutputWebView's
@@ -9018,7 +9031,8 @@ except Exception:
             // bridge binds and the page loads into the clean session (Slido
             // etc. open with no prior cookies/localStorage, and nothing is
             // saved). Must precede bind().
-            prepareOutputWebViewForLoad()
+            prepareOutputWebViewForLoad(
+                forcePersistent: path.contains("/ToolOutputs/"))
             outputWebView.isHidden = false
             outputExpandButton.isHidden = false
             // Bind the pywebview JS↔Python bridge to this WebView so
@@ -9045,8 +9059,13 @@ except Exception:
         if ext == "html" {
             setOutputEmptyStateHidden(true)
             // No-cache ON → fresh ephemeral webview first (before bind), so
-            // load_html pages also start clean each run.
-            prepareOutputWebViewForLoad()
+            // load_html pages also start clean each run. EXCEPT trusted local
+            // charts (ToolOutputs): the ephemeral private session's canvas
+            // fingerprinting protection breaks plotly's WebGL glyph atlas
+            // (3-D tick labels render as tofu boxes) — they always get the
+            // persistent store.
+            prepareOutputWebViewForLoad(
+                forcePersistent: path.contains("/ToolOutputs/"))
             outputWebView.isHidden = false
             // Bind the pywebview bridge so evaluate_js / js_api work
             // against this page too (load_html signal lands here).
@@ -9072,7 +9091,37 @@ except Exception:
             // directly. Read the file OFF the main thread — a view.html
             // with embedded geometry is easily several MB, and the old
             // synchronous String(contentsOf:) stalled the UI per load.
-            if fileSize > 0 && fileSize < 20 * 1024 * 1024 {
+            //
+            // TRUSTED LOCAL CHARTS (ToolOutputs) load via loadFileURL: a
+            // string-loaded document (loadHTMLString) lacks real file-origin
+            // privileges and plotly's WebGL glyph atlas comes up empty —
+            // 3-D axis tick labels render as tofu boxes. A real file://
+            // navigation (same as Safari, where the identical file renders
+            // fine) fixes the atlas. The documented Catalyst sandbox race
+            // ("hasAssumedReadAccessToURL: no access") is covered by a
+            // watchdog that falls back to the in-memory load if the file
+            // navigation didn't take.
+            let isChartHTML = path.contains("/ToolOutputs/")
+            if isChartHTML {
+                htmlLoadGeneration &+= 1
+                let gen = htmlLoadGeneration
+                outputWebView.loadFileURL(url, allowingReadAccessTo: parentDir)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self = self, self.htmlLoadGeneration == gen else { return }
+                    let landed = self.outputWebView.url?.standardizedFileURL.path
+                    if landed != url.standardizedFileURL.path {
+                        NSLog("[chart] loadFileURL raced (at: %@) — falling back to loadHTMLString",
+                              landed ?? "nil")
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let html = try? String(contentsOf: url, encoding: .utf8)
+                            DispatchQueue.main.async {
+                                guard self.htmlLoadGeneration == gen, let html = html else { return }
+                                self.outputWebView.loadHTMLString(html, baseURL: parentDir)
+                            }
+                        }
+                    }
+                }
+            } else if fileSize > 0 && fileSize < 20 * 1024 * 1024 {
                 htmlLoadGeneration &+= 1
                 let gen = htmlLoadGeneration
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in

@@ -1312,6 +1312,9 @@ if os.path.isdir(_usd_res):
                 .appendingPathComponent(".pycache", isDirectory: true))
         }
         setenv("MPLCONFIGDIR", toolDir, 1)
+        // Real matplotlib (C build): force the headless Agg backend so import
+        // never probes for a GUI toolkit on iOS. The plotly shim ignores this.
+        setenv("MPLBACKEND", "Agg", 1)
 
         // CRITICAL: force Python to use the system malloc for ALL
         // allocations instead of its own `pymalloc` arena allocator.

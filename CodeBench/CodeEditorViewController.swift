@@ -7086,8 +7086,12 @@ except Exception:
                 guard stripped.hasPrefix(marker) else { continue }
                 let path = String(stripped.dropFirst(marker.count))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard path.hasPrefix("/"),
-                      FileManager.default.fileExists(atPath: path) else { continue }
+                // Live interactive figures (matplotlib WebAgg) come through as
+                // http://127.0.0.1:<port>/<n> — accept those; file paths still
+                // get the existence check.
+                let isURL = path.hasPrefix("http://") || path.hasPrefix("https://")
+                guard isURL || (path.hasPrefix("/") &&
+                      FileManager.default.fileExists(atPath: path)) else { continue }
                 NSLog("[chart-watch] (pty) parsed marker=%@ path=%@",
                       marker.trimmingCharacters(in: .whitespaces), path)
                 DispatchQueue.main.async { [weak self] in
@@ -7458,7 +7462,8 @@ except Exception:
     /// route through here so we don't re-load the same chart twice
     /// when both signals fire.
     private func tryShowChart(path: String, source: String) {
-        guard FileManager.default.fileExists(atPath: path) else { return }
+        let isURL = path.hasPrefix("http://") || path.hasPrefix("https://")
+        guard isURL || FileManager.default.fileExists(atPath: path) else { return }
         if path == lastShownChartPath {
             // Already showing this exact file — ignore duplicate.
             return

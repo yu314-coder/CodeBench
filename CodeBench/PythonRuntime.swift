@@ -982,7 +982,10 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
             var diagTrail: [String] = []
 
             let pathLooksUsable: (String) -> Bool = { p in
-                !p.isEmpty && FileManager.default.fileExists(atPath: p)
+                // Live WebAgg URLs are "usable" without a filesystem check —
+                // they're served by the in-process tornado server, not a file.
+                if p.hasPrefix("http://") || p.hasPrefix("https://") { return true }
+                return !p.isEmpty && FileManager.default.fileExists(atPath: p)
             }
             diagTrail.append("[diag] global=\(imagePath.isEmpty ? "<empty>" : URL(fileURLWithPath: imagePath).lastPathComponent) usable=\(pathLooksUsable(imagePath))")
 
@@ -1038,7 +1041,9 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
             NSLog("[python] read-back __codebench_plot_path = %@", imagePath)
 
             var finalImagePath: String?
-            if !imagePath.isEmpty, FileManager.default.fileExists(atPath: imagePath) {
+            if imagePath.hasPrefix("http://") || imagePath.hasPrefix("https://") {
+                finalImagePath = imagePath          // live interactive figure URL
+            } else if !imagePath.isEmpty, FileManager.default.fileExists(atPath: imagePath) {
                 finalImagePath = imagePath
             } else if !imagePath.isEmpty {
                 NSLog("[python] __codebench_plot_path set to %@ but FileManager.fileExists returned false", imagePath)
@@ -1101,6 +1106,12 @@ print("__CODEBENCH_INSTALLED__=" + json.dumps(_codebench_pkgs))
                 guard trimmed.hasPrefix(marker) else { continue }
                 let candidate = String(trimmed.dropFirst(marker.count))
                     .trimmingCharacters(in: .whitespaces)
+                // Live interactive figures (matplotlib WebAgg) register an
+                // http://127.0.0.1:<port>/<n> URL — pass those straight
+                // through; only file paths get the on-disk existence check.
+                if candidate.hasPrefix("http://") || candidate.hasPrefix("https://") {
+                    return candidate
+                }
                 guard candidate.hasPrefix("/"),
                       FileManager.default.fileExists(atPath: candidate) else { continue }
                 return candidate
@@ -4166,7 +4177,18 @@ try:
     try:
         _cb_plt = sys.modules.get('matplotlib.pyplot')
         if _cb_plt is not None and hasattr(_cb_plt, 'close'):
-            _cb_plt.close('all')
+            # Keep figures that are being served LIVE by the WebAgg
+            # interactive backend (sitecustomize publishes their numbers on
+            # matplotlib._CB_SERVED). Reap everything else. Closing them here
+            # would 500 the preview's GET /<n> a beat later.
+            _cb_served = set(getattr(sys.modules.get('matplotlib'), '_CB_SERVED', []) or [])
+            if _cb_served and hasattr(_cb_plt, 'get_fignums'):
+                for _fn in list(_cb_plt.get_fignums()):
+                    if _fn not in _cb_served:
+                        try: _cb_plt.close(_fn)
+                        except Exception: pass
+            else:
+                _cb_plt.close('all')
             for _n in ('_current_fig', '_axes_cache'):
                 if hasattr(_cb_plt, _n): setattr(_cb_plt, _n, None)
             for _n in ('_layout_updates', '_annotations', '_shapes'):

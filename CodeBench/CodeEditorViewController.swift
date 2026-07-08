@@ -4398,14 +4398,12 @@ except Exception:
                 // returned.
 
                 if didStream {
-                    // Output was already streamed to terminal — only show errors & timing
-                    if hasError && !output.isEmpty {
-                        // Show stderr that wasn't streamed
-                        let stderrOnly = output.components(separatedBy: "stderr:\n").dropFirst().joined(separator: "\n")
-                        if !stderrOnly.isEmpty {
-                            self.appendToTerminal(stderrOnly + "\n", isError: true)
-                        }
-                    }
+                    // Output (stdout AND stderr) was already live-streamed to
+                    // the terminal — the poller tails _stream_stderr.txt too,
+                    // so there is no "stderr that wasn't streamed" anymore.
+                    // The old re-append of the captured stderr: section here
+                    // double-printed every stderr line (tqdm bars, warnings)
+                    // at the end of any run marked hasError.
                     // Diag/fallback notes used to print into the in-app
                     // terminal — they're noisy and only useful while
                     // debugging path-discovery, so they now go to NSLog
@@ -9548,12 +9546,25 @@ final class MinimalTerminalAccessory: UIInputView {
         let back  = makeButton("⌫", mono: true) { [weak self] in self?.send([0x7f]) }
         let dismiss = makeButton("⌄") { [weak self] in self?.resignAncestorResponder() }
 
+        // .fill + explicit equal-width keys, NOT .fillEqually: fillEqually
+        // forces the flexible spacer to key width too, which squeezes all
+        // ten keys ~10% narrower on iPhone and leaves a dead one-key gap
+        // instead of pushing dismiss to the right edge.
+        let spacer = UIView()
+        // Strictly lower than UIButton's default 250 so the spacer is the
+        // one view that stretches/shrinks; keys keep their natural width.
+        spacer.setContentHuggingPriority(UILayoutPriority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(UILayoutPriority(1), for: .horizontal)
+        let keys = [tab, ctrlC, ctrlD, left, right, up, dn, back, dismiss]
         let stack = UIStackView(arrangedSubviews: [
-            esc, tab, ctrlC, ctrlD, left, right, up, dn, back, UIView(), dismiss,
+            esc, tab, ctrlC, ctrlD, left, right, up, dn, back, spacer, dismiss,
         ])
         stack.axis = .horizontal
         stack.spacing = 4
-        stack.distribution = .fillEqually
+        stack.distribution = .fill
+        for k in keys {
+            k.widthAnchor.constraint(equalTo: esc.widthAnchor).isActive = true
+        }
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([

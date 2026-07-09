@@ -228,6 +228,276 @@ final class LibrarySectionHeaderView: UICollectionReusableView {
     }
 }
 
+// ─── Storage donut ──────────────────────────────────────────────────
+// An interactive ring chart of per-package disk usage, shown as the
+// collection view's global top header. Tap a slice (or a legend row) to
+// read that library's size + share and filter the list to it; tap the
+// center or the selected slice again to reset.
+
+/// The ring itself + a centered readout. Draws annular sectors with Core
+/// Graphics and hit-tests taps by angle/radius.
+final class DonutRingView: UIView {
+    struct Slice { let fraction: CGFloat; let color: UIColor }
+    var slices: [Slice] = [] { didSet { setNeedsDisplay() } }
+    var selected: Int? = nil { didSet { setNeedsDisplay() } }
+    /// index, or nil for a center/reset tap.
+    var onSelectIndex: ((Int?) -> Void)?
+
+    let valueLabel = UILabel()
+    let captionLabel = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isUserInteractionEnabled = true
+        valueLabel.font = .systemFont(ofSize: 22, weight: .bold)
+        valueLabel.textColor = UIColor(white: 0.97, alpha: 1)
+        valueLabel.textAlignment = .center
+        valueLabel.adjustsFontSizeToFitWidth = true
+        valueLabel.minimumScaleFactor = 0.6
+        captionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        captionLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        captionLabel.textAlignment = .center
+        captionLabel.numberOfLines = 2
+        for l in [valueLabel, captionLabel] {
+            l.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(l)
+        }
+        NSLayoutConstraint.activate([
+            valueLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -8),
+            valueLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.52),
+            captionLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
+            captionLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            captionLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.58),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var geom: (outerR: CGFloat, innerR: CGFloat) {
+        let side = min(bounds.width, bounds.height)
+        let outerR = side / 2 - 4
+        return (outerR, outerR * 0.62)
+    }
+
+    override func draw(_ rect: CGRect) {
+        let cx = bounds.midX, cy = bounds.midY
+        let (outerR, innerR) = geom
+        let ringR = (outerR + innerR) / 2
+        let ringW = outerR - innerR
+        // Track ring under everything so a mostly-empty chart still reads.
+        let track = UIBezierPath(arcCenter: CGPoint(x: cx, y: cy), radius: ringR,
+                                 startAngle: 0, endAngle: 2 * .pi, clockwise: true)
+        track.lineWidth = ringW
+        UIColor(white: 1, alpha: 0.06).setStroke()
+        track.stroke()
+
+        var startFrac: CGFloat = 0
+        let gap: CGFloat = slices.count > 1 ? 0.010 : 0
+        for (i, s) in slices.enumerated() {
+            let a0 = -CGFloat.pi / 2 + 2 * .pi * startFrac
+            let a1 = -CGFloat.pi / 2 + 2 * .pi * (startFrac + s.fraction)
+            startFrac += s.fraction
+            let isSel = selected == i
+            let dim = selected != nil && !isSel
+            let path = UIBezierPath(arcCenter: CGPoint(x: cx, y: cy),
+                                    radius: ringR,
+                                    startAngle: a0 + gap,
+                                    endAngle: max(a0 + gap, a1 - gap),
+                                    clockwise: true)
+            path.lineWidth = isSel ? ringW + 7 : ringW
+            path.lineCapStyle = .butt
+            s.color.withAlphaComponent(dim ? 0.28 : 1).setStroke()
+            path.stroke()
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let p = touches.first?.location(in: self) else { return }
+        let dx = p.x - bounds.midX, dy = p.y - bounds.midY
+        let dist = hypot(dx, dy)
+        let (outerR, innerR) = geom
+        if dist < innerR * 0.92 { onSelectIndex?(nil); return }   // center = reset
+        guard dist <= outerR + 10, dist >= innerR - 8 else { return }
+        var a = atan2(dy, dx) + .pi / 2
+        if a < 0 { a += 2 * .pi }
+        let frac = a / (2 * .pi)
+        var acc: CGFloat = 0
+        for (i, s) in slices.enumerated() {
+            if frac >= acc && frac < acc + s.fraction { onSelectIndex?(i); return }
+            acc += s.fraction
+        }
+    }
+}
+
+/// The full header: title, the ring, and a two-column tappable legend.
+final class StorageDonutHeaderView: UICollectionReusableView {
+    static let reuseID = "StorageDonutHeaderView"
+    static let kind = "storage-donut-header"
+
+    /// Emits the tapped package name, or nil to reset (center / "Other").
+    var onSelect: ((String?) -> Void)?
+
+    private let titleLabel = UILabel()
+    private let ring = DonutRingView()
+    private let legendColL = UIStackView()
+    private let legendColR = UIStackView()
+    private var segs: [(name: String, bytes: Int64, color: UIColor)] = []
+    private var total: Int64 = 0
+    private var selected: Int?
+    private var rows: [UIControl] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = UIColor(white: 0.55, alpha: 1)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        ring.translatesAutoresizingMaskIntoConstraints = false
+        ring.onSelectIndex = { [weak self] idx in self?.select(idx) }
+        addSubview(ring)
+
+        for col in [legendColL, legendColR] {
+            col.axis = .vertical
+            col.spacing = 4
+            col.alignment = .fill
+            col.translatesAutoresizingMaskIntoConstraints = false
+        }
+        let legendRow = UIStackView(arrangedSubviews: [legendColL, legendColR])
+        legendRow.axis = .horizontal
+        legendRow.spacing = 14
+        legendRow.distribution = .fillEqually
+        legendRow.alignment = .top
+        legendRow.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(legendRow)
+
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+
+            ring.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            ring.centerXAnchor.constraint(equalTo: centerXAnchor),
+            ring.widthAnchor.constraint(equalToConstant: 158),
+            ring.heightAnchor.constraint(equalToConstant: 158),
+
+            legendRow.topAnchor.constraint(equalTo: ring.bottomAnchor, constant: 12),
+            legendRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            legendRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            legendRow.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -10),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    static func sizeString(_ b: Int64) -> String {
+        let x = Double(b)
+        let gb = 1073741824.0, mb = 1048576.0, kb = 1024.0
+        if x >= gb { return String(format: "%.2f GB", x / gb) }
+        if x >= mb { return String(format: "%.0f MB", x / mb) }
+        if x >= kb { return String(format: "%.0f KB", x / kb) }
+        return "\(b) B"
+    }
+
+    func configure(segments: [(name: String, bytes: Int64, color: UIColor)],
+                   total: Int64, packageCount: Int) {
+        self.segs = segments
+        self.total = total
+        self.selected = nil
+        titleLabel.text = "STORAGE · \(Self.sizeString(total)) across \(packageCount) packages"
+        let denom = max(total, 1)
+        ring.slices = segments.map { .init(fraction: CGFloat(Double($0.bytes) / Double(denom)),
+                                           color: $0.color) }
+        ring.selected = nil
+        buildLegend()
+        showTotal()
+    }
+
+    private func buildLegend() {
+        for c in [legendColL, legendColR] {
+            c.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        }
+        rows = []
+        let half = (segs.count + 1) / 2
+        for (i, s) in segs.enumerated() {
+            let row = makeRow(index: i, name: s.name, bytes: s.bytes, color: s.color)
+            rows.append(row)
+            (i < half ? legendColL : legendColR).addArrangedSubview(row)
+        }
+    }
+
+    private func makeRow(index: Int, name: String, bytes: Int64, color: UIColor) -> UIControl {
+        let ctl = UIControl()
+        ctl.tag = index
+        ctl.translatesAutoresizingMaskIntoConstraints = false
+        let dot = UIView()
+        dot.backgroundColor = color
+        dot.layer.cornerRadius = 4
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.isUserInteractionEnabled = false
+        let nameL = UILabel()
+        nameL.font = .systemFont(ofSize: 12, weight: .medium)
+        nameL.textColor = UIColor(white: 0.82, alpha: 1)
+        nameL.text = name
+        nameL.lineBreakMode = .byTruncatingTail
+        nameL.translatesAutoresizingMaskIntoConstraints = false
+        nameL.isUserInteractionEnabled = false
+        let sizeL = UILabel()
+        sizeL.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        sizeL.textColor = UIColor(white: 0.5, alpha: 1)
+        sizeL.text = Self.sizeString(bytes)
+        sizeL.setContentHuggingPriority(.required, for: .horizontal)
+        sizeL.setContentCompressionResistancePriority(.required, for: .horizontal)
+        sizeL.translatesAutoresizingMaskIntoConstraints = false
+        sizeL.isUserInteractionEnabled = false
+        ctl.addSubview(dot); ctl.addSubview(nameL); ctl.addSubview(sizeL)
+        NSLayoutConstraint.activate([
+            ctl.heightAnchor.constraint(equalToConstant: 20),
+            dot.leadingAnchor.constraint(equalTo: ctl.leadingAnchor),
+            dot.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+            nameL.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            nameL.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
+            sizeL.leadingAnchor.constraint(greaterThanOrEqualTo: nameL.trailingAnchor, constant: 6),
+            sizeL.trailingAnchor.constraint(equalTo: ctl.trailingAnchor),
+            sizeL.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
+        ])
+        ctl.addAction(UIAction { [weak self] _ in self?.select(index) },
+                      for: .touchUpInside)
+        return ctl
+    }
+
+    private func select(_ idx: Int?) {
+        // Tapping the already-selected item toggles back to the total.
+        let newSel = (idx == selected) ? nil : idx
+        selected = newSel
+        ring.selected = newSel
+        if let i = newSel {
+            let s = segs[i]
+            let pct = total > 0 ? Int((Double(s.bytes) / Double(total) * 100).rounded()) : 0
+            ring.valueLabel.text = Self.sizeString(s.bytes)
+            ring.captionLabel.text = "\(s.name)\n\(pct)% of bundle"
+            // "Other" is an aggregate — don't filter the list to it.
+            onSelect?(s.name == "Other" ? nil : s.name)
+        } else {
+            showTotal()
+            onSelect?(nil)
+        }
+        for (i, r) in rows.enumerated() {
+            let on = (newSel == i)
+            r.alpha = (newSel == nil || on) ? 1.0 : 0.45
+            if let nameL = r.subviews.compactMap({ $0 as? UILabel }).first {
+                nameL.font = .systemFont(ofSize: 12, weight: on ? .bold : .medium)
+            }
+        }
+    }
+
+    private func showTotal() {
+        ring.valueLabel.text = Self.sizeString(total)
+        ring.captionLabel.text = "total on disk"
+    }
+}
+
 /// Libraries tab — live view of every Python package the running
 /// interpreter can see, grouped into:
 ///   • Pip installed                            (user's Documents/site-packages)
@@ -317,6 +587,22 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     private var allPackages: [Pkg] = []
     private var sections: [Section] = []   // current display (post-filter)
     private var isLoading = false
+
+    // Storage donut state
+    private var donutSegments: [(name: String, bytes: Int64, color: UIColor)] = []
+    private var totalBundleBytes: Int64 = 0
+    private weak var donutHeader: StorageDonutHeaderView?
+    private static let donutPalette: [UIColor] = [
+        UIColor(red: 0.35, green: 0.55, blue: 0.98, alpha: 1),  // blue
+        UIColor(red: 0.30, green: 0.78, blue: 0.52, alpha: 1),  // green
+        UIColor(red: 0.98, green: 0.62, blue: 0.20, alpha: 1),  // orange
+        UIColor(red: 0.66, green: 0.50, blue: 0.95, alpha: 1),  // purple
+        UIColor(red: 0.25, green: 0.80, blue: 0.82, alpha: 1),  // teal
+        UIColor(red: 0.95, green: 0.45, blue: 0.62, alpha: 1),  // pink
+        UIColor(red: 0.90, green: 0.78, blue: 0.30, alpha: 1),  // yellow
+        UIColor(red: 0.55, green: 0.70, blue: 0.42, alpha: 1),  // olive
+    ]
+    private static let donutOtherColor = UIColor(white: 0.44, alpha: 1)
 
     // ─── Category map ──────────────────────────────────────────────
     // Bundled packages get sorted into one of these buckets. Anything
@@ -760,6 +1046,18 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             return section
         }
 
+        // Global top header: the interactive storage donut. Scrolls away
+        // with the content (not pinned) and sits above section 0.
+        let donutHead = NSCollectionLayoutBoundarySupplementaryItem(
+            layoutSize: .init(widthDimension: .fractionalWidth(1.0),
+                              heightDimension: .estimated(300)),
+            elementKind: StorageDonutHeaderView.kind,
+            alignment: .top)
+        donutHead.pinToVisibleBounds = false
+        let cfg = UICollectionViewCompositionalLayoutConfiguration()
+        cfg.boundarySupplementaryItems = [donutHead]
+        layout.configuration = cfg
+
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
@@ -771,6 +1069,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         collectionView.register(LibrarySectionHeaderView.self,
                                 forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader,
                                 withReuseIdentifier: LibrarySectionHeaderView.reuseID)
+        collectionView.register(StorageDonutHeaderView.self,
+                                forSupplementaryViewOfKind: StorageDonutHeaderView.kind,
+                                withReuseIdentifier: StorageDonutHeaderView.reuseID)
         refreshControl.tintColor = UIColor(white: 0.65, alpha: 1)
         refreshControl.addTarget(self, action: #selector(pullToRefresh), for: .valueChanged)
         collectionView.refreshControl = refreshControl
@@ -789,6 +1090,19 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             return cell
         }
         dataSource.supplementaryViewProvider = { [weak self] cv, kind, indexPath in
+            if kind == StorageDonutHeaderView.kind {
+                let head = cv.dequeueReusableSupplementaryView(
+                    ofKind: kind, withReuseIdentifier: StorageDonutHeaderView.reuseID,
+                    for: indexPath) as! StorageDonutHeaderView
+                self?.donutHeader = head
+                head.onSelect = { [weak self] name in self?.focusPackage(name) }
+                if let self = self, !self.donutSegments.isEmpty {
+                    head.configure(segments: self.donutSegments,
+                                   total: self.totalBundleBytes,
+                                   packageCount: self.allPackages.count)
+                }
+                return head
+            }
             let header = cv.dequeueReusableSupplementaryView(
                 ofKind: kind, withReuseIdentifier: LibrarySectionHeaderView.reuseID,
                 for: indexPath) as! LibrarySectionHeaderView
@@ -797,6 +1111,15 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             }
             return header
         }
+    }
+
+    /// Donut → list bridge: tapping a slice filters the list to that package;
+    /// resetting clears the filter. (Selection state lives in the donut.)
+    private func focusPackage(_ name: String?) {
+        let text = name ?? ""
+        searchField.text = text
+        searchText = text
+        applyAndSync(animatingDifferences: true)
     }
 
     @objc private func pullToRefresh() { refresh() }
@@ -809,16 +1132,127 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let pkgs = Self.scanInstalledPackages()
+            let (sizes, total) = Self.computePackageSizes()   // dir walk — bg only
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.allPackages = pkgs
+                self.packageSizes = sizes
+                self.totalBundleBytes = total
+                self.rebuildDonutSegments()
                 self.searchText = self.searchField.text ?? ""
                 self.applyAndSync(animatingDifferences: false)
+                if !self.donutSegments.isEmpty {
+                    self.donutHeader?.configure(segments: self.donutSegments,
+                                                total: self.totalBundleBytes,
+                                                packageCount: self.allPackages.count)
+                }
                 self.isLoading = false
                 self.refreshControl.endRefreshing()
             }
         }
     }
+
+    // MARK: - Storage sizing
+
+    /// Recursively sum the byte size of a directory tree (best-effort).
+    private static func dirSize(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles], errorHandler: nil) else { return 0 }
+        var total: Int64 = 0
+        for case let f as URL in en {
+            let v = try? f.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey])
+            guard v?.isRegularFile == true else { continue }
+            total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Per top-level package byte size. Because App-Store packaging wraps
+    /// each bundled `.so` into `Frameworks/site-packages.<pkg>.<mod>.framework`,
+    /// a package's real footprint = its site-packages tree + every framework
+    /// whose name starts `site-packages.<pkg>.`. Returns (sizes, grandTotal).
+    private static func computePackageSizes() -> ([String: Int64], Int64) {
+        let fm = FileManager.default
+        let bundleURL = Bundle.main.bundleURL
+        let siteURL = bundleURL.appendingPathComponent("app_packages/site-packages", isDirectory: true)
+        let userSiteURL = fm.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("site-packages", isDirectory: true)
+        var sizes: [String: Int64] = [:]
+
+        func addSitePackages(_ root: URL) {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+            else { return }
+            for e in entries {
+                let name = e.lastPathComponent
+                if name == "__pycache__" || name.hasSuffix(".dist-info")
+                    || name.hasSuffix(".egg-info") { continue }
+                // Top-level key: strip a trailing ".py" / ".so" so single-file
+                // modules attribute to their own name.
+                var key = name
+                for suf in [".cpython-314-iphoneos.so", ".cpython-314-iphoneos.fwork",
+                            ".py", ".so", ".fwork"] where key.hasSuffix(suf) {
+                    key = String(key.dropLast(suf.count)); break
+                }
+                var isDir: ObjCBool = false
+                _ = fm.fileExists(atPath: e.path, isDirectory: &isDir)
+                let sz = isDir.boolValue ? dirSize(e)
+                    : Int64((try? e.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                sizes[key, default: 0] += sz
+            }
+        }
+        addSitePackages(siteURL)
+        if let u = userSiteURL { addSitePackages(u) }
+
+        // Attribute wrapped frameworks back to their owning package.
+        let fwURL = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
+        if let fws = try? fm.contentsOfDirectory(
+            at: fwURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            let prefix = "site-packages."
+            for fw in fws where fw.lastPathComponent.hasPrefix(prefix)
+                && fw.pathExtension == "framework" {
+                // "site-packages.pyarrow._parquet.framework" -> "pyarrow"
+                let stem = fw.deletingPathExtension().lastPathComponent
+                    .dropFirst(prefix.count)
+                let pkg = String(stem.split(separator: ".").first ?? "")
+                guard !pkg.isEmpty else { continue }
+                sizes[pkg, default: 0] += dirSize(fw)
+            }
+        }
+
+        let total = sizes.values.reduce(0, +)
+        return (sizes, total)
+    }
+
+    /// Collapse the per-package sizes into the donut's slices: the biggest
+    /// N libraries (each its own color) + an aggregated "Other".
+    private func rebuildDonutSegments() {
+        let names = Set(allPackages.map { $0.name.lowercased() })
+        // Only chart packages we actually surfaced as cards; fold the rest
+        // (build residue etc.) into Other so percentages stay honest.
+        var perPkg: [(String, Int64)] = []
+        var residue: Int64 = 0
+        for (k, v) in packageSizes {
+            if names.contains(k.lowercased()) { perPkg.append((k, v)) }
+            else { residue += v }
+        }
+        perPkg.sort { $0.1 > $1.1 }
+        let topN = 8
+        var segs: [(name: String, bytes: Int64, color: UIColor)] = []
+        for (i, p) in perPkg.prefix(topN).enumerated() {
+            segs.append((p.0, p.1, Self.donutPalette[i % Self.donutPalette.count]))
+        }
+        let otherBytes = perPkg.dropFirst(topN).reduce(0) { $0 + $1.1 } + residue
+        if otherBytes > 0 {
+            segs.append(("Other", otherBytes, Self.donutOtherColor))
+        }
+        donutSegments = segs
+    }
+
+    private var packageSizes: [String: Int64] = [:]
 
     // MARK: - Scanning & grouping
 

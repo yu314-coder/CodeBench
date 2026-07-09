@@ -1366,9 +1366,25 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                         }
                         if !name.isEmpty && !version.isEmpty { break }
                     }
-                    if !name.isEmpty {
-                        pkgs.append(Pkg(name: name, version: version.isEmpty ? "?" : version, origin: origin))
-                        haveName.insert(name.lowercased())
+                    // Prefer the IMPORT name from top_level.txt over the
+                    // distribution name — that's what the code, the size
+                    // computation (dir/framework names), CATEGORY_MAP and
+                    // PACKAGE_INFO are all keyed by. e.g. dist "opencv-python"
+                    // -> import "cv2" (so its 12 MB framework matches the
+                    // card), "scikit-learn" -> "sklearn", "pillow" -> "PIL".
+                    var displayName = name
+                    let topPath = (path as NSString)
+                        .appendingPathComponent("\(entry)/top_level.txt")
+                    if let top = try? String(contentsOfFile: topPath, encoding: .utf8),
+                       let imp = top.split(whereSeparator: { $0.isNewline })
+                        .map({ $0.trimmingCharacters(in: .whitespaces) })
+                        .first(where: { !$0.isEmpty && !$0.hasPrefix("_") }) {
+                        displayName = imp
+                    }
+                    if !displayName.isEmpty {
+                        pkgs.append(Pkg(name: displayName, version: version.isEmpty ? "?" : version, origin: origin))
+                        haveName.insert(displayName.lowercased())
+                        haveName.insert(name.lowercased())   // block the dist-name dir too
                     }
                 }
             }
@@ -1382,9 +1398,19 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 guard isDir.boolValue, !entry.hasPrefix(".") else { continue }
                 if entry.hasSuffix(".dist-info") || entry.hasSuffix(".egg-info") { continue }
                 if entry == "__pycache__" { continue }
-                // Must contain an __init__.py or a *.so to count as a package
-                let hasInit = fm.fileExists(atPath: (full as NSString).appendingPathComponent("__init__.py"))
-                let hasSO = (try? fm.contentsOfDirectory(atPath: full))?.contains(where: { $0.hasSuffix(".so") }) ?? false
+                // Count as a package if it has __init__.py, __init__.pyc, or a
+                // compiled entry — a *.so, or its *.fwork pointer once the
+                // App-Store wrapper has moved the .so into Frameworks. Purely
+                // compiled packages like bpy (bpy/__init__.so, no __init__.py)
+                // are ONLY visible via the .fwork on device — without this
+                // they vanished from the list (and the storage donut).
+                let full_ns = full as NSString
+                let hasInit = fm.fileExists(atPath: full_ns.appendingPathComponent("__init__.py"))
+                    || fm.fileExists(atPath: full_ns.appendingPathComponent("__init__.pyc"))
+                    || fm.fileExists(atPath: full_ns.appendingPathComponent("__init__.fwork"))
+                let hasSO = (try? fm.contentsOfDirectory(atPath: full))?.contains(where: {
+                    $0.hasSuffix(".so") || $0.hasSuffix(".fwork")
+                }) ?? false
                 guard hasInit || hasSO else { continue }
                 if haveName.contains(entry.lowercased()) { continue }
                 pkgs.append(Pkg(name: entry, version: "-", origin: origin))

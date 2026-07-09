@@ -345,7 +345,10 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     private let titleLabel = UILabel()
     private let ring = DonutRingView()
     private let legendColL = UIStackView()
+    private let legendColM = UIStackView()
     private let legendColR = UIStackView()
+    static let legendCols = 3
+    static let legendRowH: CGFloat = 19
     private var segs: [(name: String, bytes: Int64, color: UIColor)] = []
     private var total: Int64 = 0
     private var selected: Int?
@@ -362,15 +365,15 @@ final class StorageDonutHeaderView: UICollectionReusableView {
         ring.onSelectIndex = { [weak self] idx in self?.select(idx) }
         addSubview(ring)
 
-        for col in [legendColL, legendColR] {
+        for col in [legendColL, legendColM, legendColR] {
             col.axis = .vertical
-            col.spacing = 4
+            col.spacing = 3
             col.alignment = .fill
             col.translatesAutoresizingMaskIntoConstraints = false
         }
-        let legendRow = UIStackView(arrangedSubviews: [legendColL, legendColR])
+        let legendRow = UIStackView(arrangedSubviews: [legendColL, legendColM, legendColR])
         legendRow.axis = .horizontal
-        legendRow.spacing = 14
+        legendRow.spacing = 12
         legendRow.distribution = .fillEqually
         legendRow.alignment = .top
         legendRow.translatesAutoresizingMaskIntoConstraints = false
@@ -402,6 +405,14 @@ final class StorageDonutHeaderView: UICollectionReusableView {
         return "\(b) B"
     }
 
+    /// Header height that fits `segmentCount` legend rows in the 3 columns.
+    static func heightFor(segmentCount: Int) -> CGFloat {
+        let rows = (max(segmentCount, 1) + legendCols - 1) / legendCols
+        let legendH = CGFloat(rows) * (legendRowH + 3)   // row + inter-row spacing
+        // title(6+16) + gap6 + ring158 + gap12 + legend + bottom10
+        return 6 + 16 + 6 + 158 + 12 + legendH + 12
+    }
+
     func configure(segments: [(name: String, bytes: Int64, color: UIColor)],
                    total: Int64, packageCount: Int) {
         self.segs = segments
@@ -417,15 +428,16 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     }
 
     private func buildLegend() {
-        for c in [legendColL, legendColR] {
-            c.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        }
+        let cols = [legendColL, legendColM, legendColR]
+        for c in cols { c.arrangedSubviews.forEach { $0.removeFromSuperview() } }
         rows = []
-        let half = (segs.count + 1) / 2
+        // Fill column-major so packages read top-to-bottom, biggest first.
+        let perCol = (segs.count + cols.count - 1) / max(cols.count, 1)
         for (i, s) in segs.enumerated() {
             let row = makeRow(index: i, name: s.name, bytes: s.bytes, color: s.color)
             rows.append(row)
-            (i < half ? legendColL : legendColR).addArrangedSubview(row)
+            let colIdx = perCol > 0 ? min(i / perCol, cols.count - 1) : 0
+            cols[colIdx].addArrangedSubview(row)
         }
     }
 
@@ -439,14 +451,15 @@ final class StorageDonutHeaderView: UICollectionReusableView {
         dot.translatesAutoresizingMaskIntoConstraints = false
         dot.isUserInteractionEnabled = false
         let nameL = UILabel()
-        nameL.font = .systemFont(ofSize: 12, weight: .medium)
+        nameL.font = .systemFont(ofSize: 11, weight: .medium)
         nameL.textColor = UIColor(white: 0.82, alpha: 1)
         nameL.text = name
         nameL.lineBreakMode = .byTruncatingTail
         nameL.translatesAutoresizingMaskIntoConstraints = false
         nameL.isUserInteractionEnabled = false
+        nameL.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let sizeL = UILabel()
-        sizeL.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        sizeL.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         sizeL.textColor = UIColor(white: 0.5, alpha: 1)
         sizeL.text = Self.sizeString(bytes)
         sizeL.setContentHuggingPriority(.required, for: .horizontal)
@@ -455,14 +468,14 @@ final class StorageDonutHeaderView: UICollectionReusableView {
         sizeL.isUserInteractionEnabled = false
         ctl.addSubview(dot); ctl.addSubview(nameL); ctl.addSubview(sizeL)
         NSLayoutConstraint.activate([
-            ctl.heightAnchor.constraint(equalToConstant: 20),
+            ctl.heightAnchor.constraint(equalToConstant: Self.legendRowH),
             dot.leadingAnchor.constraint(equalTo: ctl.leadingAnchor),
             dot.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-            nameL.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            dot.widthAnchor.constraint(equalToConstant: 7),
+            dot.heightAnchor.constraint(equalToConstant: 7),
+            nameL.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 5),
             nameL.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
-            sizeL.leadingAnchor.constraint(greaterThanOrEqualTo: nameL.trailingAnchor, constant: 6),
+            sizeL.leadingAnchor.constraint(greaterThanOrEqualTo: nameL.trailingAnchor, constant: 4),
             sizeL.trailingAnchor.constraint(equalTo: ctl.trailingAnchor),
             sizeL.centerYAnchor.constraint(equalTo: ctl.centerYAnchor),
         ])
@@ -482,7 +495,7 @@ final class StorageDonutHeaderView: UICollectionReusableView {
             ring.valueLabel.text = Self.sizeString(s.bytes)
             ring.captionLabel.text = "\(s.name)\n\(pct)% of bundle"
             // "Other" is an aggregate — don't filter the list to it.
-            onSelect?(s.name == "Other" ? nil : s.name)
+            onSelect?(s.name.hasPrefix("Other") ? nil : s.name)
         } else {
             showTotal()
             onSelect?(nil)
@@ -605,6 +618,12 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         UIColor(red: 0.95, green: 0.45, blue: 0.62, alpha: 1),  // pink
         UIColor(red: 0.90, green: 0.78, blue: 0.30, alpha: 1),  // yellow
         UIColor(red: 0.55, green: 0.70, blue: 0.42, alpha: 1),  // olive
+        UIColor(red: 0.40, green: 0.72, blue: 0.98, alpha: 1),  // sky
+        UIColor(red: 0.80, green: 0.55, blue: 0.35, alpha: 1),  // tan
+        UIColor(red: 0.62, green: 0.80, blue: 0.35, alpha: 1),  // lime
+        UIColor(red: 0.95, green: 0.55, blue: 0.45, alpha: 1),  // salmon
+        UIColor(red: 0.50, green: 0.62, blue: 0.90, alpha: 1),  // periwinkle
+        UIColor(red: 0.85, green: 0.42, blue: 0.85, alpha: 1),  // magenta
     ]
     private static let donutOtherColor = UIColor(white: 0.44, alpha: 1)
 
@@ -1027,8 +1046,14 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         ])
     }
 
-    private func buildCollectionView() {
-        let layout = UICollectionViewCompositionalLayout { [weak self] _, env in
+    // The donut header's height is FIXED per layout (.absolute) — self-sizing
+    // (.estimated) crashed with "!isinf(contentSize.height)". Since the legend
+    // now lists every >=10 MB package, the row count (and height) varies, so we
+    // recompute the layout when the segment count changes.
+    private var donutHeaderHeight: CGFloat = StorageDonutHeaderView.heightFor(segmentCount: 9)
+
+    private func makeLayout() -> UICollectionViewCompositionalLayout {
+        let layout = UICollectionViewCompositionalLayout { _, _ in
             let item = NSCollectionLayoutItem(layoutSize: .init(
                 widthDimension: .fractionalWidth(1.0),
                 heightDimension: .estimated(76)))
@@ -1045,28 +1070,33 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 alignment: .top)
             header.pinToVisibleBounds = false
             section.boundarySupplementaryItems = [header]
-            _ = self
-            _ = env
             return section
         }
-
-        // Global top header: the interactive storage donut. Scrolls away
-        // with the content (not pinned) and sits above section 0.
-        // FIXED height (.absolute) — self-sizing (.estimated) here crashed
-        // with the "!isinf(contentSize.height)" assertion because the
-        // header's legend stack is empty until configure() runs, leaving
-        // its Auto Layout height ambiguous.
+        // Global top donut header, sized to fit its legend.
         let donutHead = NSCollectionLayoutBoundarySupplementaryItem(
             layoutSize: .init(widthDimension: .fractionalWidth(1.0),
-                              heightDimension: .absolute(340)),
+                              heightDimension: .absolute(donutHeaderHeight)),
             elementKind: StorageDonutHeaderView.kind,
             alignment: .top)
         donutHead.pinToVisibleBounds = false
         let cfg = UICollectionViewCompositionalLayoutConfiguration()
         cfg.boundarySupplementaryItems = [donutHead]
         layout.configuration = cfg
+        return layout
+    }
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+    /// Resize the donut header to fit the current slice count, re-laying the
+    /// collection view only when the height actually changed.
+    private func syncDonutHeaderHeight() {
+        let h = StorageDonutHeaderView.heightFor(
+            segmentCount: max(donutSegments.count, 1))
+        guard abs(h - donutHeaderHeight) > 0.5 else { return }
+        donutHeaderHeight = h
+        collectionView.setCollectionViewLayout(makeLayout(), animated: false)
+    }
+
+    private func buildCollectionView() {
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: makeLayout())
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
@@ -1147,6 +1177,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 self.packageSizes = sizes
                 self.totalBundleBytes = total
                 self.rebuildDonutSegments()
+                self.syncDonutHeaderHeight()   // grow/shrink to fit the legend
                 self.searchText = self.searchField.text ?? ""
                 self.applyAndSync(animatingDifferences: false)
                 if !self.donutSegments.isEmpty {
@@ -1235,8 +1266,8 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         return (sizes, total)
     }
 
-    /// Collapse the per-package sizes into the donut's slices: the biggest
-    /// N libraries (each its own color) + an aggregated "Other".
+    /// Donut slices: every library >= 10 MB gets its own named slice; the
+    /// long tail of smaller packages (+ build residue) folds into "Other".
     private func rebuildDonutSegments() {
         let names = Set(allPackages.map { $0.name.lowercased() })
         // Only chart packages we actually surfaced as cards; fold the rest
@@ -1248,14 +1279,19 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             else { residue += v }
         }
         perPkg.sort { $0.1 > $1.1 }
-        let topN = 8
+        let threshold: Int64 = 10 * 1024 * 1024   // 10 MB — its own slice
         var segs: [(name: String, bytes: Int64, color: UIColor)] = []
-        for (i, p) in perPkg.prefix(topN).enumerated() {
-            segs.append((p.0, p.1, Self.donutPalette[i % Self.donutPalette.count]))
+        var otherBytes = residue
+        for (name, bytes) in perPkg {
+            if bytes >= threshold {
+                segs.append((name, bytes,
+                             Self.donutPalette[segs.count % Self.donutPalette.count]))
+            } else {
+                otherBytes += bytes
+            }
         }
-        let otherBytes = perPkg.dropFirst(topN).reduce(0) { $0 + $1.1 } + residue
         if otherBytes > 0 {
-            segs.append(("Other", otherBytes, Self.donutOtherColor))
+            segs.append(("Other  (<10 MB each)", otherBytes, Self.donutOtherColor))
         }
         donutSegments = segs
     }

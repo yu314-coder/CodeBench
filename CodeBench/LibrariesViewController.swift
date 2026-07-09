@@ -354,6 +354,11 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         "torchgen":          "Machine Learning",
         "faiss":             "Machine Learning",
         "sentencepiece":     "Machine Learning",
+        "datasets":          "Machine Learning",
+        "evaluate":          "Machine Learning",
+        "tensorboard":       "Machine Learning",
+        "flash_attn":        "Machine Learning",
+        "xformers":          "Machine Learning",
 
         // Scientific Computing
         "numpy":             "Scientific Computing",
@@ -1580,20 +1585,120 @@ final class PackageDetailViewController: UIViewController {
                 + "resume).\n"
                 + "• `model.save_pretrained()` writes .safetensors via "
                 + "our pure-Python writer.\n"
-                + "• `datasets.load_dataset(...)` is NOT bundled — "
-                + "subclass torch.utils.data.Dataset instead.\n"
-                + "• Llama / T5 / BART tokenizers need sentencepiece "
-                + "(also not bundled); GPT-2 / Qwen / Mistral / Phi "
-                + "use BPE and work without it.\n"
-                + "• FlashAttention / DeepSpeed / BitsAndBytes — "
-                + "unavailable. SDPA falls back to our GPU-accelerated "
-                + "matmul+softmax path.",
+                + "• `datasets` (4.0.0), `evaluate`, and TensorBoard "
+                + "logging ARE bundled — local load / map / split, "
+                + "metric compute, and SummaryWriter all work (see their "
+                + "own cards; datasets `.parquet` is the one gap).\n"
+                + "• Llama / T5 / BART tokenizers work — `sentencepiece` "
+                + "is bundled (see its card).\n"
+                + "• `attn_implementation=\"flash_attention_2\"` is auto-"
+                + "remapped to sdpa/eager, so it no longer crashes; "
+                + "`flash_attn` / `xformers` are importable SDPA shims "
+                + "(GPU via the Metal bridge).\n"
+                + "• Real gaps: DeepSpeed / FSDP / multi-GPU (one "
+                + "device), BitsAndBytes (CUDA-only — use GGUF).",
             example: """
             from transformers import AutoModelForCausalLM, AutoTokenizer
             tok = AutoTokenizer.from_pretrained("gpt2")
             model = AutoModelForCausalLM.from_pretrained("gpt2")
             ids = tok("hello", return_tensors="pt").input_ids
             print(tok.decode(model.generate(ids, max_new_tokens=10)[0]))
+            """
+        ),
+        "datasets": Info(
+            summary: "HuggingFace Datasets 4.0.0 — the data half of the "
+                + "training loop. Build datasets from dicts / pandas / "
+                + "local JSON & CSV, then map / filter / shuffle / "
+                + "train_test_split with the Arrow-backed cache.",
+            iosNotes: "• Local ops are device-verified: from_dict, "
+                + "from_pandas, map, filter, train_test_split, "
+                + "load_dataset(\"json\"|\"csv\").\n"
+                + "• `.parquet` is the one gap — the bundled pyarrow 15 "
+                + "has no Parquet C++ component; convert to JSON/CSV/"
+                + "Arrow (a shim keeps the import working).\n"
+                + "• `load_dataset(\"<hub-id>\")` needs network; ship the "
+                + "files and load them locally instead.\n"
+                + "• Version 4.0.0 specifically — 5.0.0 needs pyarrow 21.",
+            example: """
+            from datasets import Dataset
+            d = Dataset.from_dict({"text": ["a", "bb", "ccc"], "y": [0, 1, 0]})
+            d = d.map(lambda e: {"n": len(e["text"])})
+            print(d["n"], d.train_test_split(test_size=0.34)["test"][0])
+            """
+        ),
+        "evaluate": Info(
+            summary: "HuggingFace Evaluate 0.4.6 — metrics for training / "
+                + "eval loops (accuracy, F1, precision, recall, …).",
+            iosNotes: "• Local metric compute is device-verified.\n"
+                + "• `evaluate.load(\"accuracy\")` downloads the metric "
+                + "script once (needs network), then runs offline.\n"
+                + "• Pure-Python metrics only — ones pulling extra C/Rust "
+                + "deps (sacrebleu, bleurt) may not import.",
+            example: """
+            import evaluate
+            acc = evaluate.load("accuracy")   # network on first call
+            print(acc.compute(references=[0, 1, 1, 0], predictions=[0, 1, 0, 0]))
+            """
+        ),
+        "tensorboard": Info(
+            summary: "TensorBoard 2.19.0 — writes real training-log event "
+                + "files offline via SummaryWriter (scalars, histograms, "
+                + "images, hparams).",
+            iosNotes: "• The WRITER works: torch.utils.tensorboard."
+                + "SummaryWriter and Trainer(report_to=\"tensorboard\").\n"
+                + "• The VIEWER server (`tensorboard --logdir`) is NOT "
+                + "available — it needs grpcio + a background HTTP server. "
+                + "Copy the events.out.tfevents.* files off-device to "
+                + "view, or use _cb_training.TrainingMonitor in-terminal.\n"
+                + "• Version 2.19 — 2.21 needs protobuf 6.31; bundle has "
+                + "5.29.6.",
+            example: """
+            from torch.utils.tensorboard import SummaryWriter
+            w = SummaryWriter("Documents/runs/exp1")
+            for i in range(10): w.add_scalar("loss", 1.0 / (i + 1), i)
+            w.close()   # writes events.out.tfevents.* — copy off-device to view
+            """
+        ),
+        "flash_attn": Info(
+            summary: "flash-attn — SDPA-backed shim. Real flash-attn is "
+                + "CUDA/Triton-only, so this bundles a pure-Python shim "
+                + "that implements its API on F.scaled_dot_product_"
+                + "attention — code that hard-imports flash_attn runs "
+                + "unchanged and gets GPU attention via the Metal bridge.",
+            iosNotes: "• Provides flash_attn_func / flash_attn_varlen_"
+                + "func / bert_padding with flash-attn ≥2.1 semantics "
+                + "(bottom-right causal for decode, GQA/MQA, varlen). "
+                + "Device-verified numerically correct.\n"
+                + "• Not implemented (CUDA-only): sliding-window "
+                + "attention, ALiBi slopes, return_attn_probs — they "
+                + "raise a clear error.\n"
+                + "• transformers' attn_implementation=\"flash_attention_"
+                + "2\" is auto-remapped to sdpa/eager.",
+            example: """
+            from flash_attn import flash_attn_func
+            import torch
+            q = k = v = torch.randn(1, 128, 8, 64)   # (batch, seq, heads, dim)
+            out = flash_attn_func(q, k, v, causal=True)   # GPU via SDPA
+            print(out.shape)
+            """
+        ),
+        "xformers": Info(
+            summary: "xformers — SDPA-backed shim. The one API third-party "
+                + "code hard-imports, ops.memory_efficient_attention, is "
+                + "implemented on F.scaled_dot_product_attention (GPU via "
+                + "the Metal bridge). Lets diffusers etc. import + run.",
+            iosNotes: "• Provides ops.memory_efficient_attention (BMHK + "
+                + "3-D BMK) and LowerTriangularMask, with GQA/MQA + "
+                + "float attn_bias.\n"
+                + "• Block-diagonal masks / fmha low-level ops / Triton "
+                + "kernels are not shimmed — use F.scaled_dot_product_"
+                + "attention directly.",
+            example: """
+            import torch, xformers.ops as xo
+            q = torch.randn(1, 128, 8, 64)
+            out = xo.memory_efficient_attention(q, q, q,
+                      attn_bias=xo.LowerTriangularMask())   # GPU via SDPA
+            print(out.shape)
             """
         ),
         "accelerate": Info(

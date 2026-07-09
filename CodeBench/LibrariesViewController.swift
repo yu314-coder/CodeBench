@@ -1333,6 +1333,15 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             pkgs.append(Pkg(name: "torch_metal", version: "MPS", origin: "Bundled"))
         }
 
+        // De-dup by identity. A package can legitimately appear twice —
+        // most often a stale + current dist-info for the same name (e.g. an
+        // upgraded matplotlib leaving matplotlib-3.9.0.dist-info next to
+        // 3.11.0). Two identical `Pkg.id`s would crash the diffable data
+        // source ("supplied item identifiers are not unique"), so collapse
+        // them here, keeping the first seen.
+        var seenIDs = Set<String>()
+        pkgs = pkgs.filter { seenIDs.insert($0.id).inserted }
+
         // Sort within each origin alphabetically.
         pkgs.sort { $0.name.lowercased() < $1.name.lowercased() }
         return pkgs

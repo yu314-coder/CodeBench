@@ -1246,19 +1246,30 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         addSitePackages(siteURL)
         if let u = userSiteURL { addSitePackages(u) }
 
-        // Attribute wrapped frameworks back to their owning package.
+        // Attribute EVERY framework to its owning package. Two kinds:
+        //  1. site-packages.<pkg>.<mod>.framework  -> <pkg>  (wrapped exts)
+        //  2. bare native libs with opaque names (libtorch_python = 99 MB,
+        //     libusd_ms = 66 MB, libav* …) -> mapped via nativeFrameworkOwner.
+        // Interpreter + stdlib C-extensions bucket as "Python runtime".
+        // Without this the biggest libraries (torch, bpy) looked tiny because
+        // their mass lives in a non-site-packages framework.
         let fwURL = bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
         if let fws = try? fm.contentsOfDirectory(
             at: fwURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             let prefix = "site-packages."
-            for fw in fws where fw.lastPathComponent.hasPrefix(prefix)
-                && fw.pathExtension == "framework" {
-                // "site-packages.pyarrow._parquet.framework" -> "pyarrow"
-                let stem = fw.deletingPathExtension().lastPathComponent
-                    .dropFirst(prefix.count)
-                let pkg = String(stem.split(separator: ".").first ?? "")
-                guard !pkg.isEmpty else { continue }
-                sizes[pkg, default: 0] += dirSize(fw)
+            for fw in fws where fw.pathExtension == "framework" {
+                let base = fw.deletingPathExtension().lastPathComponent
+                let sz = dirSize(fw)
+                if base.hasPrefix(prefix) {
+                    // "site-packages.pyarrow._parquet" -> "pyarrow"
+                    let pkg = String(base.dropFirst(prefix.count)
+                        .split(separator: ".").first ?? "")
+                    if !pkg.isEmpty { sizes[pkg, default: 0] += sz }
+                } else if let owner = Self.nativeFrameworkOwner(base) {
+                    sizes[owner, default: 0] += sz
+                } else {
+                    sizes[Self.pythonRuntimeKey, default: 0] += sz
+                }
             }
         }
 
@@ -1266,16 +1277,40 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         return (sizes, total)
     }
 
+    static let pythonRuntimeKey = "Python runtime"
+
+    /// Map a bare native-lib framework (no `site-packages.` prefix) to the
+    /// library it belongs to, or nil for interpreter/stdlib pieces.
+    private static func nativeFrameworkOwner(_ base: String) -> String? {
+        let b = base.lowercased()
+        if b.hasPrefix("libtorch") || b == "libshm" || b == "libc10" { return "torch" }
+        if b == "libusd_ms" || b.hasPrefix("libbf_intern") || b.hasPrefix("libopenvdb")
+            || b.hasPrefix("libosd") { return "bpy" }
+        if b.hasPrefix("libav") || b.hasPrefix("libsw") || b.hasPrefix("libpostproc") { return "av" }
+        if b.hasPrefix("libscipy_") || b == "libsf_error_state"
+            || b == "libfortran_io_stubs" { return "scipy" }
+        if b.hasPrefix("libcairo") || b.hasPrefix("libpango") || b.hasPrefix("libpixman")
+            || b.hasPrefix("libharfbuzz") || b.hasPrefix("libfreetype")
+            || b.hasPrefix("libfontconfig") || b.hasPrefix("libglib")
+            || b.hasPrefix("libgobject") || b.hasPrefix("libgio") { return "cairo" }
+        if b == "libllama" || b == "llama" || b.hasPrefix("libggml") { return "llama_cpp" }
+        if b == "pdftex" || b == "kpathsea" || b.hasPrefix("libkpathsea") { return "latex" }
+        if b.hasPrefix("libonnxruntime") { return "onnxruntime" }
+        return nil   // Python.framework, _ssl, _hashlib, math, array, mmap, …
+    }
+
     /// Donut slices: every library >= 10 MB gets its own named slice; the
     /// long tail of smaller packages (+ build residue) folds into "Other".
     private func rebuildDonutSegments() {
-        let names = Set(allPackages.map { $0.name.lowercased() })
-        // Only chart packages we actually surfaced as cards; fold the rest
-        // (build residue etc.) into Other so percentages stay honest.
+        // Chart real package cards plus the synthetic "Python runtime"
+        // bucket (interpreter + stdlib C-extensions); fold everything else
+        // (build residue) into Other so percentages stay honest.
+        let chartable = Set(allPackages.map { $0.name.lowercased() })
+            .union([Self.pythonRuntimeKey.lowercased()])
         var perPkg: [(String, Int64)] = []
         var residue: Int64 = 0
         for (k, v) in packageSizes {
-            if names.contains(k.lowercased()) { perPkg.append((k, v)) }
+            if chartable.contains(k.lowercased()) { perPkg.append((k, v)) }
             else { residue += v }
         }
         perPkg.sort { $0.1 > $1.1 }

@@ -283,6 +283,9 @@ final class DonutRingView: UIView {
     override func draw(_ rect: CGRect) {
         let cx = bounds.midX, cy = bounds.midY
         let (outerR, innerR) = geom
+        // Nothing to draw before the view has a real size (avoids negative
+        // radius / NaN into CoreGraphics).
+        guard outerR > 2, innerR > 0 else { return }
         let ringR = (outerR + innerR) / 2
         let ringW = outerR - innerR
         // Track ring under everything so a mostly-empty chart still reads.
@@ -317,6 +320,7 @@ final class DonutRingView: UIView {
         let dx = p.x - bounds.midX, dy = p.y - bounds.midY
         let dist = hypot(dx, dy)
         let (outerR, innerR) = geom
+        guard outerR > 2, innerR > 0, !slices.isEmpty else { return }
         if dist < innerR * 0.92 { onSelectIndex?(nil); return }   // center = reset
         guard dist <= outerR + 10, dist >= innerR - 8 else { return }
         var a = atan2(dy, dx) + .pi / 2
@@ -1048,9 +1052,13 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
         // Global top header: the interactive storage donut. Scrolls away
         // with the content (not pinned) and sits above section 0.
+        // FIXED height (.absolute) — self-sizing (.estimated) here crashed
+        // with the "!isinf(contentSize.height)" assertion because the
+        // header's legend stack is empty until configure() runs, leaving
+        // its Auto Layout height ambiguous.
         let donutHead = NSCollectionLayoutBoundarySupplementaryItem(
             layoutSize: .init(widthDimension: .fractionalWidth(1.0),
-                              heightDimension: .estimated(300)),
+                              heightDimension: .absolute(340)),
             elementKind: StorageDonutHeaderView.kind,
             alignment: .top)
         donutHead.pinToVisibleBounds = false

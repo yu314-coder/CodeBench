@@ -53,11 +53,13 @@ final class LibraryCardCell: UICollectionViewCell {
     private let blurbLabel = UILabel()
     private let versionPill = PaddedLabel()
     private let badgePill = PaddedLabel()
+    private let nativePill = PaddedLabel()
+    private let sizeLabel = UILabel()
     private let chevron = UIImageView()
     private let textStack: UIStackView
 
     override init(frame: CGRect) {
-        let pillRow = UIStackView(arrangedSubviews: [versionPill, badgePill, UIView()])
+        let pillRow = UIStackView(arrangedSubviews: [versionPill, badgePill, nativePill, UIView()])
         pillRow.axis = .horizontal
         pillRow.spacing = 6
         pillRow.alignment = .center
@@ -86,6 +88,14 @@ final class LibraryCardCell: UICollectionViewCell {
 
         versionPill.configure(font: .monospacedSystemFont(ofSize: 10, weight: .medium))
         badgePill.configure(font: .systemFont(ofSize: 9, weight: .bold))
+        nativePill.configure(font: .systemFont(ofSize: 9, weight: .bold))
+
+        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        sizeLabel.textColor = UIColor(white: 0.5, alpha: 1)
+        sizeLabel.textAlignment = .right
+        sizeLabel.translatesAutoresizingMaskIntoConstraints = false
+        sizeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        sizeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         chevron.image = UIImage(systemName: "chevron.right")?
             .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
@@ -98,6 +108,7 @@ final class LibraryCardCell: UICollectionViewCell {
         textStack.alignment = .fill
         textStack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(textStack)
+        card.addSubview(sizeLabel)
         card.addSubview(chevron)
 
         NSLayoutConstraint.activate([
@@ -114,9 +125,12 @@ final class LibraryCardCell: UICollectionViewCell {
             chevron.centerYAnchor.constraint(equalTo: card.centerYAnchor),
             chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
 
+            sizeLabel.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            sizeLabel.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -8),
+
             textStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
             textStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            textStack.trailingAnchor.constraint(equalTo: chevron.leadingAnchor, constant: -10),
+            textStack.trailingAnchor.constraint(equalTo: sizeLabel.leadingAnchor, constant: -10),
             // textStack.leading set in configure() relative to the tile
         ])
     }
@@ -124,9 +138,20 @@ final class LibraryCardCell: UICollectionViewCell {
 
     private var tileLeadingConstraint: NSLayoutConstraint?
 
-    func configure(pkg: InstalledLibsViewController.Pkg) {
+    func configure(pkg: InstalledLibsViewController.Pkg,
+                   sizeOnDisk: Int64? = nil,
+                   isNative: Bool = false) {
         let (symbol, tint) = InstalledLibsViewController.iconForPackage(name: pkg.name, origin: pkg.origin)
         accent.backgroundColor = tint
+
+        sizeLabel.text = sizeOnDisk.map { StorageDonutHeaderView.sizeString($0) } ?? ""
+
+        nativePill.isHidden = !isNative
+        if isNative {
+            nativePill.text = "NATIVE"
+            let nTint = UIColor(red: 0.98, green: 0.62, blue: 0.20, alpha: 1)
+            nativePill.setColors(text: nTint, background: nTint.withAlphaComponent(0.16))
+        }
 
         // Rebuild the gradient tile (cheap; avoids stale-state on reuse).
         tileHost.removeFromSuperview()
@@ -579,8 +604,31 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     private let titleLabel = UILabel()
     private let countLabel = UILabel()
     private let searchField = UISearchTextField()
+    private let sortButton = UIButton(type: .system)
     private let chipScroll = UIScrollView()
     private let chipStack = UIStackView()
+
+    private func rebuildSortMenu() {
+        sortButton.menu = UIMenu(options: .singleSelection, children: [
+            UIAction(title: "Name (A–Z)",
+                     image: UIImage(systemName: "textformat.abc"),
+                     state: sortBySize ? .off : .on) { [weak self] _ in
+                self?.sortBySize = false
+                self?.rebuildSortMenu()
+                self?.applyAndSync(animatingDifferences: true)
+            },
+            UIAction(title: "Largest first",
+                     image: UIImage(systemName: "externaldrive.fill"),
+                     state: sortBySize ? .on : .off) { [weak self] _ in
+                self?.sortBySize = true
+                self?.rebuildSortMenu()
+                self?.applyAndSync(animatingDifferences: true)
+            },
+        ])
+        sortButton.tintColor = sortBySize
+            ? UIColor(red: 0.35, green: 0.55, blue: 0.98, alpha: 1)
+            : UIColor(white: 0.7, alpha: 1)
+    }
 
     private let emptyLabel = UILabel()
     private let refreshControl = UIRefreshControl()
@@ -1007,6 +1055,18 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         searchField.addTarget(self, action: #selector(searchChanged(_:)), for: .editingChanged)
         headerContainer.addSubview(searchField)
 
+        // Sort menu (A–Z / largest first) — square button beside the search.
+        sortButton.translatesAutoresizingMaskIntoConstraints = false
+        sortButton.backgroundColor = UIColor(white: 0.14, alpha: 1)
+        sortButton.layer.cornerRadius = 10
+        sortButton.tintColor = UIColor(white: 0.7, alpha: 1)
+        sortButton.setImage(UIImage(systemName: "arrow.up.arrow.down")?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)),
+            for: .normal)
+        sortButton.showsMenuAsPrimaryAction = true
+        rebuildSortMenu()
+        headerContainer.addSubview(sortButton)
+
         // Category chip strip
         chipScroll.translatesAutoresizingMaskIntoConstraints = false
         chipScroll.showsHorizontalScrollIndicator = false
@@ -1029,8 +1089,13 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
             searchField.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 12),
             searchField.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 16),
-            searchField.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
+            searchField.trailingAnchor.constraint(equalTo: sortButton.leadingAnchor, constant: -8),
             searchField.heightAnchor.constraint(equalToConstant: 40),
+
+            sortButton.centerYAnchor.constraint(equalTo: searchField.centerYAnchor),
+            sortButton.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -16),
+            sortButton.widthAnchor.constraint(equalToConstant: 40),
+            sortButton.heightAnchor.constraint(equalToConstant: 40),
 
             chipScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
             chipScroll.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
@@ -1122,8 +1187,11 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         ) { [weak self] (cv: UICollectionView, indexPath: IndexPath, _: String) in
             let cell = cv.dequeueReusableCell(
                 withReuseIdentifier: LibraryCardCell.reuseID, for: indexPath) as! LibraryCardCell
-            if let pkg = self?.sections[indexPath.section].rows[indexPath.row] {
-                cell.configure(pkg: pkg)
+            if let self = self {
+                let pkg = self.sections[indexPath.section].rows[indexPath.row]
+                cell.configure(pkg: pkg,
+                               sizeOnDisk: self.sizeFor(pkg.name),
+                               isNative: self.isNative(pkg.name))
             }
             return cell
         }
@@ -1170,11 +1238,15 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let pkgs = Self.scanInstalledPackages()
-            let (sizes, total) = Self.computePackageSizes()   // dir walk — bg only
+            let (sizes, total, natives) = Self.computePackageSizes()   // dir walk — bg only
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.allPackages = pkgs
                 self.packageSizes = sizes
+                self.packageSizesLC = Dictionary(
+                    sizes.map { ($0.key.lowercased(), $0.value) },
+                    uniquingKeysWith: +)
+                self.nativePackages = natives
                 self.totalBundleBytes = total
                 self.rebuildDonutSegments()
                 self.syncDonutHeaderHeight()   // grow/shrink to fit the legend
@@ -1209,17 +1281,39 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         return total
     }
 
-    /// Per top-level package byte size. Because App-Store packaging wraps
-    /// each bundled `.so` into `Frameworks/site-packages.<pkg>.<mod>.framework`,
-    /// a package's real footprint = its site-packages tree + every framework
-    /// whose name starts `site-packages.<pkg>.`. Returns (sizes, grandTotal).
-    private static func computePackageSizes() -> ([String: Int64], Int64) {
+    /// Per top-level package byte size + native-code detection, one walk.
+    /// Because App-Store packaging wraps each bundled `.so` into
+    /// `Frameworks/site-packages.<pkg>.<mod>.framework`, a package's real
+    /// footprint = its site-packages tree + every framework attributed to
+    /// it. Returns (sizes, grandTotal, packagesWithCompiledCode).
+    private static func computePackageSizes() -> ([String: Int64], Int64, Set<String>) {
         let fm = FileManager.default
         let bundleURL = Bundle.main.bundleURL
         let siteURL = bundleURL.appendingPathComponent("app_packages/site-packages", isDirectory: true)
         let userSiteURL = fm.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("site-packages", isDirectory: true)
         var sizes: [String: Int64] = [:]
+        var natives = Set<String>()   // lowercased keys with compiled code
+
+        // Size + "contains .so/.fwork" in a single tree walk.
+        func dirStat(_ url: URL) -> (Int64, Bool) {
+            guard let en = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles], errorHandler: nil) else { return (0, false) }
+            var total: Int64 = 0
+            var native = false
+            for case let f as URL in en {
+                let v = try? f.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey])
+                guard v?.isRegularFile == true else { continue }
+                total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
+                if !native {
+                    let n = f.lastPathComponent
+                    if n.hasSuffix(".so") || n.hasSuffix(".fwork") { native = true }
+                }
+            }
+            return (total, native)
+        }
 
         func addSitePackages(_ root: URL) {
             guard let entries = try? fm.contentsOfDirectory(
@@ -1238,8 +1332,17 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 }
                 var isDir: ObjCBool = false
                 _ = fm.fileExists(atPath: e.path, isDirectory: &isDir)
-                let sz = isDir.boolValue ? dirSize(e)
-                    : Int64((try? e.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                var sz: Int64 = 0
+                if isDir.boolValue {
+                    let (s, native) = dirStat(e)
+                    sz = s
+                    if native { natives.insert(key.lowercased()) }
+                } else {
+                    sz = Int64((try? e.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                    if name.hasSuffix(".so") || name.hasSuffix(".fwork") {
+                        natives.insert(key.lowercased())
+                    }
+                }
                 sizes[key, default: 0] += sz
             }
         }
@@ -1264,9 +1367,13 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                     // "site-packages.pyarrow._parquet" -> "pyarrow"
                     let pkg = String(base.dropFirst(prefix.count)
                         .split(separator: ".").first ?? "")
-                    if !pkg.isEmpty { sizes[pkg, default: 0] += sz }
+                    if !pkg.isEmpty {
+                        sizes[pkg, default: 0] += sz
+                        natives.insert(pkg.lowercased())
+                    }
                 } else if let owner = Self.nativeFrameworkOwner(base) {
                     sizes[owner, default: 0] += sz
+                    natives.insert(owner.lowercased())
                 } else {
                     sizes[Self.pythonRuntimeKey, default: 0] += sz
                 }
@@ -1274,7 +1381,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         }
 
         let total = sizes.values.reduce(0, +)
-        return (sizes, total)
+        return (sizes, total, natives)
     }
 
     static let pythonRuntimeKey = "Python runtime"
@@ -1332,6 +1439,18 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     }
 
     private var packageSizes: [String: Int64] = [:]
+    private var packageSizesLC: [String: Int64] = [:]   // lowercased keys
+    private var nativePackages: Set<String> = []        // lowercased keys
+    private var sortBySize = false
+
+    /// Best-effort size for a card: exact key, else case-insensitive.
+    fileprivate func sizeFor(_ name: String) -> Int64? {
+        packageSizes[name] ?? packageSizesLC[name.lowercased()]
+    }
+
+    fileprivate func isNative(_ name: String) -> Bool {
+        nativePackages.contains(name.lowercased())
+    }
 
     // MARK: - Scanning & grouping
 
@@ -1505,6 +1624,17 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         if let active = activeCategory {
             built = built.filter { $0.title == active }
         }
+        // Sort mode: "largest first" reorders rows within each section by
+        // on-disk size (unknown sizes sink to the bottom, alphabetical).
+        if sortBySize {
+            built = built.map { sec in
+                Section(title: sec.title, rows: sec.rows.sorted {
+                    let a = sizeFor($0.name) ?? -1, b = sizeFor($1.name) ?? -1
+                    return a != b ? a > b
+                        : $0.name.lowercased() < $1.name.lowercased()
+                })
+            }
+        }
         sections = built
 
         var snap = NSDiffableDataSourceSnapshot<Int, String>()
@@ -1513,6 +1643,12 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             snap.appendItems(sec.rows.map { $0.id }, toSection: idx)
         }
         dataSource.apply(snap, animatingDifferences: animatingDifferences)
+        // Re-applying identical item IDs does NOT re-run the cell provider,
+        // so sizes/badges computed after the first layout would stay stale
+        // on visible cells. Force a reconfigure pass.
+        var re = dataSource.snapshot()
+        re.reconfigureItems(re.itemIdentifiers)
+        dataSource.apply(re, animatingDifferences: false)
 
         rebuildChips()
         updateEmptyState()
@@ -1526,9 +1662,19 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 ? "No packages found."
                 : "No matches for \"\(searchText)\""
         }
-        // Summary count in the header.
+        // Summary count in the header: "233 packages · 1.24 GB · 41 native".
         let shown = allPackages.count
-        countLabel.text = shown == 0 ? " " : "\(shown) packages"
+        if shown == 0 {
+            countLabel.text = " "
+        } else {
+            var parts = ["\(shown) packages"]
+            if totalBundleBytes > 0 {
+                parts.append(StorageDonutHeaderView.sizeString(totalBundleBytes))
+            }
+            let nativeCount = allPackages.filter { isNative($0.name) }.count
+            if nativeCount > 0 { parts.append("\(nativeCount) native") }
+            countLabel.text = parts.joined(separator: " · ")
+        }
     }
 
     /// Chips reflect the categories present for the *current search*
@@ -1594,7 +1740,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
 
     /// Bundled → push the rich in-app detail.
     private func presentBundledDetail(for pkg: Pkg) {
-        let detailVC = PackageDetailViewController(pkg: pkg)
+        let detailVC = PackageDetailViewController(pkg: pkg,
+                                                   sizeOnDisk: sizeFor(pkg.name),
+                                                   isNative: isNative(pkg.name))
         let nav = UINavigationController(rootViewController: detailVC)
         nav.modalPresentationStyle = .formSheet
         present(nav, animated: true)
@@ -1659,10 +1807,15 @@ final class PackageDetailViewController: UIViewController {
 
     private let pkg: InstalledLibsViewController.Pkg
     private let info: Info
+    private let sizeOnDisk: Int64?
+    private let isNative: Bool
 
-    init(pkg: InstalledLibsViewController.Pkg) {
+    init(pkg: InstalledLibsViewController.Pkg,
+         sizeOnDisk: Int64? = nil, isNative: Bool = false) {
         self.pkg = pkg
         self.info = Self.lookup(pkg.name)
+        self.sizeOnDisk = sizeOnDisk
+        self.isNative = isNative
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -1773,6 +1926,16 @@ final class PackageDetailViewController: UIViewController {
         pillRow.addArrangedSubview(Self.makePill(text: category, tint: tint, filled: false))
         pillRow.addArrangedSubview(Self.makePill(text: "BUNDLED",
                                                  tint: UIColor(white: 0.65, alpha: 1), filled: true))
+        if isNative {
+            pillRow.addArrangedSubview(Self.makePill(
+                text: "NATIVE",
+                tint: UIColor(red: 0.98, green: 0.62, blue: 0.20, alpha: 1), filled: false))
+        }
+        if let sz = sizeOnDisk, sz > 0 {
+            pillRow.addArrangedSubview(Self.makePill(
+                text: StorageDonutHeaderView.sizeString(sz) + " on disk",
+                tint: UIColor(white: 0.55, alpha: 1), filled: false))
+        }
         pillRow.addArrangedSubview(UIView())
 
         let textStack = UIStackView(arrangedSubviews: [nameLabel, version, pillRow])

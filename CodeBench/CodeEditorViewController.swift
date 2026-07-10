@@ -515,6 +515,7 @@ final class CodeEditorViewController: UIViewController {
     private let aiChatContainer = UIView()
     private let chatTitleLabel = UILabel()
     private let modelSelectorButton = UIButton(type: .system)
+    private let modeSelectorButton = UIButton(type: .system)
     private let chatScrollView = UIScrollView()
     private let chatStackView = UIStackView()
     private let chatInputField = UITextField()
@@ -905,6 +906,104 @@ final class CodeEditorViewController: UIViewController {
             return foundationRunner
         }
         return llamaRunner
+    }
+
+    // ── AI Assist mode: "coding" (sees the open file, patch-oriented) or
+    // "chat" (plain conversation using the selected system-prompt preset).
+    private var aiAssistMode: String {
+        get { UserDefaults.standard.string(forKey: "CodeBench.aiAssistMode") ?? "coding" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "CodeBench.aiAssistMode")
+            refreshModeSelector()
+        }
+    }
+
+    /// Repaints the mode pill + rebuilds its menu (called on any change).
+    private func refreshModeSelector() {
+        let coding = (aiAssistMode == "coding")
+        var cfg = modeSelectorButton.configuration ?? .tinted()
+        cfg.title = coding
+            ? "Coding"
+            : "Chat · \(SystemPromptPresetsManager.shared.activePresetName)"
+        cfg.image = UIImage(systemName: coding
+            ? "chevron.left.forwardslash.chevron.right" : "bubble.left.and.bubble.right")
+        modeSelectorButton.configuration = cfg
+        modeSelectorButton.menu = buildModeMenu()
+        // Keep the chip's long-press quick menu in sync too.
+        aiAssistChip.menu = buildAssistChipMenu()
+    }
+
+    /// Mode menu: Coding on top, then the chat presets (each selects chat
+    /// mode + that system prompt), then a custom-prompt editor.
+    private func buildModeMenu() -> UIMenu {
+        let coding = UIAction(
+            title: "Coding assistant",
+            subtitle: "Sees the open file · suggests runnable patches",
+            image: UIImage(systemName: "chevron.left.forwardslash.chevron.right"),
+            state: aiAssistMode == "coding" ? .on : .off
+        ) { [weak self] _ in
+            self?.aiAssistMode = "coding"
+        }
+
+        let mgr = SystemPromptPresetsManager.shared
+        let presetActions = mgr.allPresets.map { preset in
+            UIAction(
+                title: preset.name,
+                image: UIImage(systemName: preset.icon),
+                state: (aiAssistMode == "chat" && mgr.activePresetName == preset.name)
+                    ? .on : .off
+            ) { [weak self] _ in
+                mgr.selectPreset(preset)
+                self?.aiAssistMode = "chat"
+            }
+        }
+        let custom = UIAction(
+            title: "Custom prompt…",
+            image: UIImage(systemName: "square.and.pencil"),
+            state: (aiAssistMode == "chat" && mgr.activePresetName == "Custom") ? .on : .off
+        ) { [weak self] _ in
+            self?.presentCustomPromptEditor()
+        }
+        let chatMenu = UIMenu(
+            title: "Chat — pick a persona",
+            subtitle: "Plain conversation, no editor context",
+            image: UIImage(systemName: "bubble.left.and.bubble.right"),
+            children: presetActions + [custom])
+
+        return UIMenu(children: [coding, chatMenu])
+    }
+
+    private func presentCustomPromptEditor() {
+        let alert = UIAlertController(
+            title: "Custom system prompt",
+            message: "Used in Chat mode.",
+            preferredStyle: .alert)
+        alert.addTextField {
+            $0.text = SystemPromptPresetsManager.shared.customPromptText
+            $0.placeholder = "You are…"
+        }
+        alert.addAction(UIAlertAction(title: "Use", style: .default) { [weak self, weak alert] _ in
+            let t = alert?.textFields?.first?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !t.isEmpty else { return }
+            SystemPromptPresetsManager.shared.setCustomPrompt(t)
+            self?.aiAssistMode = "chat"
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    /// Long-press menu on the "AI Assist" chip itself: quick mode switch +
+    /// the full model picker, without opening the panel first.
+    private func buildAssistChipMenu() -> UIMenu {
+        UIMenu(children: [
+            buildModeMenu(),
+            UIMenu(title: "Model",
+                   image: UIImage(systemName: "cpu"),
+                   children: [UIDeferredMenuElement.uncached { [weak self] provide in
+                       provide([self?.buildModelMenu() ?? UIMenu()])
+                   }]),
+        ])
     }
 
     // MARK: - Lifecycle
@@ -2354,6 +2453,20 @@ final class CodeEditorViewController: UIViewController {
         modelSelectorButton.showsMenuAsPrimaryAction = true
         modelSelectorButton.menu = buildModelMenu()
 
+        // Mode selector — Coding (sees the open file, patch-oriented) vs
+        // Chat (plain conversation on a selectable system-prompt preset).
+        var modeConfig = UIButton.Configuration.tinted()
+        modeConfig.image = UIImage(systemName: "slider.horizontal.3")
+        modeConfig.imagePadding = 4
+        modeConfig.baseBackgroundColor = .systemTeal
+        modeConfig.baseForegroundColor = .systemTeal
+        modeConfig.cornerStyle = .capsule
+        modeConfig.buttonSize = .small
+        modeSelectorButton.configuration = modeConfig
+        modeSelectorButton.translatesAutoresizingMaskIntoConstraints = false
+        modeSelectorButton.showsMenuAsPrimaryAction = true
+        refreshModeSelector()
+
         // Chat scroll area
         chatScrollView.translatesAutoresizingMaskIntoConstraints = false
         chatScrollView.showsVerticalScrollIndicator = true
@@ -2497,8 +2610,10 @@ final class CodeEditorViewController: UIViewController {
         titleRow.alignment = .center
 
         modelSelectorButton.setContentHuggingPriority(.required, for: .horizontal)
-        let modelRow = UIStackView(arrangedSubviews: [modelSelectorButton, UIView()])
+        modeSelectorButton.setContentHuggingPriority(.required, for: .horizontal)
+        let modelRow = UIStackView(arrangedSubviews: [modelSelectorButton, modeSelectorButton, UIView()])
         modelRow.axis = .horizontal
+        modelRow.spacing = 6
         modelRow.alignment = .center
 
         let chatHeaderRow = UIStackView(arrangedSubviews: [titleRow, modelRow])
@@ -4501,12 +4616,13 @@ except Exception:
         applyAIToggleStyle()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
-        // Opening the panel with a brand-new session AND no model? Drop
-        // the inline CTA in so the user has somewhere to click instead
-        // of staring at a blank scroll area waiting for inspiration.
+        // Opening the panel with a brand-new session AND no usable engine?
+        // Drop the inline CTA in so the user has somewhere to click. Uses
+        // activeAIGenerator (NOT llamaRunner) so Apple Intelligence being
+        // selected counts as "model ready" — no GGUF required.
         if isAIChatVisible
             && chatStackView.arrangedSubviews.isEmpty
-            && llamaRunner == nil {
+            && activeAIGenerator() == nil {
             addInlineNoModelCTA()
         }
     }
@@ -4772,15 +4888,34 @@ except Exception:
         let ctxTokens = max(2048, Int(llamaRunner?.loadedContextSize ?? 4096))
         let genReserve = min(2048, max(512, ctxTokens / 4))
         let ctxCharBudget = max(1500, (ctxTokens - genReserve - 400) * 3)
-        var contextBlock = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)"
-        if contextBlock.count > ctxCharBudget {
-            contextBlock = String(contextBlock.prefix(ctxCharBudget))
-                + "\n…[context truncated to fit the model — load one with a larger context for the whole file]"
+
+        // Two modes (mode pill in the panel header / long-press on the chip):
+        //  coding — inject the open file as context, patch-oriented system
+        //           prompt (the original AI Assist behavior);
+        //  chat   — plain conversation on the user's selected system-prompt
+        //           preset; no editor code is sent.
+        let prompt: String
+        let systemPrompt: String
+        if aiAssistMode == "chat" {
+            var body = text + attachmentBlock
+            if body.count > ctxCharBudget {
+                body = String(body.prefix(ctxCharBudget))
+                    + "\n…[attachment truncated to fit the model's context]"
+            }
+            prompt = body
+            systemPrompt = SystemPromptPresetsManager.shared.activePrompt
+        } else {
+            var contextBlock = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)"
+            if contextBlock.count > ctxCharBudget {
+                contextBlock = String(contextBlock.prefix(ctxCharBudget))
+                    + "\n…[context truncated to fit the model — load one with a larger context for the whole file]"
+            }
+            prompt = "\(contextBlock)\n\nUser question: \(text)"
+            systemPrompt = "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun. To display a plot or any visual, use matplotlib (import matplotlib.pyplot as plt; …; plt.show()) — it renders directly in the preview pane. Do NOT use pywebview, HTML, or a web view to show charts or images. To plot a function, evaluate it over a numpy array — e.g. x = np.linspace(-10, 10, 200); plt.plot(x, x) — never pass a Python function object to plt.plot." : "") Keep responses under 300 words."
         }
-        let prompt = "\(contextBlock)\n\nUser question: \(text)"
 
         let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun. To display a plot or any visual, use matplotlib (import matplotlib.pyplot as plt; …; plt.show()) — it renders directly in the preview pane. Do NOT use pywebview, HTML, or a web view to show charts or images. To plot a function, evaluate it over a numpy array — e.g. x = np.linspace(-10, 10, 200); plt.plot(x, x) — never pass a Python function object to plt.plot." : "") Keep responses under 300 words."),
+            ChatMessage(role: .system, content: systemPrompt),
             ChatMessage(role: .user, content: prompt)
         ]
 

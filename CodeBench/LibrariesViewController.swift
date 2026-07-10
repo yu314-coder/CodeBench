@@ -422,8 +422,12 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     required init?(coder: NSCoder) { fatalError() }
 
     static func sizeString(_ b: Int64) -> String {
+        // DECIMAL units (1 GB = 10^9), matching how iOS Settings reports
+        // app sizes. The old binary (GiB) constants made the donut total
+        // read "1.78 GB" while Settings said "1.9 GB" for the SAME bytes —
+        // a pure unit-convention mismatch users read as missing data.
         let x = Double(b)
-        let gb = 1073741824.0, mb = 1048576.0, kb = 1024.0
+        let gb = 1e9, mb = 1e6, kb = 1e3
         if x >= gb { return String(format: "%.2f GB", x / gb) }
         if x >= mb { return String(format: "%.0f MB", x / mb) }
         if x >= kb { return String(format: "%.0f KB", x / kb) }

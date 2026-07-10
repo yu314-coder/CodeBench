@@ -1220,8 +1220,14 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     }
 
     /// Donut → list bridge: tapping a slice filters the list to that package;
-    /// resetting clears the filter. (Selection state lives in the donut.)
+    /// resetting clears the filter. Synthetic buckets (LaTeX, Python runtime,
+    /// App core, wheels) have no card — show their stats in the donut center
+    /// but leave the list untouched instead of filtering it to nothing.
     private func focusPackage(_ name: String?) {
+        if let n = name,
+           InstalledLibsViewController.syntheticBuckets.contains(n.lowercased()) {
+            return
+        }
         let text = name ?? ""
         searchField.text = text
         searchText = text
@@ -1380,11 +1386,61 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             }
         }
 
+        // Attribute the REST of the app bundle so the donut's total matches
+        // the real install size (it was ~500 MB short: the LaTeX
+        // distribution alone — texlive-*.data packs, busytex.wasm, texmf,
+        // latex/ — is ~285 MB of bundle-root files nothing counted).
+        func rootBucket(_ name: String) -> String {
+            let n = name.lowercased()
+            if n.contains("texlive") || n.contains("texmf") || n == "latex"
+                || n.hasPrefix("busytex") || n.hasPrefix("swiftlatex")
+                || n.hasPrefix("updmap") || n.hasPrefix("pdftex")
+                || n.hasPrefix("texdata") { return Self.latexKey }
+            if n == "python" || n == "python-stdlib" { return Self.pythonRuntimeKey }
+            return Self.appCoreKey   // Monaco, fonts, binary, assets, signature…
+        }
+        if let rootEntries = try? fm.contentsOfDirectory(
+            at: bundleURL, includingPropertiesForKeys: [.isDirectoryKey],
+            options: []) {
+            for e in rootEntries {
+                let name = e.lastPathComponent
+                // Handled above (frameworks + site-packages).
+                if name == "Frameworks" { continue }
+                if name == "app_packages" {
+                    // site-packages is counted; pick up siblings (e.g. the
+                    // 33 MB offline `wheels/` cache).
+                    if let subs = try? fm.contentsOfDirectory(
+                        at: e, includingPropertiesForKeys: nil, options: []) {
+                        for s in subs where s.lastPathComponent != "site-packages" {
+                            let (sz, _) = dirStat(s)
+                            let key = s.lastPathComponent == "wheels"
+                                ? Self.wheelsKey : Self.appCoreKey
+                            sizes[key, default: 0] += sz
+                        }
+                    }
+                    continue
+                }
+                var isDir: ObjCBool = false
+                _ = fm.fileExists(atPath: e.path, isDirectory: &isDir)
+                let sz = isDir.boolValue ? dirStat(e).0
+                    : Int64((try? e.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                if sz > 0 { sizes[rootBucket(name), default: 0] += sz }
+            }
+        }
+
         let total = sizes.values.reduce(0, +)
         return (sizes, total, natives)
     }
 
     static let pythonRuntimeKey = "Python runtime"
+    static let latexKey = "LaTeX"
+    static let appCoreKey = "App core & UI"
+    static let wheelsKey = "Offline wheels"
+    /// Synthetic (non-package) buckets that still get their own donut slice.
+    static let syntheticBuckets: Set<String> = [
+        pythonRuntimeKey.lowercased(), latexKey.lowercased(),
+        appCoreKey.lowercased(), wheelsKey.lowercased(),
+    ]
 
     /// Map a bare native-lib framework (no `site-packages.` prefix) to the
     /// library it belongs to, or nil for interpreter/stdlib pieces.
@@ -1401,7 +1457,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
             || b.hasPrefix("libfontconfig") || b.hasPrefix("libglib")
             || b.hasPrefix("libgobject") || b.hasPrefix("libgio") { return "cairo" }
         if b == "libllama" || b == "llama" || b.hasPrefix("libggml") { return "llama_cpp" }
-        if b == "pdftex" || b == "kpathsea" || b.hasPrefix("libkpathsea") { return "latex" }
+        if b == "pdftex" || b == "kpathsea" || b.hasPrefix("libkpathsea") { return latexKey }
         if b.hasPrefix("libonnxruntime") { return "onnxruntime" }
         return nil   // Python.framework, _ssl, _hashlib, math, array, mmap, …
     }
@@ -1409,11 +1465,11 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     /// Donut slices: every library >= 10 MB gets its own named slice; the
     /// long tail of smaller packages (+ build residue) folds into "Other".
     private func rebuildDonutSegments() {
-        // Chart real package cards plus the synthetic "Python runtime"
-        // bucket (interpreter + stdlib C-extensions); fold everything else
-        // (build residue) into Other so percentages stay honest.
+        // Chart real package cards plus the synthetic buckets (Python
+        // runtime, LaTeX distribution, app core, offline wheels); fold
+        // everything else (build residue) into Other.
         let chartable = Set(allPackages.map { $0.name.lowercased() })
-            .union([Self.pythonRuntimeKey.lowercased()])
+            .union(Self.syntheticBuckets)
         var perPkg: [(String, Int64)] = []
         var residue: Int64 = 0
         for (k, v) in packageSizes {

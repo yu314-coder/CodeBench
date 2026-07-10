@@ -37,6 +37,30 @@ Built on **[python-ios-lib](https://github.com/yu314-coder/python-ios-lib)** —
 
 ## What's new
 
+### AI Assist — Apple Intelligence, chat modes, and conversation memory
+
+The in-editor AI assistant now runs on **Apple's on-device foundation models** (AFM 3, iOS 26+ — private, free, zero downloads) *or* any downloaded GGUF, and finally behaves like a real chat:
+
+- **Model pill** — one picker for Apple Intelligence (on-device), Apple Cloud Pro (iOS 27), the built-in GGUF catalog (Qwen 3.5 / Gemma 4 / Llama 3.2 / …), any `.gguf` on disk, or the Models tab. Selecting Apple also drives the terminal `ai` REPL.
+- **Mode pill — Coding vs Chat** — *Coding* sees the open file and answers with runnable patches (the classic behavior). *Chat* is a plain conversation on a selectable system-prompt persona (Default / Coder / Tutor / Writer / Translator / Analyst / Creative / Concise, or a custom prompt you write) — **your editor code is never sent in Chat mode**.
+- **Conversation memory** — every turn is remembered and replayed within the model's context budget, so "make it shorter" / "why did that fail?" work. Auto-run corrections *replace* the failed attempt in memory, so the assistant remembers the code that worked. A ✎ New-chat button wipes transcript + memory.
+- **UI polish** — adaptive panel width (280–360 pt), a compact ⚡ auto-run toggle, and a welcome card with tappable mode-aware starter prompts instead of a blank panel. Long-press the AI Assist chip for a quick model/mode menu without opening the panel.
+
+### Libraries tab — interactive storage donut + real sizes
+
+The Libraries tab now opens with an **interactive ring chart of the entire app's disk footprint** — every library ≥ 10 MB is its own tappable slice (bpy 425 MB, LaTeX 277 MB, torch 123 MB, …down to faiss 10 MB), with Python runtime, the LaTeX distribution, offline wheels, and app core as honest buckets so the total matches the real install size. Tap a slice to see its share and filter the list to it.
+
+Every package card also shows its **true on-disk size** (native frameworks correctly attributed — torch counts its 99 MB `libtorch_python`, bpy its 66 MB USD) plus an orange **NATIVE** badge on cross-compiled packages; the header reads "N packages · X GB · M native"; and a sort menu offers *Largest first*. Package detail pages show "N MB on disk".
+
+### `cpu-z` / `gpu-z` — cross-platform comparable benchmarks in the terminal
+
+Two new shell commands measure the device live (nothing is a lookup table):
+
+- **`cpu-z`** — single-core (Python loop, zlib, memory copy) and multi-core (zlib across all cores) scores on the **official CPU-Z bench scale** (M1 ≈ 580 single / 3400 multi), plus AMX matmul GFLOPS and SHA-256 as info lines. Directly comparable with Windows/Linux CPU-Z screenshots.
+- **`gpu-z`** — Metal device info straight from `MTLCreateSystemDefaultDevice` (family, Metal level, unified-memory budget) + fp16/fp32 matmul GFLOPS through the torch Metal bridge, scored on the **Geekbench 6 Compute scale** (M1 ≈ 32k; an M4 posts ~53–56k). `-v` shows bridge diagnostics.
+
+Fixing gpu-z's initial 0-GFLOPS reading also uncovered and fixed a real bug: the torch→numpy conversion layer was ~20,000× too slow, silently forcing the entire torch Metal bridge onto the CPU. With the fix, `torchmetal.enable()` genuinely GPU-accelerates `torch.matmul` (M4: 1400+ GFLOPS fp16) for all user code — see [python-ios-lib](https://github.com/yu314-coder/python-ios-lib) for that side (which also gained parquet-enabled pyarrow and a Metal-backed moderngl).
+
 ### AI Assist chat — ChatGPT-style UI
 
 The in-editor AI chat was rebuilt around a streaming, conversational UI (open it from the editor toolbar):

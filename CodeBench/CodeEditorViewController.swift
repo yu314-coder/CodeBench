@@ -336,7 +336,14 @@ final class CodeEditorViewController: UIViewController {
     // MARK: - Properties
 
     private var currentLanguage: Language = .python
-    private var chatMessages: [(role: String, text: String)] = []
+    /// AI Assist conversation memory. Each completed turn appends a compact
+    /// user entry + the assistant's answer, and `sendChatMessage` replays as
+    /// much of it as fits the model's context window — so follow-up questions
+    /// ("make it shorter", "why did that fail?") actually work. Cleared by
+    /// the New-chat button. NOTE: history stores the user's QUESTION only,
+    /// never the injected file context — otherwise every past turn would
+    /// re-carry the whole open file and blow the window in two messages.
+    private var aiChatHistory: [ChatMessage] = []
 
     // MARK: - AI Assist auto-run state
     /// Per-VC re-entrancy latch for the AI auto-run / ReAct loop. While true,
@@ -991,6 +998,18 @@ final class CodeEditorViewController: UIViewController {
         })
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(alert, animated: true)
+    }
+
+    /// New-chat: wipe the visible transcript AND the conversation memory,
+    /// restore the no-model CTA if there's nothing to talk to.
+    @objc private func startNewAIChat() {
+        aiChatHistory.removeAll()
+        chatStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        pendingAttachments.removeAll()
+        refreshAttachmentChips()
+        updateChatSendEnabled()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if activeAIGenerator() == nil { addInlineNoModelCTA() }
     }
 
     /// Long-press menu on the "AI Assist" chip itself: quick mode switch +
@@ -2578,6 +2597,20 @@ final class CodeEditorViewController: UIViewController {
         closeChatButton.addTarget(self, action: #selector(toggleAIChat), for: .touchUpInside)
         closeChatButton.translatesAutoresizingMaskIntoConstraints = false
 
+        // New-chat button — wipes the transcript AND the conversation memory.
+        let newChatButton = UIButton(type: .system)
+        var newCfg = UIButton.Configuration.plain()
+        newCfg.image = UIImage(
+            systemName: "square.and.pencil",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        )
+        newCfg.baseForegroundColor = EditorTheme.gutterText
+        newCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+        newChatButton.configuration = newCfg
+        newChatButton.accessibilityLabel = "New chat (clears memory)"
+        newChatButton.addTarget(self, action: #selector(startNewAIChat), for: .touchUpInside)
+        newChatButton.translatesAutoresizingMaskIntoConstraints = false
+
         // Auto-run toggle — visible so the user always knows the AI may
         // execute the python it writes. Default reflects aiAutoRunEnabled (OFF).
         // Placed in the chat header (a self-sizing horizontal stack) so there
@@ -2604,7 +2637,7 @@ final class CodeEditorViewController: UIViewController {
         // was nearly unreadable.
         chatTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         chatTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let titleRow = UIStackView(arrangedSubviews: [chatTitleLabel, autoRunLabel, aiAutoRunSwitch, closeChatButton])
+        let titleRow = UIStackView(arrangedSubviews: [chatTitleLabel, autoRunLabel, aiAutoRunSwitch, newChatButton, closeChatButton])
         titleRow.axis = .horizontal
         titleRow.spacing = 8
         titleRow.alignment = .center
@@ -4889,6 +4922,20 @@ except Exception:
         let genReserve = min(2048, max(512, ctxTokens / 4))
         let ctxCharBudget = max(1500, (ctxTokens - genReserve - 400) * 3)
 
+        // Conversation memory: replay as many past turns as fit, newest
+        // first, capped so the fresh context + answer still have room.
+        let historyBudget = max(1500, ctxCharBudget / 3)
+        var historyTurns: [ChatMessage] = []
+        var historyUsed = 0
+        for m in aiChatHistory.reversed() {
+            let cost = m.content.count + 8
+            if historyUsed + cost > historyBudget { break }
+            historyTurns.insert(m, at: 0)
+            historyUsed += cost
+        }
+        // Whatever memory consumes comes out of the fresh-context budget.
+        let freshBudget = max(1200, ctxCharBudget - historyUsed)
+
         // Two modes (mode pill in the panel header / long-press on the chip):
         //  coding — inject the open file as context, patch-oriented system
         //           prompt (the original AI Assist behavior);
@@ -4898,26 +4945,30 @@ except Exception:
         let systemPrompt: String
         if aiAssistMode == "chat" {
             var body = text + attachmentBlock
-            if body.count > ctxCharBudget {
-                body = String(body.prefix(ctxCharBudget))
+            if body.count > freshBudget {
+                body = String(body.prefix(freshBudget))
                     + "\n…[attachment truncated to fit the model's context]"
             }
             prompt = body
             systemPrompt = SystemPromptPresetsManager.shared.activePrompt
         } else {
             var contextBlock = "Here is my \(langName) code:\n```\(langName)\n\(code)\n```\(attachmentBlock)"
-            if contextBlock.count > ctxCharBudget {
-                contextBlock = String(contextBlock.prefix(ctxCharBudget))
+            if contextBlock.count > freshBudget {
+                contextBlock = String(contextBlock.prefix(freshBudget))
                     + "\n…[context truncated to fit the model — load one with a larger context for the whole file]"
             }
             prompt = "\(contextBlock)\n\nUser question: \(text)"
             systemPrompt = "You are a helpful coding assistant integrated with a code editor. Answer concisely about the user's code. When suggesting code changes, ALWAYS include the complete updated code in a ```\(langName) code block so the user can apply it directly to the editor.\(langName == "python" ? " If you want to verify something, put a complete self-contained script in a ```python code block and it will be run automatically — its stdout/stderr and whether a chart was produced are returned to you so you can explain the result or fix and rerun. To display a plot or any visual, use matplotlib (import matplotlib.pyplot as plt; …; plt.show()) — it renders directly in the preview pane. Do NOT use pywebview, HTML, or a web view to show charts or images. To plot a function, evaluate it over a numpy array — e.g. x = np.linspace(-10, 10, 200); plt.plot(x, x) — never pass a Python function object to plt.plot." : "") Keep responses under 300 words."
         }
 
-        let messages: [ChatMessage] = [
-            ChatMessage(role: .system, content: systemPrompt),
-            ChatMessage(role: .user, content: prompt)
-        ]
+        // The compact form this turn is REMEMBERED as (question only — the
+        // injected file/attachments are not re-carried by future turns).
+        let historyEntry = text
+
+        let messages: [ChatMessage] =
+            [ChatMessage(role: .system, content: systemPrompt)]
+            + historyTurns
+            + [ChatMessage(role: .user, content: prompt)]
 
         guard let runner = activeAIGenerator() else {
             // Old behaviour: a dead-end text bubble telling the user
@@ -5035,6 +5086,16 @@ except Exception:
                         finalAnswer = finalAnswer.replacingOccurrences(of: tag, with: "", options: .caseInsensitive)
                     }
                     finalAnswer = finalAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    // Record the completed turn in conversation memory.
+                    // Long answers are capped so one verbose reply can't
+                    // monopolize the replay budget on later turns.
+                    self.aiChatHistory.append(ChatMessage(role: .user, content: historyEntry))
+                    self.aiChatHistory.append(ChatMessage(
+                        role: .assistant,
+                        content: finalAnswer.count > 4000
+                            ? String(finalAnswer.prefix(4000)) + "\n…[truncated]"
+                            : finalAnswer))
 
                     // Render with markdown
                     self.renderMarkdownText(finalAnswer, into: answerLabel)
@@ -5218,6 +5279,17 @@ except Exception:
                         finalAnswer = p.stringByReplacingMatches(in: finalAnswer, range: NSRange(finalAnswer.startIndex..., in: finalAnswer), withTemplate: "")
                     }
                     finalAnswer = finalAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    // The auto-run refinement supersedes the initial answer in
+                    // memory — replace the last assistant entry so later turns
+                    // remember the CORRECTED code, not the one that failed.
+                    if self.aiChatHistory.last?.role == .assistant {
+                        self.aiChatHistory.removeLast()
+                    }
+                    self.aiChatHistory.append(ChatMessage(
+                        role: .assistant,
+                        content: finalAnswer.count > 4000
+                            ? String(finalAnswer.prefix(4000)) + "\n…[truncated]"
+                            : finalAnswer))
                     self.renderMarkdownText(finalAnswer, into: followLabel)
                     for block in self.extractCodeBlocksWithLang(finalAnswer) {
                         self.makeCodeCard(code: block.code, lang: block.lang)

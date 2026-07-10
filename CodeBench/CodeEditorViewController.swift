@@ -529,7 +529,8 @@ final class CodeEditorViewController: UIViewController {
     private let chatSendButton = UIButton(type: .system)
     /// Header toggle exposing AI auto-run (so the user always knows the AI may
     /// execute the python it writes). Default reflects aiAutoRunEnabled (OFF).
-    private let aiAutoRunSwitch = UISwitch()
+    private let aiAutoRunSwitch = UISwitch()   // legacy (no longer in the header)
+    private let aiAutoRunButton = UIButton(type: .system)
     private var aiChatWidthConstraint: NSLayoutConstraint!
 
     // ── AI-chat file attachments ──────────────────────────────────────
@@ -938,6 +939,11 @@ final class CodeEditorViewController: UIViewController {
         modeSelectorButton.menu = buildModeMenu()
         // Keep the chip's long-press quick menu in sync too.
         aiAssistChip.menu = buildAssistChipMenu()
+        // If the welcome card is on screen, its starter prompts are
+        // mode-specific — re-render so they match the new mode.
+        if chatStackView.arrangedSubviews.contains(where: { $0.tag == Self.welcomeCardTag }) {
+            addWelcomeCard()
+        }
     }
 
     /// Mode menu: Coding on top, then the chat presets (each selects chat
@@ -1001,7 +1007,7 @@ final class CodeEditorViewController: UIViewController {
     }
 
     /// New-chat: wipe the visible transcript AND the conversation memory,
-    /// restore the no-model CTA if there's nothing to talk to.
+    /// then show the model CTA (no engine) or the welcome card (ready).
     @objc private func startNewAIChat() {
         aiChatHistory.removeAll()
         chatStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1010,6 +1016,110 @@ final class CodeEditorViewController: UIViewController {
         updateChatSendEnabled()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if activeAIGenerator() == nil { addInlineNoModelCTA() }
+        else { addWelcomeCard() }
+    }
+
+    // ── Welcome card — shown when the panel opens onto an empty session
+    // with a ready engine. Mode-aware starter prompts fill the composer.
+    private static let welcomeCardTag = 7301
+
+    private func removeWelcomeCardIfAny() {
+        chatStackView.arrangedSubviews
+            .filter { $0.tag == Self.welcomeCardTag }
+            .forEach { $0.removeFromSuperview() }
+    }
+
+    private func addWelcomeCard() {
+        removeWelcomeCardIfAny()
+        let coding = (aiAssistMode == "coding")
+
+        let card = UIView()
+        card.tag = Self.welcomeCardTag
+        card.backgroundColor = UIColor(white: 1, alpha: 0.04)
+        card.layer.cornerRadius = 12
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor(white: 1, alpha: 0.07).cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = UIImageView(image: UIImage(systemName: "sparkles"))
+        icon.tintColor = .systemPurple
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = UILabel()
+        title.text = coding ? "Ask about your code" : "Ask me anything"
+        title.font = .systemFont(ofSize: 14, weight: .semibold)
+        title.textColor = EditorTheme.foreground
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let sub = UILabel()
+        sub.text = coding
+            ? "I can see the open file. Try one of these:"
+            : "Plain chat — your code stays private. Try:"
+        sub.font = .systemFont(ofSize: 11)
+        sub.textColor = UIColor(white: 0.55, alpha: 1)
+        sub.numberOfLines = 0
+        sub.translatesAutoresizingMaskIntoConstraints = false
+
+        let suggestions = coding
+            ? ["Explain what this code does",
+               "Find bugs or edge cases in this file",
+               "Add comments and docstrings"]
+            : ["Explain a concept with an example",
+               "Help me draft a message",
+               "Quiz me on a topic I pick"]
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for s in suggestions {
+            var cfg = UIButton.Configuration.plain()
+            cfg.title = s
+            cfg.titleAlignment = .leading
+            cfg.image = UIImage(
+                systemName: "arrow.up.right.circle",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .medium))
+            cfg.imagePadding = 6
+            cfg.baseForegroundColor = UIColor(white: 0.78, alpha: 1)
+            cfg.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10)
+            cfg.background.backgroundColor = UIColor(white: 1, alpha: 0.05)
+            cfg.background.cornerRadius = 9
+            var attr = AttributeContainer()
+            attr.font = .systemFont(ofSize: 12, weight: .medium)
+            cfg.attributedTitle = AttributedString(s, attributes: attr)
+            let b = UIButton(configuration: cfg)
+            b.contentHorizontalAlignment = .leading
+            b.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.chatInputField.text = s
+                self.updateChatSendEnabled()
+                self.sendChatMessage()
+            }, for: .touchUpInside)
+            stack.addArrangedSubview(b)
+        }
+
+        card.addSubview(icon)
+        card.addSubview(title)
+        card.addSubview(sub)
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            icon.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            icon.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+            title.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12),
+            sub.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 6),
+            sub.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            sub.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: sub.bottomAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+        ])
+        chatStackView.addArrangedSubview(card)
     }
 
     /// Long-press menu on the "AI Assist" chip itself: quick mode switch +
@@ -2611,24 +2721,13 @@ final class CodeEditorViewController: UIViewController {
         newChatButton.addTarget(self, action: #selector(startNewAIChat), for: .touchUpInside)
         newChatButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // Auto-run toggle — visible so the user always knows the AI may
-        // execute the python it writes. Default reflects aiAutoRunEnabled (OFF).
-        // Placed in the chat header (a self-sizing horizontal stack) so there
-        // are no fragile manual constraints to break.
-        aiAutoRunSwitch.translatesAutoresizingMaskIntoConstraints = false
-        aiAutoRunSwitch.onTintColor = EditorTheme.accent
-        aiAutoRunSwitch.isOn = aiAutoRunEnabled
-        aiAutoRunSwitch.addTarget(self, action: #selector(aiAutoRunSwitchChanged(_:)), for: .valueChanged)
-        // Shrink the (chunky) UISwitch so it fits the narrow header without
-        // crowding the title.
-        aiAutoRunSwitch.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
-        aiAutoRunSwitch.accessibilityLabel = "Auto-run AI code"
-        let autoRunLabel = UILabel()
-        autoRunLabel.translatesAutoresizingMaskIntoConstraints = false
-        autoRunLabel.text = "Auto-run"
-        autoRunLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        autoRunLabel.textColor = UIColor(white: 0.7, alpha: 1.0)
-        autoRunLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // Auto-run toggle — a compact bolt icon button (the old
+        // "Auto-run" label + UISwitch ate ~90pt of a ~280pt header row).
+        // Filled/tinted = ON (the AI may execute the python it writes),
+        // outline/gray = OFF. State lives in aiAutoRunEnabled as before.
+        aiAutoRunButton.translatesAutoresizingMaskIntoConstraints = false
+        aiAutoRunButton.addTarget(self, action: #selector(aiAutoRunButtonTapped), for: .touchUpInside)
+        refreshAutoRunButton()
 
         // Header split into two rows so nothing gets squeezed in a narrow
         // panel: row 1 = title + auto-run + close; row 2 = the model selector
@@ -2637,7 +2736,7 @@ final class CodeEditorViewController: UIViewController {
         // was nearly unreadable.
         chatTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         chatTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let titleRow = UIStackView(arrangedSubviews: [chatTitleLabel, autoRunLabel, aiAutoRunSwitch, newChatButton, closeChatButton])
+        let titleRow = UIStackView(arrangedSubviews: [chatTitleLabel, aiAutoRunButton, newChatButton, closeChatButton])
         titleRow.axis = .horizontal
         titleRow.spacing = 8
         titleRow.alignment = .center
@@ -4637,11 +4736,17 @@ except Exception:
         runTapped()
     }
 
+    /// Panel width: adaptive — ~30% of the editor on big iPads, clamped so
+    /// it's never cramped (old fixed 260) nor overbearing.
+    private func preferredAIChatWidth() -> CGFloat {
+        min(360, max(280, view.bounds.width * 0.30))
+    }
+
     /// Toolbar AI Assist pill tap. Animates the inline panel's width
-    /// between 0 and 260pt and toggles ``isAIChatVisible``.
+    /// between 0 and its adaptive width and toggles ``isAIChatVisible``.
     @objc private func toggleAIChat() {
         isAIChatVisible.toggle()
-        aiChatWidthConstraint.constant = isAIChatVisible ? 260 : 0
+        aiChatWidthConstraint.constant = isAIChatVisible ? preferredAIChatWidth() : 0
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseInOut) {
             self.aiChatContainer.alpha = self.isAIChatVisible ? 1.0 : 0.0
             self.view.layoutIfNeeded()
@@ -4649,14 +4754,15 @@ except Exception:
         applyAIToggleStyle()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
-        // Opening the panel with a brand-new session AND no usable engine?
-        // Drop the inline CTA in so the user has somewhere to click. Uses
-        // activeAIGenerator (NOT llamaRunner) so Apple Intelligence being
-        // selected counts as "model ready" — no GGUF required.
-        if isAIChatVisible
-            && chatStackView.arrangedSubviews.isEmpty
-            && activeAIGenerator() == nil {
-            addInlineNoModelCTA()
+        // Opening a brand-new session: no engine → the model CTA; engine
+        // ready → a welcome card with tappable starter prompts, so the
+        // panel never opens onto a blank void.
+        if isAIChatVisible && chatStackView.arrangedSubviews.isEmpty {
+            if activeAIGenerator() == nil {
+                addInlineNoModelCTA()
+            } else {
+                addWelcomeCard()
+            }
         }
     }
 
@@ -4901,6 +5007,9 @@ except Exception:
         pendingAttachments.removeAll()
         refreshAttachmentChips()
         updateChatSendEnabled()      // back to disabled until the user types again
+
+        // First real message replaces the welcome card.
+        removeWelcomeCardIfAny()
 
         // Show the user's message with the attached filenames noted.
         let bubbleText = attachments.isEmpty
@@ -5312,6 +5421,25 @@ except Exception:
 
     @objc private func aiAutoRunSwitchChanged(_ sender: UISwitch) {
         aiAutoRunEnabled = sender.isOn
+    }
+
+    @objc private func aiAutoRunButtonTapped() {
+        aiAutoRunEnabled.toggle()
+        refreshAutoRunButton()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Repaint the bolt button to match `aiAutoRunEnabled`.
+    private func refreshAutoRunButton() {
+        var cfg = UIButton.Configuration.plain()
+        cfg.image = UIImage(
+            systemName: aiAutoRunEnabled ? "bolt.fill" : "bolt.slash",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        cfg.baseForegroundColor = aiAutoRunEnabled ? EditorTheme.accent : EditorTheme.gutterText
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+        aiAutoRunButton.configuration = cfg
+        aiAutoRunButton.accessibilityLabel = aiAutoRunEnabled
+            ? "Auto-run AI code: on" : "Auto-run AI code: off"
     }
 
     // Stable key for objc_setAssociatedObject

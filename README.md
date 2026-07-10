@@ -61,6 +61,53 @@ Two new shell commands measure the device live (nothing is a lookup table):
 
 Fixing gpu-z's initial 0-GFLOPS reading also uncovered and fixed a real bug: the torch→numpy conversion layer was ~20,000× too slow, silently forcing the entire torch Metal bridge onto the CPU. With the fix, `torchmetal.enable()` genuinely GPU-accelerates `torch.matmul` (M4: 1400+ GFLOPS fp16) for all user code — see [python-ios-lib](https://github.com/yu314-coder/python-ios-lib) for that side (which also gained parquet-enabled pyarrow and a Metal-backed moderngl).
 
+#### How the scores are computed
+
+Every number is **measured on your device at the moment you run the command** — there is no spec-sheet lookup, no model-name table. The scores are then mapped onto two well-known external scales so you can compare across platforms. They are labeled *est.* because we cannot run CPUID's or Geekbench's proprietary workloads; instead our own workloads are **calibrated against published Apple-silicon anchor scores**, and validated against real results (an iPad M4 maps to ≈ 820 single on our scale; official CPU-Z posts the M4 at ≈ 800–830).
+
+**`cpu-z` — workloads**
+
+| # | Benchmark | What it measures | How | One-M1-core reference |
+|---|---|---|---|---|
+| 1 | Python loop | interpreter + integer ALU, one core | 3,000,000 iterations of `acc += i*3 + (i>>2) ^ (i&7)` → Mops/s | 9.0 Mops/s |
+| 2 | zlib compress (1 thread) | C-speed CPU throughput, build-independent | 4 MB high-entropy blob (`random.Random(0xC0DE).randbytes`, deterministic so every device compresses identical data), level 6 → MB/s | 50 MB/s |
+| 3 | Memory copy (1 thread) | memory subsystem | 64 MB numpy buffer copied 4×, read+write bytes counted → GB/s | 13 GB/s |
+| 4 | zlib × N threads | true multi-core scaling | same blob compressed concurrently in `cpu_count` threads — zlib **releases the GIL**, so N threads genuinely occupy N cores → aggregate MB/s | (scored against the same 50 MB/s single-core ref) |
+
+**`cpu-z` — formulas**
+
+```
+single_ratio = mean( python/9.0 , zlib_1T/50 , copy_1T/13 )   # vs ONE M1 core
+single_score = 580 × single_ratio                              # CPU-Z v17: M1 ≈ 580
+
+multi_ratio  = zlib_NT / 50                                    # aggregate vs one M1 core
+multi_score  = 680 × multi_ratio                               # calibrated: M1 (8-core, ≈5× scaling) ≈ 3400
+```
+
+Both scores share **one scale** (everything is normalized to a single M1 core), which is why multi reads ~3–6× single on a healthy chip — the same relationship Geekbench and CPU-Z show. Multi is scored from the zlib run **alone** because CPU-Z's multi test scales near-linearly with cores; mixing in bus-bound work would hide core count.
+
+**`cpu-z` — shown but deliberately NOT scored**
+
+- **SHA-256** — on Apple silicon this is fixed-function crypto: it measures whether the Python build links a hardware-accelerated hashlib (≈ 3,000 MB/s) or falls back to software (≈ 500 MB/s) — a 6–7× swing that says nothing about the CPU. The line is labeled `HW crypto` / `software path` instead.
+- **Matmul fp32 (AMX)** — Apple's matrix coprocessor via Accelerate. It is neither "a core" nor "all cores", so it gets an info line rather than skewing either score.
+- **Memory copy × 4 threads** — the memory bus is shared; parallel copies don't scale with cores, so including it would drag the multi score down arbitrarily.
+
+**`gpu-z` — workloads and formula**
+
+The info block is read directly from Metal (`MTLCreateSystemDefaultDevice` via ctypes: device name, `MTLGPUFamily`, Metal version, unified memory, `recommendedMaxWorkingSetSize`). The benchmark then runs real `torch.matmul` calls routed to the GPU by the torch Metal bridge (`MPSMatrixMultiplication` underneath):
+
+- **Probe-grow sizing** — square matmuls at k = 512 → 1024 → 2048; growth stops early if a single call exceeds 0.35 s, then up to 4 repetitions inside a 0.6 s budget. GFLOPS = 2k³·reps / elapsed.
+- **Every call is materialized** — one element of the result is read back after each matmul, so the timing **includes the CPU↔GPU copies both ways**. This is intentional: the score reflects what Python code actually obtains, not a marketing TFLOPS figure (an M4 posts ≈ 950 GFLOPS fp32 here against 4.4 TFLOPS theoretical — the copies are the tax).
+
+```
+gpu_ratio = mean( fp16_GFLOPS/800 , fp32_GFLOPS/500 )   # refs = measured M1-class MPS incl. copies
+gpu_score = 34000 × gpu_ratio                            # Geekbench 6 Compute: M1 ≈ 32k
+```
+
+Calibration check: a measured M4 ratio of ≈ 1.6 maps to ≈ 53–56k — real Geekbench 6 Metal posts the M4 at ≈ 57k (within ~5 %). **Attention (SDPA)** is displayed as an info line but not scored: the bridge executes it as a matmul → softmax → matmul chain with a copy at every hop, so its throughput measures bridge dispatch overhead rather than GPU speed. TechPowerUp's GPU-Z has **no benchmark at all** (it is an info/sensor tool), which is why the cross-platform anchor is Geekbench 6 Compute — the number Windows/Linux GPUs are compared with (OpenCL/Vulkan there, Metal on Apple).
+
+Run-to-run variance of ±10 % is normal for both commands (thermals, background load); `cpu-z -q` runs a shorter, noisier pass, and `gpu-z -i` prints the info block without loading torch.
+
 ### AI Assist chat — ChatGPT-style UI
 
 The in-editor AI chat was rebuilt around a streaming, conversational UI (open it from the editor toolbar):

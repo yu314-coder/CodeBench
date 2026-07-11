@@ -3785,6 +3785,14 @@ final class GameViewController: UIViewController {
                            slot: slot, completion: nil)
         }
 
+        // Settings → "Storage breakdown" jumps to the Libraries tab.
+        NotificationCenter.default.addObserver(
+            forName: .codeBenchOpenLibrariesTab,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.navLibrariesTapped()
+        }
+
         // Initialize LaTeX engine (ios_system + pdftex)
         LaTeXEngine.shared.initialize()
 

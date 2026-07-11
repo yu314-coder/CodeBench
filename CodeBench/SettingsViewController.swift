@@ -1,5 +1,6 @@
 import UIKit
 import UniformTypeIdentifiers
+import Metal
 
 /// "Settings" tab content. Grouped controls for the things users
 /// actually adjust: editor + terminal font sizes, Monaco theme,
@@ -30,9 +31,10 @@ final class SettingsViewController: UIViewController {
     private let hairline     = UIColor(white: 1, alpha: 0.07)
 
     /// Distinct accent per section, used on the card's icon chip + rail.
-    private enum Section { case editor, terminal, manim, workspace, models, privacy, about }
+    private enum Section { case device, editor, terminal, manim, workspace, models, privacy, about }
     private func accent(_ s: Section) -> UIColor {
         switch s {
+        case .device:    return UIColor(red: 0.36, green: 0.80, blue: 0.82, alpha: 1) // teal
         case .editor:    return UIColor(red: 0.40, green: 0.59, blue: 0.93, alpha: 1) // blue
         case .terminal:  return UIColor(red: 0.36, green: 0.78, blue: 0.55, alpha: 1) // green
         case .manim:     return UIColor(red: 0.74, green: 0.52, blue: 0.96, alpha: 1) // violet
@@ -99,6 +101,12 @@ final class SettingsViewController: UIViewController {
         }
 
         contentStack.addArrangedSubview(makeHeader())
+
+        // ── Device & hardware (info) ───────────────────────────
+        contentStack.addArrangedSubview(makeCard(.device, title: "Device",
+                                                 icon: "ipad.gen2",
+                                                 footer: deviceFooter(),
+                                                 rows: deviceRows()))
 
         // ── Editor ─────────────────────────────────────────────
         contentStack.addArrangedSubview(makeCard(.editor, title: "Editor",
@@ -262,11 +270,18 @@ final class SettingsViewController: UIViewController {
         // ── About ──────────────────────────────────────────────
         contentStack.addArrangedSubview(makeCard(.about, title: "About",
                                                  icon: "info.circle",
+                                                 footer: "CodeBench — an on-device Python / C / C++ / Fortran / LaTeX + local-LLM workstation. Everything runs offline.",
                                                  rows: [
-            kvRow(key: "Version",   value: appVersion()),
-            kvRow(key: "Build",     value: appBuild()),
-            kvRow(key: "Python",    value: pythonVersionString()),
-            kvRow(key: "Workspace", value: workspaceShortPath()),
+            kvRow(key: "Version",     value: appVersion()),
+            kvRow(key: "Build",       value: appBuild()),
+            kvRow(key: "Python",      value: pythonVersionString()),
+            kvRow(key: "Install size", value: installSizeString()),
+            kvRow(key: "Workspace",   value: workspaceShortPath()),
+            buttonRow(title: "Storage breakdown",
+                      subtitle: "See every library's size in the Libraries tab",
+                      destructive: false) { [weak self] in
+                self?.openLibrariesTab()
+            },
         ]))
 
         // ── Footer signature ───────────────────────────────────────
@@ -1012,6 +1027,78 @@ final class SettingsViewController: UIViewController {
         dismiss(animated: true)
     }
 
+    // MARK: - Device & hardware info
+
+    /// Marketing chip name best-effort: prefer the Metal device name (it
+    /// reads "Apple M4 GPU" / "Apple A17 Pro GPU"), else the raw model id.
+    private func chipName() -> String {
+        if let dev = MTLCreateSystemDefaultDevice() {
+            var n = dev.name
+            if let r = n.range(of: " GPU") { n.removeSubrange(r) }   // "Apple M4 GPU" -> "Apple M4"
+            if n.hasPrefix("Apple") { return n }
+        }
+        var sysinfo = utsname(); uname(&sysinfo)
+        let machine = withUnsafeBytes(of: &sysinfo.machine) { raw -> String in
+            String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+        }
+        return machine
+    }
+
+    private func gpuInfo() -> (name: String, family: String, memoryBudget: Int64, unified: Bool)? {
+        guard let dev = MTLCreateSystemDefaultDevice() else { return nil }
+        var fam = "—"
+        let families: [(MTLGPUFamily, String)] = [
+            (.apple9, "Apple9"), (.apple8, "Apple8"), (.apple7, "Apple7"),
+            (.apple6, "Apple6"), (.apple5, "Apple5"),
+        ]
+        for (f, label) in families where dev.supportsFamily(f) { fam = label; break }
+        if dev.supportsFamily(.metal3) { fam += " · Metal 3" }
+        return (dev.name, fam,
+                Int64(dev.recommendedMaxWorkingSetSize), dev.hasUnifiedMemory)
+    }
+
+    private func deviceRows() -> [UIView] {
+        let dev = UIDevice.current
+        let pi = ProcessInfo.processInfo
+        var rows: [UIView] = [
+            kvRow(key: "Model", value: dev.model + " · " + chipName().replacingOccurrences(of: "Apple ", with: "")),
+            kvRow(key: "Chip", value: chipName()),
+            kvRow(key: "CPU cores", value: "\(pi.activeProcessorCount)"),
+            kvRow(key: "Memory", value: humanBytes(Int64(pi.physicalMemory))),
+            kvRow(key: "System", value: "\(dev.systemName) \(dev.systemVersion)"),
+        ]
+        if let g = gpuInfo() {
+            rows.append(kvRow(key: "GPU", value: g.name))
+            rows.append(kvRow(key: "Metal", value: g.family))
+            rows.append(kvRow(key: "GPU memory",
+                              value: humanBytes(g.memoryBudget)
+                                  + (g.unified ? " · unified" : "")))
+        }
+        return rows
+    }
+
+    private func deviceFooter() -> String {
+        "Run `cpu-z` / `gpu-z` in the terminal for live benchmark scores comparable with Windows/Linux."
+    }
+
+    /// Total install size of the app bundle (cached — the walk is heavy).
+    private static var cachedInstallBytes: Int64?
+    private func installSizeString() -> String {
+        if let b = Self.cachedInstallBytes { return humanBytes(b) }
+        // Kick off an async walk; show a placeholder now, refresh on return.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let b = self?.folderSize(Bundle.main.bundleURL.path) ?? 0
+            Self.cachedInstallBytes = b
+            DispatchQueue.main.async { self?.rebuild() }
+        }
+        return "calculating…"
+    }
+
+    private func openLibrariesTab() {
+        NotificationCenter.default.post(name: .codeBenchOpenLibrariesTab, object: nil)
+        dismiss(animated: true)
+    }
+
     // MARK: - About info
 
     private func appVersion() -> String {
@@ -1300,6 +1387,8 @@ extension Notification.Name {
         Notification.Name("CodeBenchModelsDidChange")
     static let codeBenchOpenModelsManager =
         Notification.Name("CodeBenchOpenModelsManager")
+    static let codeBenchOpenLibrariesTab =
+        Notification.Name("CodeBenchOpenLibrariesTab")
     /// Fired by the preload button (top toolbar in the editor) when
     /// the user taps it. Payload: `["path": String, "slot": Int]`.
     /// Observed by GameViewController, which owns the LlamaRunner.

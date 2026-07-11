@@ -640,6 +640,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     // Filter state
     private var searchText = ""
     private var activeCategory: String? = nil   // nil == "All"; else a Section.title
+    private var donutPinnedName: String? = nil  // exact-match pin from a donut tap
 
     struct Pkg: Hashable {
         let name: String
@@ -1223,18 +1224,21 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         }
     }
 
-    /// Donut → list bridge: tapping a slice filters the list to that package;
-    /// resetting clears the filter. Synthetic buckets (LaTeX, Python runtime,
-    /// App core, wheels) have no card — show their stats in the donut center
-    /// but leave the list untouched instead of filtering it to nothing.
+    /// Donut → list bridge: tapping a slice pins the list to EXACTLY that
+    /// package (shown under its real category), not a substring search —
+    /// a short slice like "av" / "cv2" used to substring-match unrelated
+    /// pip packages, which sorted first and mislabeled the section as
+    /// "Pip installed". Synthetic buckets (LaTeX, Python runtime, App core,
+    /// wheels) have no card, so they only update the donut center.
     private func focusPackage(_ name: String?) {
         if let n = name,
            InstalledLibsViewController.syntheticBuckets.contains(n.lowercased()) {
             return
         }
-        let text = name ?? ""
-        searchField.text = text
-        searchText = text
+        activeCategory = nil
+        donutPinnedName = name
+        searchField.text = name ?? ""
+        searchText = ""            // pin uses exact match, not the search box
         applyAndSync(animatingDifferences: true)
     }
 
@@ -1669,8 +1673,19 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     /// Rebuild `sections` from the current search, honor the active
     /// category chip, push a diffable snapshot, refresh chips + empty state.
     private func applyAndSync(animatingDifferences: Bool = false) {
-        // Same call the old code used — search semantics unchanged.
-        var built = Self.buildSections(from: allPackages, search: searchText)
+        // Donut pin: filter to EXACTLY the tapped package (case-insensitive
+        // name equality) so its real category header shows, then let
+        // buildSections group it. Otherwise the normal substring search.
+        let base: [Pkg]
+        let effectiveSearch: String
+        if let pin = donutPinnedName {
+            base = allPackages.filter { $0.name.lowercased() == pin.lowercased() }
+            effectiveSearch = ""
+        } else {
+            base = allPackages
+            effectiveSearch = searchText
+        }
+        var built = Self.buildSections(from: base, search: effectiveSearch)
 
         // Reconcile the active-category chip against the current search
         // universe *before* filtering: if a search has narrowed results
@@ -1775,6 +1790,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         let btn = UIButton(configuration: cfg)
         btn.addAction(UIAction { [weak self] _ in
             guard let self = self else { return }
+            self.donutPinnedName = nil
             self.activeCategory = (self.activeCategory == category) ? nil : category
             self.applyAndSync(animatingDifferences: true)
         }, for: .touchUpInside)
@@ -1838,6 +1854,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     // MARK: - Search (same semantics as the old searchBar delegate)
 
     @objc private func searchChanged(_ field: UISearchTextField) {
+        donutPinnedName = nil       // typing overrides a donut pin
         searchText = field.text ?? ""
         applyAndSync(animatingDifferences: false)
     }

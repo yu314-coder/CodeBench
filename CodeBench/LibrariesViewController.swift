@@ -378,6 +378,11 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     private var total: Int64 = 0
     private var selected: Int?
     private var rows: [UIControl] = []
+    /// Lowercased slice names that are user pip installs / app components, so
+    /// the center caption can say what a slice actually is instead of always
+    /// claiming "of bundle".
+    private var pipNames: Set<String> = []
+    private var componentNames: Set<String> = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -443,10 +448,13 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     }
 
     func configure(segments: [(name: String, bytes: Int64, color: UIColor)],
-                   total: Int64, packageCount: Int) {
+                   total: Int64, packageCount: Int,
+                   pipNames: Set<String> = [], componentNames: Set<String> = []) {
         self.segs = segments
         self.total = total
         self.selected = nil
+        self.pipNames = pipNames
+        self.componentNames = componentNames
         titleLabel.text = "STORAGE · \(Self.sizeString(total)) across \(packageCount) packages"
         let denom = max(total, 1)
         ring.slices = segments.map { .init(fraction: CGFloat(Double($0.bytes) / Double(denom)),
@@ -521,8 +529,15 @@ final class StorageDonutHeaderView: UICollectionReusableView {
         if let i = newSel {
             let s = segs[i]
             let pct = total > 0 ? Int((Double(s.bytes) / Double(total) * 100).rounded()) : 0
+            let lc = s.name.lowercased()
+            // Say what the slice really is so it never contradicts the list.
+            let kind: String
+            if s.name.hasPrefix("Other")      { kind = "\(pct)% of app · aggregate" }
+            else if pipNames.contains(lc)     { kind = "\(pct)% of app · pip install" }
+            else if componentNames.contains(lc) { kind = "\(pct)% of app · component" }
+            else                              { kind = "\(pct)% of app · bundled" }
             ring.valueLabel.text = Self.sizeString(s.bytes)
-            ring.captionLabel.text = "\(s.name)\n\(pct)% of bundle"
+            ring.captionLabel.text = "\(s.name)\n\(kind)"
             // "Other" is an aggregate — don't filter the list to it.
             onSelect?(s.name.hasPrefix("Other") ? nil : s.name)
         } else {
@@ -641,6 +656,18 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     private var searchText = ""
     private var activeCategory: String? = nil   // nil == "All"; else a Section.title
     private var donutPinnedID: String? = nil  // exact Pkg.id pinned from a donut tap
+
+    /// Lowercased slice names the donut center should describe as user pip
+    /// installs (not "bundled"), so the ring caption never contradicts the
+    /// list card's origin badge.
+    private var donutPipNames: Set<String> {
+        Set(allPackages.filter { $0.origin == "User" }.map { $0.name.lowercased() })
+    }
+    /// App components that occupy storage but aren't pip packages (Python
+    /// runtime, LaTeX, App core & UI, Offline wheels).
+    private var donutComponentNames: Set<String> {
+        InstalledLibsViewController.syntheticBuckets
+    }
 
     struct Pkg: Hashable {
         let name: String
@@ -1210,7 +1237,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 if let self = self, !self.donutSegments.isEmpty {
                     head.configure(segments: self.donutSegments,
                                    total: self.totalBundleBytes,
-                                   packageCount: self.allPackages.count)
+                                   packageCount: self.allPackages.count,
+                                   pipNames: self.donutPipNames,
+                                   componentNames: self.donutComponentNames)
                 }
                 return head
             }
@@ -1286,7 +1315,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
                 if !self.donutSegments.isEmpty {
                     self.donutHeader?.configure(segments: self.donutSegments,
                                                 total: self.totalBundleBytes,
-                                                packageCount: self.allPackages.count)
+                                                packageCount: self.allPackages.count,
+                                                pipNames: self.donutPipNames,
+                                                componentNames: self.donutComponentNames)
                 }
                 self.isLoading = false
                 self.refreshControl.endRefreshing()

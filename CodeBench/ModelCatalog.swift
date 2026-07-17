@@ -30,6 +30,8 @@ enum ModelSlot: Int, CaseIterable {
     case deepseek_r1_distill_qwen7b = 12
     case granite31_8b  = 13
     case smollm2_1_7b  = 14
+    // ── New: NVIDIA Nemotron 3 Nano (hybrid Mamba-Transformer, generative) ──
+    case nemotron3_nano_4b = 15
 
     var title: String {
         switch self {
@@ -48,6 +50,7 @@ enum ModelSlot: Int, CaseIterable {
         case .deepseek_r1_distill_qwen7b: return "DeepSeek-R1 Distill 7B"
         case .granite31_8b:              return "Granite 3.1 8B"
         case .smollm2_1_7b:              return "SmolLM2 1.7B"
+        case .nemotron3_nano_4b:         return "Nemotron 3 Nano 4B"
         }
     }
 
@@ -68,6 +71,7 @@ enum ModelSlot: Int, CaseIterable {
         case .deepseek_r1_distill_qwen7b: return "Reasoning · 7B  ~4.7 GB"
         case .granite31_8b:              return "IBM · Enterprise  ~4.9 GB"
         case .smollm2_1_7b:              return "HF · Tiny + smart  ~1.1 GB"
+        case .nemotron3_nano_4b:         return "NVIDIA · Hybrid Mamba  ~2.8 GB  (Q4_K_M · 16 GB · borderline 8 GB)"
         }
     }
 
@@ -92,6 +96,7 @@ enum ModelSlot: Int, CaseIterable {
         case .deepseek_r1_distill_qwen7b: return "model.deepseek_r1_distill_qwen7b.gguf"
         case .granite31_8b:              return "model.granite31_8b.gguf"
         case .smollm2_1_7b:              return "model.smollm2_1_7b.gguf"
+        case .nemotron3_nano_4b:         return "model.nemotron3_nano_4b.gguf"
         }
     }
 
@@ -116,6 +121,7 @@ enum ModelSlot: Int, CaseIterable {
         case .deepseek_r1_distill_qwen7b: return "deepseek_r1_distill_qwen7b"
         case .granite31_8b:              return "granite31_8b"
         case .smollm2_1_7b:              return "smollm2_1_7b"
+        case .nemotron3_nano_4b:         return "nemotron3_nano_4b"
         }
     }
 
@@ -168,6 +174,13 @@ enum ModelSlot: Int, CaseIterable {
             return URL(string: "https://huggingface.co/bartowski/granite-3.1-8b-instruct-GGUF/resolve/main/granite-3.1-8b-instruct-Q4_K_M.gguf")!
         case .smollm2_1_7b:
             return URL(string: "https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf")!
+        case .nemotron3_nano_4b:
+            // Official NVIDIA GGUF. NOTE the filename drops a hyphen
+            // ("Nemotron3-Nano") vs the repo name ("Nemotron-3-Nano") —
+            // verified 200 / 2.84 GB. Hybrid Mamba-Transformer arch
+            // (nemotron_h), which the bundled llama.cpp (2026-01-31)
+            // supports.
+            return URL(string: "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF/resolve/main/NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf")!
         }
     }
 
@@ -191,6 +204,7 @@ enum ModelSlot: Int, CaseIterable {
         case .deepseek_r1_distill_qwen7b: return 4_700_000_000
         case .granite31_8b:              return 4_900_000_000
         case .smollm2_1_7b:              return 1_100_000_000
+        case .nemotron3_nano_4b:         return 2_837_072_864   // Q4_K_M (verified)
         }
     }
 
@@ -217,11 +231,13 @@ enum ModelSlot: Int, CaseIterable {
             return .granite
         case .smollm2_1_7b:
             return .smol
+        case .nemotron3_nano_4b:
+            return .nemotron
         }
     }
 
     enum Family: String, CaseIterable {
-        case qwen, gemma, llama, phi, mistral, deepseek, granite, smol
+        case qwen, gemma, llama, phi, mistral, deepseek, granite, smol, nemotron
 
         var displayName: String {
             switch self {
@@ -233,6 +249,7 @@ enum ModelSlot: Int, CaseIterable {
             case .deepseek: return "DeepSeek"
             case .granite:  return "Granite / IBM"
             case .smol:     return "SmolLM / HuggingFace"
+            case .nemotron: return "Nemotron / NVIDIA"
             }
         }
     }
@@ -267,7 +284,7 @@ enum ModelSlot: Int, CaseIterable {
     /// fine on 16 GB iPad Pro M4. Recommended only if the user has
     /// confirmed they're on a high-RAM device.
     static var midweight: [ModelSlot] {
-        [.mistral7b_v03,
+        [.nemotron3_nano_4b, .mistral7b_v03,
          .qwen25coder_7b, .deepseek_r1_distill_qwen7b, .granite31_8b]
     }
 

@@ -8652,7 +8652,8 @@ except Exception:
             case .llama32_1b, .llama32_3b:
                 return .llama
             case .phi35_mini, .mistral7b_v03, .qwen25coder_7b,
-                 .deepseek_r1_distill_qwen7b, .granite31_8b, .smollm2_1_7b:
+                 .deepseek_r1_distill_qwen7b, .granite31_8b, .smollm2_1_7b,
+                 .nemotron3_nano_4b:
                 return .other
             }
         }

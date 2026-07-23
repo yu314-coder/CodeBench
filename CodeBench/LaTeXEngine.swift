@@ -19,9 +19,6 @@ import PDFKit
     func initialize() {
         guard !isInitialized else { return }
 
-        // Initialize ios_system (kept for pdftex fallback if needed later)
-        initializeEnvironment()
-
         isInitialized = true
 
         // Ensure signal dir exists

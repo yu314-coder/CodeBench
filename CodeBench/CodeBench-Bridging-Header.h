@@ -5,6 +5,12 @@
 #ifndef CodeBench_Bridging_Header_h
 #define CodeBench_Bridging_Header_h
 
+// UIKit was previously pulled in transitively by <ios_system/ios_system.h>.
+// That framework was removed (it was vestigial — LaTeX runs via BusyTeX WASM
+// and math via SwiftMath/CoreText), so import UIKit explicitly here; the
+// SwiftMath sources rely on it being visible through the bridging header.
+#import <UIKit/UIKit.h>
+
 // Original Metal shader types
 #include "ShaderTypes.h"
 
@@ -17,11 +23,7 @@
 // CodeBench Fortran Interpreter
 #include "codebench_fortran.h"
 
-// LaTeX Engine (pdftex via lib-tex + ios_system)
-#import <ios_system/ios_system.h>
 
-// pdftex library entry point
-extern int dllpdftexmain(int argc, char *argv[]);
 
 // LoRA fine-tune bridge (ported from QVAC fabric-llm.cpp's
 // examples/llama.swiftui FinetuneBridge). Provides the

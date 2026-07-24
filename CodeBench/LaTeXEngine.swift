@@ -19,6 +19,11 @@ import PDFKit
     func initialize() {
         guard !isInitialized else { return }
 
+        // Initialize ios_system — this also runs the framework's load-time
+        // setup that iOS Python's .fwork loader relies on to resolve
+        // @executable_path at dlopen time. Removing it broke hashlib/math/etc.
+        initializeEnvironment()
+
         isInitialized = true
 
         // Ensure signal dir exists

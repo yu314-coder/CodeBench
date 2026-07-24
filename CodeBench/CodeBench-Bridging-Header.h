@@ -5,11 +5,13 @@
 #ifndef CodeBench_Bridging_Header_h
 #define CodeBench_Bridging_Header_h
 
-// UIKit was previously pulled in transitively by <ios_system/ios_system.h>.
-// That framework was removed (it was vestigial — LaTeX runs via BusyTeX WASM
-// and math via SwiftMath/CoreText), so import UIKit explicitly here; the
-// SwiftMath sources rely on it being visible through the bridging header.
 #import <UIKit/UIKit.h>
+
+// ios_system: provides initializeEnvironment() AND runs the framework's
+// load-time setup that the iOS Python .fwork loader depends on to resolve
+// @executable_path at dlopen time. Removing it broke runtime loading of
+// hashlib / math / _md5 / etc. — DO NOT remove without a replacement.
+#import <ios_system/ios_system.h>
 
 // Original Metal shader types
 #include "ShaderTypes.h"

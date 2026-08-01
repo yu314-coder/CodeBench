@@ -99,11 +99,11 @@ final class SystemInfoViewController: UIViewController {
     // lives on this tab AND know the gesture.
 
     private func installSecretBrowserGesture() {
-        let g = UITapGestureRecognizer(target: self, action: #selector(secretReopenLast))
-        g.numberOfTouchesRequired = 3
-        g.numberOfTapsRequired = 3
-        g.cancelsTouchesInView = false
-        view.addGestureRecognizer(g)
+        // (Removed: the 3-finger triple-tap that reopened the last visited
+        //  URL in an in-app browser. A general-purpose web browser is outside
+        //  this app's purpose — an on-device coding environment — and an
+        //  undocumented gesture opening one is exactly what App Review
+        //  guidelines 2.3.1 / 2.5.2 exist to prevent.)
 
         // Long-press 2s anywhere on the System tab → credits sheet.
         let lp = UILongPressGestureRecognizer(target: self,
@@ -117,54 +117,6 @@ final class SystemInfoViewController: UIViewController {
         let vc = SecretCreditsViewController()
         let nav = UINavigationController(rootViewController: vc)
         nav.modalPresentationStyle = .formSheet
-        present(nav, animated: true)
-    }
-
-    @objc private func secretReopenLast() {
-        let visits = BrowserDataStore.shared.loadHistory()
-        guard let last = visits.last else {
-            let a = UIAlertController(title: "No history",
-                                      message: "Nothing has been recorded yet.",
-                                      preferredStyle: .alert)
-            a.addAction(UIAlertAction(title: "OK", style: .default))
-            present(a, animated: true)
-            return
-        }
-        let alert = UIAlertController(
-            title: last.title.isEmpty ? "Reopen last URL?" : last.title,
-            message: last.url,
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Use saved cookies",
-                                      style: .default) { _ in
-            self.secretOpenInBrowser(url: last.url, fresh: false)
-        })
-        alert.addAction(UIAlertAction(title: "Fresh session",
-                                      style: .default) { _ in
-            self.secretOpenInBrowser(url: last.url, fresh: true)
-        })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
-    }
-
-    private func secretOpenInBrowser(url: String, fresh: Bool) {
-        guard let liveURL = URL(string: url) else { return }
-        let vc = MiniBrowserViewController(url: liveURL, fresh: fresh)
-        let nav = UINavigationController(rootViewController: vc)
-        // Sheet presentation with detents (iOS 16+) so the user can
-        // drag the grabber between small / medium / fullscreen, OR
-        // tap the size button in the nav bar to cycle. Falls back
-        // to .pageSheet on older iOS.
-        nav.modalPresentationStyle = .pageSheet
-        if #available(iOS 16.0, *), let sheet = nav.sheetPresentationController {
-            let small = UISheetPresentationController.Detent.custom(
-                identifier: .init("mini-small")) { ctx in
-                    ctx.maximumDetentValue * 0.30
-                }
-            sheet.detents = [small, .medium(), .large()]
-            sheet.selectedDetentIdentifier = .large
-            sheet.prefersGrabberVisible = true
-            sheet.largestUndimmedDetentIdentifier = .large
-        }
         present(nav, animated: true)
     }
 

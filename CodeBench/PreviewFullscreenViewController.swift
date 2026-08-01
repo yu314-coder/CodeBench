@@ -52,9 +52,21 @@ final class PreviewFullscreenViewController: UIViewController {
         // through to "Unsupported" and the user saw a placeholder
         // instead of the actual page when expanding to fullscreen.
         // Detect URL strings first and route to installWebURL.
+        // Live URLs are accepted ONLY for servers the user's own script is
+        // running on this device (matplotlib WebAgg, and local dev servers
+        // like Flask/Dash/Streamlit bind to 127.0.0.1). Remote origins are
+        // deliberately not loadable here: this pane renders the output of
+        // the user's own program, it is not a web browser.
         if path.hasPrefix("http://") || path.hasPrefix("https://"),
            let liveURL = URL(string: path) {
-            installWebURL(liveURL)
+            let host = liveURL.host?.lowercased() ?? ""
+            let isLocal = host == "localhost" || host == "127.0.0.1"
+                || host == "::1" || host == "0.0.0.0"
+            if isLocal {
+                installWebURL(liveURL)
+            } else {
+                installUnsupported()
+            }
             return
         }
         let url = URL(fileURLWithPath: path)
@@ -76,8 +88,9 @@ final class PreviewFullscreenViewController: UIViewController {
         }
     }
 
-    /// Same as `installWeb` but for a live network URL — used for
-    /// pywebview apps presented at runtime.
+    /// Same as `installWeb` but for a live local server URL — matplotlib
+    /// WebAgg figures and local dev servers started by the user's own
+    /// script. Callers must restrict this to loopback hosts.
     private func installWebURL(_ url: URL) {
         let wv = makeWebView()
         view.addSubview(wv)

@@ -2270,13 +2270,15 @@ try:
                     if _avail_fn is not None:
                         _avail_fn.restype = _ct.c_size_t
                         _avail = int(_avail_fn())
-                        # Resolution-tiered peak-memory estimate. With frame
-                        # streaming to ffmpeg + the capped/downsampled GIF buffer
-                        # (write_frame patch above) + malloc pressure relief, even
-                        # 4K/8K fit when there's enough headroom — so we no longer
-                        # hard-refuse them; we only refuse if the device genuinely
-                        # can't fit the per-frame working set (which is transient
-                        # and freed each frame, so these are generous).
+                        # Resolution-tiered peak-memory ESTIMATE, used only to
+                        # warn. There is no resolution limit: every quality up to
+                        # 8K renders regardless of this number. Frame streaming to
+                        # ffmpeg + the capped/downsampled GIF buffer (write_frame
+                        # patch above) + malloc pressure relief keep the working
+                        # set transient and freed each frame, so the estimate is a
+                        # generous upper bound and was blocking renders that would
+                        # have succeeded. The watchdog below is the real safety
+                        # net: it kills the render workload, not the app.
                         _h = int(getattr(_m.config, "pixel_height", 480) or 480)
                         _fps = int(getattr(_m.config, "frame_rate", 15) or 15)
                         if _h >= 4000:        # 8K
@@ -2292,13 +2294,20 @@ try:
                         else:
                             _need = 200 * 1024 * 1024
                         if _avail and _need > _avail:
-                            print(f"[manim] not enough memory for "
+                            # WARN ONLY -- do not refuse. The estimate is a
+                            # generous upper bound on a transient per-frame
+                            # working set, so it can block renders that would
+                            # actually have completed. The render proceeds; the
+                            # memory watchdog below still force-kills the
+                            # workload (not the app) if free memory really does
+                            # fall through the floor mid-render.
+                            print(f"[manim] low memory for "
                                   f"{getattr(_m.config, 'pixel_width', '?')}x{_h}: "
-                                  f"~{_need // (1024*1024)} MB needed but only "
-                                  f"{_avail // (1024*1024)} MB free. Lower the "
-                                  f"manim quality in Settings.",
+                                  f"~{_need // (1024*1024)} MB estimated but only "
+                                  f"{_avail // (1024*1024)} MB free -- rendering "
+                                  f"anyway; lower the quality or fps in Settings "
+                                  f"if it gets killed.",
                                   flush=True)
-                            return
                 except Exception:
                     pass
                 _m.config.renderer = "cairo"

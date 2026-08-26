@@ -1932,9 +1932,24 @@ try:
             # codepoint without fanning out to expensive system scans.
             _prefer_pre = (
                 "<family>KaTeX_Main</family>"
+                # Unicode math fallbacks. KaTeX's fonts are keyed to LaTeX
+                # command slots, so they carry NO glyph for the Unicode math
+                # codepoints a user types directly in Text(): U+211D (blackboard
+                # bold, e.g. R), U+2080-2089 / U+2070-2079 (sub/superscript
+                # digits), or U+1D400-1D7FF (math alphanumerics). Pango then
+                # silently drew nothing -- "R^p" vanished and the digit in
+                # "D_1" disappeared while the D rendered. These two Noto faces
+                # are complementary and together cover all of it: Math has the
+                # alphanumerics + operators, plain Sans has the sub/superscripts.
                 "<family>Noto Sans SC</family>"
                 "<family>Noto Sans JP</family>"
                 "<family>Noto Sans KR</family>"
+                # LAST on purpose: fontconfig picks whichever family HAS the
+                # requested glyph, and order only breaks ties -- so trailing
+                # position still fixes the missing codepoints while leaving the
+                # default face for ordinary Latin text exactly as it was.
+                "<family>Noto Sans Math</family>"
+                "<family>Noto Sans</family>"
             )
             _fc_lines_pre = [
                 "<fontconfig>",
@@ -2094,12 +2109,23 @@ try:
                 # has the glyph, so `serif` → tries KaTeX_Main first, falls
                 # back to Noto Sans JP on Hanzi/Kanji/Kana.
                 _fc_file = os.path.join(__codebench_tool_dir, "fonts.conf")
+                # Same Unicode-math fallbacks as the pre-import conf above:
+                # KaTeX has no glyphs for U+211D / sub-superscript digits /
+                # math alphanumerics, so without these Pango drops them.
                 _prefer = "<family>KaTeX_Main</family>"
                 # Append every bundled CJK font as a fallback. Order =
                 # descending unified-Han coverage so fontconfig finds the
                 # cheapest match per codepoint: SC → JP → KR.
                 for _lbl, _ in _cjk_fonts:
                     _prefer += f"<family>{_lbl}</family>"
+                # Unicode-math fallbacks LAST: KaTeX carries no glyph for
+                # U+211D, the sub/superscript digits or the math alphanumerics,
+                # so without these Pango silently drew nothing. Trailing
+                # position still resolves them (fontconfig matches on charset,
+                # order only breaks ties) while leaving ordinary Latin text on
+                # the same face as before.
+                _prefer += ("<family>Noto Sans Math</family>"
+                            "<family>Noto Sans</family>")
                 _lines = [
                     "<fontconfig>",
                     "  <dir>" + _font_dir + "</dir>",

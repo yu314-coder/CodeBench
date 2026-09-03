@@ -85,6 +85,39 @@ final class LlamaRunner: TextGenerator {
         case generationFailed
         case invalidTemplate
 
+        /// The line from a captured log that actually says what went wrong.
+        ///
+        /// The load path reports the tail of llama.cpp's log, and the tail is
+        /// frequently not the reason. `create_tensor: loading tensor
+        /// blk.58.ssm_alpha.weight` is a `LLAMA_LOG_DEBUG` printed on the
+        /// *first* line of `create_tensor`, before it does anything — so it
+        /// says which tensor was next, not what failed. Reported as the cause
+        /// it reads like a missing or corrupt tensor, which sends the reader
+        /// to re-download a model that may be fine.
+        ///
+        /// Errors are pulled out ahead of the tail, and the tail is kept after
+        /// them so nothing is lost.
+        static func explain(_ detail: String) -> String {
+            let lines = detail.split(separator: "\n").map(String.init)
+            let interesting = lines.filter { line in
+                let l = line.lowercased()
+                guard l.contains("error") || l.contains("failed")
+                        || l.contains("unsupported") || l.contains("missing")
+                        || l.contains("not enough") || l.contains("cannot") else {
+                    return false
+                }
+                // "loading tensor …" is a trace even when a later line reuses
+                // the word; excluding it here is what stops the trace winning.
+                return !l.contains("loading tensor")
+            }
+            guard !interesting.isEmpty else {
+                return "Failed to load model. The log ended without an error, "
+                    + "which usually means the load was killed rather than "
+                    + "refused — most often memory. Last log lines:\n\(detail)"
+            }
+            return "Failed to load model: \(interesting.joined(separator: "\n"))"
+        }
+
         var errorDescription: String? {
             switch self {
             case .busy:
@@ -94,7 +127,7 @@ final class LlamaRunner: TextGenerator {
             case .modelLoadFailed:
                 return "Failed to load model."
             case .modelLoadFailedDetail(let detail):
-                return "Failed to load model: \(detail)"
+                return LlamaError.explain(detail)
             case .unsupportedArchitecture(let arch):
                 return "Unsupported architecture '\(arch)' on iOS Metal — try a different model."
             case .contextInitFailed:

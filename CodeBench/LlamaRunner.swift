@@ -4,6 +4,7 @@ import llama
 final class LlamaRunner: TextGenerator {
     fileprivate final class LlamaLogCapture {
         private var lines: [String] = []
+        private var levels: [ggml_log_level] = []
         private let lock = NSLock()
         private let maxLines = 24
         private var lastLevel: ggml_log_level = GGML_LOG_LEVEL_INFO
@@ -33,8 +34,10 @@ final class LlamaRunner: TextGenerator {
 
             lock.lock()
             lines.append(trimmed)
+            levels.append(effectiveLevel)
             if lines.count > maxLines {
                 lines.removeFirst(lines.count - maxLines)
+                levels.removeFirst(levels.count - maxLines)
             }
             lock.unlock()
             print("[llama] \(trimmed)")
@@ -45,6 +48,22 @@ final class LlamaRunner: TextGenerator {
             let joined = lines.suffix(maxLines).joined(separator: "\n")
             lock.unlock()
             return joined
+        }
+
+        /// Only the lines llama.cpp itself called errors.
+        ///
+        /// Selecting by wording instead was wrong in both directions: it
+        /// missed errors phrased without the word "error", and it promoted
+        /// remarks that merely contain "cannot" — `done_getting_tensors: …
+        /// cannot be used with preferred buffer type CPU_REPACK, using CPU
+        /// instead` is a DEBUG line printed on loads that go on to succeed,
+        /// and it was reported to a user as the reason one failed.
+        func recentErrors() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return zip(lines, levels)
+                .filter { $0.1.rawValue >= GGML_LOG_LEVEL_ERROR.rawValue }
+                .map { $0.0 }
         }
     }
 
@@ -85,37 +104,30 @@ final class LlamaRunner: TextGenerator {
         case generationFailed
         case invalidTemplate
 
-        /// The line from a captured log that actually says what went wrong.
+        /// What a load failure should say.
         ///
-        /// The load path reports the tail of llama.cpp's log, and the tail is
-        /// frequently not the reason. `create_tensor: loading tensor
-        /// blk.58.ssm_alpha.weight` is a `LLAMA_LOG_DEBUG` printed on the
-        /// *first* line of `create_tensor`, before it does anything — so it
-        /// says which tensor was next, not what failed. Reported as the cause
-        /// it reads like a missing or corrupt tensor, which sends the reader
-        /// to re-download a model that may be fine.
+        /// Built from the lines llama.cpp logged at ERROR, never from wording.
+        /// Picking by words was wrong twice over: `create_tensor: loading
+        /// tensor …` is a DEBUG trace printed *before* the work, and
+        /// `done_getting_tensors: … cannot be used with preferred buffer type
+        /// CPU_REPACK, using CPU instead` is a DEBUG remark that appears on
+        /// loads which then succeed. Both were reported to a user as the
+        /// reason a load failed, and both sent them looking at the wrong
+        /// thing.
         ///
-        /// Errors are pulled out ahead of the tail, and the tail is kept after
-        /// them so nothing is lost.
-        static func explain(_ detail: String) -> String {
-            let lines = detail.split(separator: "\n").map(String.init)
-            let interesting = lines.filter { line in
-                let l = line.lowercased()
-                guard l.contains("error") || l.contains("failed")
-                        || l.contains("unsupported") || l.contains("missing")
-                        || l.contains("not enough") || l.contains("cannot") else {
-                    return false
-                }
-                // "loading tensor …" is a trace even when a later line reuses
-                // the word; excluding it here is what stops the trace winning.
-                return !l.contains("loading tensor")
+        /// When llama.cpp logged nothing at ERROR, say that plainly rather
+        /// than promoting whatever line happened to be last. A load that ends
+        /// without an error was stopped, not refused — on a device that means
+        /// memory far more often than anything else.
+        static func explain(errors: [String], tail: String) -> String {
+            if !errors.isEmpty {
+                return "Failed to load model: " + errors.joined(separator: "\n")
             }
-            guard !interesting.isEmpty else {
-                return "Failed to load model. The log ended without an error, "
-                    + "which usually means the load was killed rather than "
-                    + "refused — most often memory. Last log lines:\n\(detail)"
-            }
-            return "Failed to load model: \(interesting.joined(separator: "\n"))"
+            return "Failed to load model. llama.cpp reported no error, which "
+                + "means the load was stopped rather than refused — on a "
+                + "device that is usually memory. Try a smaller quantization "
+                + "or a shorter context.\n\nLast log lines (diagnostic only, "
+                + "not the cause):\n\(tail)"
         }
 
         var errorDescription: String? {
@@ -127,7 +139,9 @@ final class LlamaRunner: TextGenerator {
             case .modelLoadFailed:
                 return "Failed to load model."
             case .modelLoadFailedDetail(let detail):
-                return LlamaError.explain(detail)
+                // Carries the tail; the errors are attached at the failure
+                // site, which is the only place that still has the levels.
+                return detail
             case .unsupportedArchitecture(let arch):
                 return "Unsupported architecture '\(arch)' on iOS Metal — try a different model."
             case .contextInitFailed:
@@ -564,11 +578,16 @@ final class LlamaRunner: TextGenerator {
             // into ai_model_done.txt and the Python side prints it.
             let cpuLog = Self.logCapture.recentLogText()
             // Pick whichever log is longer / more informative.
-            let detail = (cpuLog.count > gpuLog.count ? cpuLog : gpuLog)
+            let tail = (cpuLog.count > gpuLog.count ? cpuLog : gpuLog)
                 .split(separator: "\n").suffix(20).joined(separator: "\n")
+            var message = LlamaError.explain(errors: Self.logCapture.recentErrors(),
+                                             tail: tail.isEmpty ? "<no log captured>" : String(tail))
+            // What the file on disk actually is, not what it is called.
+            if let what = Self.describeGGUF(at: url) {
+                message += "\n\nThe file: \(what)"
+            }
             DispatchQueue.main.async {
-                completion(.failure(LlamaError.modelLoadFailedDetail(
-                    detail.isEmpty ? "<no log captured>" : detail)))
+                completion(.failure(LlamaError.modelLoadFailedDetail(message)))
             }
         }
     }
@@ -647,10 +666,18 @@ final class LlamaRunner: TextGenerator {
             let log = Self.logCapture.recentLogText()
             print("[llama] Context init FAILED. Logs:\n\(log)")
             llama_model_free(model)
-            let detail = log.split(separator: "\n").suffix(20).joined(separator: "\n")
+            let tail = log.split(separator: "\n").suffix(20).joined(separator: "\n")
+            let errors = Self.logCapture.recentErrors()
+            // Naming the stage matters: the model loaded, so a smaller
+            // quantization will not help here — a shorter context will.
+            let message = errors.isEmpty
+                ? "Failed to create context. The model loaded but there was no "
+                    + "room for its context at these settings; try a shorter "
+                    + "context length.\n\nLast log lines (diagnostic only, not "
+                    + "the cause):\n\(tail)"
+                : "Failed to create context: " + errors.joined(separator: "\n")
             DispatchQueue.main.async {
-                completion(.failure(LlamaError.modelLoadFailedDetail(
-                    "context init failed — \(detail)")))
+                completion(.failure(LlamaError.modelLoadFailedDetail(message)))
             }
             return
         }
@@ -707,6 +734,36 @@ final class LlamaRunner: TextGenerator {
     /// first ~4KB of the header looking for the literal sequence
     /// `general.architecture` followed by a string-type marker
     /// (uint32 = 8) and a length-prefixed UTF-8 string.
+    /// A one-line description of a GGUF, read from its own header.
+    ///
+    /// The tensor count sits at offset 8 of every GGUF and is the cheapest
+    /// way to tell two files apart when they share a name. That matters: a
+    /// model on a device reported as `Qwen3.5-9B-Q3_K_S` logged a `blk.58`
+    /// and 627 tensors sharing a buffer type, while the file the catalogue
+    /// points at — verified on a Mac through this same engine — has 427
+    /// tensors, 32 layers, and loads. Same name, different model, and nothing
+    /// in the app noticed, because the name is all it ever checked.
+    static func describeGGUF(at url: URL) -> String? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        guard let head = try? fh.read(upToCount: 24), head.count >= 24,
+              head[0] == 0x47, head[1] == 0x47, head[2] == 0x55, head[3] == 0x46
+        else { return nil }
+
+        func u64(_ offset: Int) -> UInt64 {
+            var v: UInt64 = 0
+            for i in (0..<8).reversed() { v = (v << 8) | UInt64(head[offset + i]) }
+            return v
+        }
+        let version = UInt32(head[4]) | UInt32(head[5]) << 8
+            | UInt32(head[6]) << 16 | UInt32(head[7]) << 24
+        let tensors = u64(8)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let arch = sniffGGUFArchitecture(at: url) ?? "unknown"
+        return String(format: "%@ · %llu tensors · GGUF v%u · %.2f GB",
+                      arch, tensors, version, Double(size) / 1_073_741_824)
+    }
+
     private static func sniffGGUFArchitecture(at url: URL) -> String? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }

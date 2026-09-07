@@ -168,8 +168,8 @@ final class SettingsViewController: UIViewController {
                                                  footer: "Applies to new renders only — existing videos keep their original settings.",
                                                  rows: [
             segmentRow(title: "Quality",
-                       options: ["480p", "720p", "1080p", "1440p", "4K", "8K"],
-                       subtitle: "Higher quality renders slower and uses more storage. 4K/8K need lots of free RAM — the renderer checks first and falls back if memory is tight.",
+                       options: ["480p", "720p", "1080p", "1440p", "4K", "8K", "12K", "14K"],
+                       subtitle: "Higher quality renders slower and uses more storage. 4K and above need lots of free RAM — the renderer warns and keeps going. 12K and 14K still encode in hardware; above 14K the encoder falls back to software and crawls.",
                        selected: Settings.manimQualityIndex) { idx in
                 Settings.manimQualityIndex = idx
             },

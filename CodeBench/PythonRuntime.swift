@@ -2029,11 +2029,24 @@ try:
         # default, the gotcha the old code avoided by capping at 1080p. High-res
         # is now memory-safe via the capped/downsampled GIF buffer + frame
         # streaming + malloc pressure relief (ported from ManimStudio's 8K path).
+        # Resolutions with no built-in manim preset. Defined once and read by
+        # both this block and the pre-render re-apply below; they used to be
+        # written out twice with a comment asking whoever edited one to
+        # remember the other, which is not a mechanism.
+        #
+        # 12K and 14K are here because Apple's hardware HEVC encoder reaches
+        # them: it needs the *shorter* side at or under 8192, and 6480 and 8064
+        # both clear that. 16K UHD (15360x8640) does not — its height is 448
+        # over — so it is deliberately absent; it would encode in software
+        # mpeg4 and crawl. See docs/manim.md, "Where the ceiling actually is".
+        _CUSTOM_RES = {5: (7680, 4320),      # 8K UHD
+                       6: (11520, 6480),     # 12K
+                       7: (14336, 8064)}     # 14K
+        globals()['__codebench_custom_res'] = _CUSTOM_RES
         _mq = int(globals().get('__codebench_manim_quality', '0') or '0')
         _mfps = int(globals().get('__codebench_manim_fps', '0') or '0')
-        if _mq == 5:
-            manim.config.pixel_width = 7680
-            manim.config.pixel_height = 4320
+        if _mq in _CUSTOM_RES:
+            manim.config.pixel_width, manim.config.pixel_height = _CUSTOM_RES[_mq]
             manim.config.frame_rate = float(_mfps) if _mfps > 0 else 30.0
         else:
             _quality_map = {0: 'low_quality', 1: 'medium_quality',
@@ -2297,8 +2310,8 @@ try:
                         _avail_fn.restype = _ct.c_size_t
                         _avail = int(_avail_fn())
                         # Resolution-tiered peak-memory ESTIMATE, used only to
-                        # warn. There is no resolution limit: every quality up to
-                        # 8K renders regardless of this number. Frame streaming to
+                        # warn. There is no resolution limit: every quality
+                        # renders regardless of this number. Frame streaming to
                         # ffmpeg + the capped/downsampled GIF buffer (write_frame
                         # patch above) + malloc pressure relief keep the working
                         # set transient and freed each frame, so the estimate is a
@@ -2307,7 +2320,11 @@ try:
                         # net: it kills the render workload, not the app.
                         _h = int(getattr(_m.config, "pixel_height", 480) or 480)
                         _fps = int(getattr(_m.config, "frame_rate", 15) or 15)
-                        if _h >= 4000:        # 8K
+                        if _h >= 8000:        # 14K — a frame is 462 MB of RGBA,
+                            _need = 6 * 1024 * 1024 * 1024   # 3.5x an 8K frame
+                        elif _h >= 6000:      # 12K — 299 MB a frame
+                            _need = 4 * 1024 * 1024 * 1024
+                        elif _h >= 4000:      # 8K — 133 MB a frame
                             _need = 3 * 1024 * 1024 * 1024
                         elif _h >= 2000:      # 4K
                             _need = 2 * 1024 * 1024 * 1024
@@ -2543,15 +2560,16 @@ try:
                 _m.config.upto_animation_number = -1
                 # Re-apply quality preset right before render to guarantee the
                 # frame_rate/resolution survive any config churn during setup.
-                # MUST mirror the 6-tier preset block above — a stale low/med/
-                # high-only map here silently downgrades 1440p/4K/8K back to
-                # low_quality (and resets 8K's explicit pixels to 480p), which
-                # is exactly "selecting the manim quality does nothing".
+                # Reads the same _CUSTOM_RES the block above published, so the
+                # two cannot drift. When they were written out separately, a
+                # stale copy here silently downgraded 1440p/4K/8K back to
+                # low_quality — exactly "selecting the manim quality does
+                # nothing".
                 _q = int(globals().get('__codebench_manim_quality', '0') or '0')
                 _qfps = int(globals().get('__codebench_manim_fps', '0') or '0')
-                if _q == 5:
-                    _m.config.pixel_width = 7680
-                    _m.config.pixel_height = 4320
+                _cres = globals().get('__codebench_custom_res') or {5: (7680, 4320)}
+                if _q in _cres:
+                    _m.config.pixel_width, _m.config.pixel_height = _cres[_q]
                     _m.config.frame_rate = float(_qfps) if _qfps > 0 else 30.0
                 else:
                     _qmap = {0: 'low_quality', 1: 'medium_quality',

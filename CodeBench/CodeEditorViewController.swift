@@ -4826,7 +4826,12 @@ except Exception:
         qualityLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Create fresh segmented controls for the popover (don't re-parent instance properties)
-        let qualitySeg = UISegmentedControl(items: ["480p", "720p", "1080p", "1440p", "4K", "8K"])
+        // 12K and 14K exist because Apple's hardware HEVC encoder reaches them —
+        // it needs the shorter side at or under 8192, and 6480 and 8064 both
+        // clear it. 16K UHD does not (8640), so it is not offered: it would
+        // encode in software mpeg4 and crawl.
+        let qualitySeg = UISegmentedControl(items: ["480p", "720p", "1080p", "1440p",
+                                                    "4K", "8K", "12K", "14K"])
         qualitySeg.selectedSegmentIndex = UserDefaults.standard.integer(forKey: "manim_quality")
         qualitySeg.translatesAutoresizingMaskIntoConstraints = false
         qualitySeg.backgroundColor = EditorTheme.gutterBg

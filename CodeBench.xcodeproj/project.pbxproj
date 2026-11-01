@@ -550,6 +550,18 @@
 					"-Wl,-exported_symbol,_cb_bg_time_remaining",
 					"-Wl,-exported_symbol,_cb_swift_execute",
 					"-Wl,-exported_symbol,_cb_swift_free",
+					"-Wl,-exported_symbol,_cb_spec_count",
+					"-Wl,-exported_symbol,_cb_spec_id",
+					"-Wl,-exported_symbol,_cb_spec_run",
+					"-Wl,-exported_symbol,_cb_cpu_clock_ghz",
+					"-Wl,-exported_symbol,_cb_cpu_fma_gflops",
+					"-Wl,-exported_symbol,_cb_cpu_triad_gbs",
+					"-Wl,-exported_symbol,_cb_cpu_latency_ns",
+					"-Wl,-exported_symbol,_cb_gpu_info_json",
+					"-Wl,-exported_symbol,_cb_gpu_fma_tflops",
+					"-Wl,-exported_symbol,_cb_gpu_bandwidth_gbs",
+					"-Wl,-exported_symbol,_cb_gpu_matmul_gflops",
+					"-Wl,-exported_symbol,_cb_gpu_blur_mpix",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -622,6 +634,18 @@
 					"-Wl,-exported_symbol,_cb_bg_time_remaining",
 					"-Wl,-exported_symbol,_cb_swift_execute",
 					"-Wl,-exported_symbol,_cb_swift_free",
+					"-Wl,-exported_symbol,_cb_spec_count",
+					"-Wl,-exported_symbol,_cb_spec_id",
+					"-Wl,-exported_symbol,_cb_spec_run",
+					"-Wl,-exported_symbol,_cb_cpu_clock_ghz",
+					"-Wl,-exported_symbol,_cb_cpu_fma_gflops",
+					"-Wl,-exported_symbol,_cb_cpu_triad_gbs",
+					"-Wl,-exported_symbol,_cb_cpu_latency_ns",
+					"-Wl,-exported_symbol,_cb_gpu_info_json",
+					"-Wl,-exported_symbol,_cb_gpu_fma_tflops",
+					"-Wl,-exported_symbol,_cb_gpu_bandwidth_gbs",
+					"-Wl,-exported_symbol,_cb_gpu_matmul_gflops",
+					"-Wl,-exported_symbol,_cb_gpu_blur_mpix",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = euleryu.CodeBench;
 				PRODUCT_NAME = "$(TARGET_NAME)";

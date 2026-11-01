@@ -54,59 +54,56 @@ Every package card also shows its **true on-disk size** (native frameworks corre
 
 ### `cpu-z` / `gpu-z` — cross-platform comparable benchmarks in the terminal
 
-Two new shell commands measure the device live (nothing is a lookup table):
+Two shell commands measure the device live (nothing is a lookup table). Since the November 2026 upgrade both run **native code compiled into the app** — C for the CPU, Metal for the GPU — instead of Python loops and torch, so they are faster, measure more, and measure the hardware rather than the interpreter:
 
-- **`cpu-z`** — single-core (Python loop, zlib, memory copy) and multi-core (zlib across all cores) scores on the **official CPU-Z bench scale** (M1 ≈ 580 single / 3400 multi), plus AMX matmul GFLOPS and SHA-256 as info lines. Directly comparable with Windows/Linux CPU-Z screenshots.
-- **`gpu-z`** — Metal device info straight from `MTLCreateSystemDefaultDevice` (family, Metal level, unified-memory budget) + fp16/fp32 matmul GFLOPS through the torch Metal bridge, scored on the **Geekbench 6 Compute scale** (M1 ≈ 32k; an M4 posts ~53–56k). `-v` shows bridge diagnostics.
+- **`cpu-z`** — the cores (performance + efficiency counts), each kind's L1/L2 caches, cache line and page size, RAM and every Arm feature the kernel reports (SME2, I8MM, BF16, SHA3, …); then the measured clock, FP32/FP64 FMA throughput on one core and on all cores, memory bandwidth (STREAM triad) and latency (L1, L2, DRAM), and four real workloads (a compiler, a chess search, compression, a ray tracer) on one core and on all of them. Scored on the **CPU-Z bench scale** as before. `--stress S` loads every core for S seconds and prints the work done each second, so throttling shows as the device warms; `--json` saves the results.
+- **`gpu-z`** — what Metal reports (GPU families, working-set budget, largest buffer, threadgroup limits, ray tracing, function pointers, argument-buffer and read-write-texture tiers, BC textures), then **Metal benchmarks timed by the GPU itself**: peak FP32 and FP16 shader FMA, memory bandwidth, MPS matrix multiply (fp32 and fp16, 4096²) and a 4096² Gaussian blur. About five seconds, no torch import. Scored on the **Geekbench 6 Metal scale** as before. `--torch` adds the old torch-bridge measurement (what Python code gets, copies included); `--json` saves the results.
 
 Fixing gpu-z's initial 0-GFLOPS reading also uncovered and fixed a real bug: the torch→numpy conversion layer was ~20,000× too slow, silently forcing the entire torch Metal bridge onto the CPU. With the fix, `torchmetal.enable()` genuinely GPU-accelerates `torch.matmul` (M4: 1400+ GFLOPS fp16) for all user code — see [python-ios-lib](https://github.com/yu314-coder/python-ios-lib) for that side (which also gained parquet-enabled pyarrow and a Metal-backed moderngl).
 
 #### How the scores are computed
 
-Every number is **measured on your device at the moment you run the command** — there is no spec-sheet lookup, no model-name table. The scores are then mapped onto two well-known external scales so you can compare across platforms. They are labeled *est.* because we cannot run CPUID's or Geekbench's proprietary workloads; instead our own workloads are **calibrated against published Apple-silicon anchor scores**, and validated against real results (an iPad M4 maps to ≈ 820 single on our scale; official CPU-Z posts the M4 at ≈ 800–830).
+Every number is **measured on your device at the moment you run the command**. The scores are then mapped onto two well-known external scales so you can compare across platforms. They are labeled *est.* because we cannot run CPUID's or Geekbench's proprietary workloads; our own workloads are calibrated on one reference device — a Mac mini M4 running the iPad app — whose published scores anchor each scale.
 
-**`cpu-z` — workloads**
+**`cpu-z` — measurements (native C, `CodeBench/Bench`)**
 
-| # | Benchmark | What it measures | How | One-M1-core reference |
-|---|---|---|---|---|
-| 1 | Python loop | interpreter + integer ALU, one core | 3,000,000 iterations of `acc += i*3 + (i>>2) ^ (i&7)` → Mops/s | 9.0 Mops/s |
-| 2 | zlib compress (1 thread) | C-speed CPU throughput, build-independent | 4 MB high-entropy blob (`random.Random(0xC0DE).randbytes`, deterministic so every device compresses identical data), level 6 → MB/s | 50 MB/s |
-| 3 | Memory copy (1 thread) | memory subsystem | 64 MB numpy buffer copied 4×, read+write bytes counted → GB/s | 13 GB/s |
-| 4 | zlib × N threads | true multi-core scaling | same blob compressed concurrently in `cpu_count` threads — zlib **releases the GIL**, so N threads genuinely occupy N cores → aggregate MB/s | (scored against the same 50 MB/s single-core ref) |
+| Measurement | How | Mac mini M4 |
+|---|---|---|
+| Clock | 100 dependent integer adds per sample (one a cycle on every Apple core), on a user-interactive thread → GHz | 3.9–4.0 GHz |
+| FP32 / FP64 FMA | 16 independent NEON FMA chains (enough to fill every FMA pipe through its latency), one core and every core at once | 79 / 43 GFLOPS one core |
+| Memory triad | STREAM `a[i] = b[i] + s·c[i]` over 64 MB arrays, 24 bytes an element | 90 GB/s one core, 245 GB/s all |
+| Latency | a shuffled pointer chase through 16 KB, 2 MB and 256 MB, one dependent load at a time | L1 0.8 ns · L2 5.6 ns · DRAM 123 ns |
+| Workloads | compile (lexer → parser → optimiser → register allocation), chess (bitboard alpha-beta, perft-verified), lzfast (LZ4 + LZFSE round trip), raytrace (BVH path tracer) | 0.20–0.22 s each, one core |
 
 **`cpu-z` — formulas**
 
 ```
-single_ratio = mean( python/9.0 , zlib_1T/50 , copy_1T/13 )   # vs ONE M1 core
-single_score = 580 × single_ratio                              # CPU-Z v17: M1 ≈ 580
+single_ratio = geomean( M4_time_w / time_w )                 # w = the four workloads, one copy each
+single_score = 815 × single_ratio                            # CPU-Z v17: Apple M4 ≈ 800–830 single
 
-multi_ratio  = zlib_NT / 50                                    # aggregate vs one M1 core
-multi_score  = 680 × multi_ratio                               # calibrated: M1 (8-core, ≈5× scaling) ≈ 3400
+multi_ratio  = geomean( cores × M4_time_w / wall_time_w )    # one copy per core, all at once
+multi_score  = 815 × multi_ratio                             # "how many M4 performance cores' worth of work"
 ```
 
-Both scores share **one scale** (everything is normalized to a single M1 core), which is why multi reads ~3–6× single on a healthy chip — the same relationship Geekbench and CPU-Z show. Multi is scored from the zlib run **alone** because CPU-Z's multi test scales near-linearly with cores; mixing in bus-bound work would hide core count.
+Both scores share **one unit** — one M4 performance core of work = 815 — which is why multi reads several times single on a healthy chip, as CPU-Z's near-linear multi-thread test does. The Mac mini M4 itself measures **≈ 823 single / ≈ 4,700 multi** (5.8 M4 cores' work from its 4 performance + 6 efficiency cores). Each workload checks its own answer (perft counts, a round trip, an optimality proof), so a broken build cannot post a fast wrong number.
 
-**`cpu-z` — shown but deliberately NOT scored**
+**`gpu-z` — workloads and formula (Metal, `CodeBench/GPUBench.swift`)**
 
-- **SHA-256** — on Apple silicon this is fixed-function crypto: it measures whether the Python build links a hardware-accelerated hashlib (≈ 3,000 MB/s) or falls back to software (≈ 500 MB/s) — a 6–7× swing that says nothing about the CPU. The line is labeled `HW crypto` / `software path` instead.
-- **Matmul fp32 (AMX)** — Apple's matrix coprocessor via Accelerate. It is neither "a core" nor "all cores", so it gets an info line rather than skewing either score.
-- **Memory copy × 4 threads** — the memory bus is shared; parallel copies don't scale with cores, so including it would drag the multi score down arbitrarily.
-
-**`gpu-z` — workloads and formula**
-
-The info block is read directly from Metal (`MTLCreateSystemDefaultDevice` via ctypes: device name, `MTLGPUFamily`, Metal version, unified memory, `recommendedMaxWorkingSetSize`). The benchmark then runs real `torch.matmul` calls routed to the GPU by the torch Metal bridge (`MPSMatrixMultiplication` underneath):
-
-- **Probe-grow sizing** — square matmuls at k = 512 → 1024 → 2048; growth stops early if a single call exceeds 0.35 s, then up to 4 repetitions inside a 0.6 s budget. GFLOPS = 2k³·reps / elapsed.
-- **Every call is materialized** — one element of the result is read back after each matmul, so the timing **includes the CPU↔GPU copies both ways**. This is intentional: the score reflects what Python code actually obtains, not a marketing TFLOPS figure (an M4 posts ≈ 950 GFLOPS fp32 here against 4.4 TFLOPS theoretical — the copies are the tax).
+| Benchmark | How | Mac mini M4 (10-core GPU) |
+|---|---|---|
+| FP32 / FP16 shader FMA | a million threads × 8 FMA chains × 4 lanes, kernel compiled on the device | 3.55 / 3.7 TFLOPS |
+| Memory bandwidth | a 256 MB buffer-to-buffer copy, read + write counted | 92 GB/s |
+| Matmul (MPS) | `MPSMatrixMultiplication`, 4096², matrices in GPU memory | 2.9 TFLOPS fp32 · 3.4 fp16 |
+| Gaussian blur | `MPSImageGaussianBlur` σ 4 over 4096² half-float RGBA | 2,245 Mpix/s |
 
 ```
-gpu_ratio = mean( fp16_GFLOPS/800 , fp32_GFLOPS/500 )   # refs = measured M1-class MPS incl. copies
-gpu_score = 34000 × gpu_ratio                            # Geekbench 6 Compute: M1 ≈ 32k
+gpu_ratio = geomean( fp32/3.55 , bandwidth/92.5 , matmul_fp32/2.93 , blur/2245 )   # vs the Mac mini M4
+gpu_score = 57000 × gpu_ratio                                                       # Geekbench 6 Metal: M4 ≈ 57k
 ```
 
-Calibration check: a measured M4 ratio of ≈ 1.6 maps to ≈ 53–56k — real Geekbench 6 Metal posts the M4 at ≈ 57k (within ~5 %). **Attention (SDPA)** is displayed as an info line but not scored: the bridge executes it as a matmul → softmax → matmul chain with a copy at every hop, so its throughput measures bridge dispatch overhead rather than GPU speed. TechPowerUp's GPU-Z has **no benchmark at all** (it is an info/sensor tool), which is why the cross-platform anchor is Geekbench 6 Compute — the number Windows/Linux GPUs are compared with (OpenCL/Vulkan there, Metal on Apple).
+Every time is the GPU's own (`gpuStartTime` → `gpuEndTime` of the command buffer), best of the runs that fit in the budget after a warm-up, so neither CPU↔GPU copies nor dispatch latency is in the number — unlike the old torch path, which `gpu-z --torch` still shows. TechPowerUp's GPU-Z has **no benchmark at all** (it is an info/sensor tool), which is why the cross-platform anchor is Geekbench 6 — the number Windows/Linux GPUs are compared with (OpenCL/Vulkan there, Metal on Apple).
 
-Run-to-run variance of ±10 % is normal for both commands (thermals, background load); `cpu-z -q` runs a shorter, noisier pass, and `gpu-z -i` prints the info block without loading torch.
+Run-to-run variance of a few percent is normal for both commands (thermals, background load); `-q` runs a shorter, noisier pass, `-i` prints only the information block, and a build without the native code falls back to the earlier Python measurements.
 
 ### AI Assist chat — ChatGPT-style UI
 

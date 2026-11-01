@@ -34,4 +34,9 @@
 // LlamaFinetuner.swift.
 #include "FinetuneBridge.h"
 
+// The native workloads behind the terminal's cpu-z, gpu-z and their
+// benchmark suite (CodeBench/Bench), declared for GPUBench.swift's
+// keep-alive.
+#include "Bench/cb_bench.h"
+
 #endif

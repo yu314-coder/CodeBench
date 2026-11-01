@@ -26,14 +26,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     ///   - cb_swift_execute / cb_swift_free
     ///       (Swift tree-walking interpreter — `swift file.swift` from
     ///       the terminal)
+    ///   - cb_gpu_* / cb_cpu_* / cb_spec_*
+    ///       (the terminal's cpu-z and gpu-z, GPUBench.swift + Bench/)
     private static let _metalBridgeAnchor: Int = _cbMetalBridgeKeepAlive()
     private static let _backgroundBridgeAnchor: Double = _cbBackgroundKeepAlive()
     private static let _swiftBridgeAnchor: Int = _cbSwiftBridgeKeepAlive()
+    private static let _gpuBenchAnchor: Int = _cbGPUBenchKeepAlive()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         _ = AppDelegate._metalBridgeAnchor       // touch anchors at launch
         _ = AppDelegate._backgroundBridgeAnchor
         _ = AppDelegate._swiftBridgeAnchor
+        _ = AppDelegate._gpuBenchAnchor
 
         // Register the Workspace as a Files-app Location (no-op until the
         // App Group is provisioned). Also migrates the Workspace into the

@@ -55,6 +55,32 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
     /// Our background read source — pulls bytes off the master FD.
     private var readSource: DispatchSourceRead?
 
+    /// The read loop's buffer, reused for every read (the source's queue
+    /// is serial). One pipe's worth, so a burst comes off in one read.
+    private var readBuffer = [UInt8](repeating: 0, count: 65_536)
+
+    /// The last byte the read loop passed on, for LF → CRLF across reads.
+    private var lastOutputByte: UInt8 = 0
+
+    /// Private OSC sequences programs write to tell the terminal
+    /// something; stripped from the output (see startReadLoop).
+    private enum Signal { case raw, cooked, aiOn, aiOff }
+    private static let signals: [(marker: [UInt8], signal: Signal)] = [
+        (Array("\u{1B}]codebench;raw\u{1B}\\".utf8), .raw),
+        (Array("\u{1B}]codebench;cooked\u{1B}\\".utf8), .cooked),
+        (Array("\u{1B}]codebench;ai-on\u{1B}\\".utf8), .aiOn),
+        (Array("\u{1B}]codebench;ai-off\u{1B}\\".utf8), .aiOff),
+    ]
+
+    /// Output on its way to the main thread, in order: bytes and the
+    /// signals between them. One main-queue hop takes everything that
+    /// arrived meanwhile, so a flood of output reaches SwiftTerm as a few
+    /// large feeds instead of one queued block (and copy) per read.
+    private enum Outgoing { case bytes([UInt8]), signal(Signal) }
+    private var outgoing: [Outgoing] = []
+    private var outgoingScheduled = false
+    private let outgoingLock = NSLock()
+
     /// Bytes that arrived from Python's stdout BEFORE terminalView was
     /// set. Without this buffer, the REPL's boot banner ("CodeBench shell
     /// — type help …") would vanish into the void.
@@ -236,102 +262,66 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
 
         source.setEventHandler { [weak self] in
             guard let self = self else { return }
-            var buffer = [UInt8](repeating: 0, count: 4096)
-            let n = buffer.withUnsafeMutableBufferPointer { bp in
-                Darwin.read(readFD, bp.baseAddress, bp.count)
-            }
-            guard n > 0 else { return }
-            let raw = Array(buffer[0..<n])
-
-            // First pass: detect + strip our private OSC mode-switch
-            // sequences. TUI apps (ncdu, vim, …) write
-            //   "\x1b]codebench;raw\x1b\\"    — enter raw input mode
-            //   "\x1b]codebench;cooked\x1b\\" — return to cooked mode
-            // to tell LineBuffer to stop line-editing and forward each
-            // keystroke directly. We strip them here so they never
-            // reach SwiftTerm (which would show them as garbage chars).
-            let rawModeMarker: [UInt8] = Array("\u{1B}]codebench;raw\u{1B}\\".utf8)
-            let cookedModeMarker: [UInt8] = Array("\u{1B}]codebench;cooked\u{1B}\\".utf8)
-            // `ai` REPL toggles on entry/exit so the LineBuffer knows to
-            // complete `/xxx` against the AI slash-command list on Tab
-            // and to echo the list when a bare `/` is typed.
-            let aiOnMarker: [UInt8] = Array("\u{1B}]codebench;ai-on\u{1B}\\".utf8)
-            let aiOffMarker: [UInt8] = Array("\u{1B}]codebench;ai-off\u{1B}\\".utf8)
-            var modeStripped: [UInt8] = []
-            modeStripped.reserveCapacity(raw.count)
-            var i = 0
-            while i < raw.count {
-                if _indexOf(rawModeMarker, in: raw, at: i) {
-                    DispatchQueue.main.async {
-                        LineBuffer.shared.setRawMode(true)
+            // One pass over what was read, on its way out:
+            //  • Our private OSC signals are cut out, in order with the
+            //    bytes around them. TUI apps (ncdu, vim, …) write
+            //    "\x1b]codebench;raw\x1b\\" / "…;cooked…" to tell
+            //    LineBuffer to stop / resume line editing; `ai` writes
+            //    "…;ai-on…" / "…;ai-off…" so Tab completes its /commands.
+            //    SwiftTerm would show them as garbage.
+            //  • ONLCR emulation: a real PTY's termios turns a bare LF
+            //    into CRLF so a newline also returns to column 0. Our pipe
+            //    has no termios, so Python's `\n` would leave prompts
+            //    stair-stepped to the right. Existing CRLFs pass as they are.
+            var items: [Outgoing] = []
+            let n = self.readBuffer.withUnsafeMutableBufferPointer { bp -> Int in
+                let n = Darwin.read(readFD, bp.baseAddress, bp.count)
+                guard n > 0 else { return n }
+                var cooked: [UInt8] = []
+                cooked.reserveCapacity(n + n / 32 + 16)
+                var last = self.lastOutputByte
+                var i = 0
+                while i < n {
+                    let b = bp[i]
+                    if b == 0x1B, i + 1 < n, bp[i + 1] == 0x5D,
+                       let (length, signal) = Self.signal(in: bp, at: i, count: n) {
+                        if !cooked.isEmpty {
+                            items.append(.bytes(cooked))
+                            cooked = []
+                            cooked.reserveCapacity(n - i)
+                        }
+                        items.append(.signal(signal))
+                        i += length
+                        continue
                     }
-                    i += rawModeMarker.count
-                    continue
-                }
-                if _indexOf(cookedModeMarker, in: raw, at: i) {
-                    DispatchQueue.main.async {
-                        LineBuffer.shared.setRawMode(false)
-                    }
-                    i += cookedModeMarker.count
-                    continue
-                }
-                if _indexOf(aiOnMarker, in: raw, at: i) {
-                    DispatchQueue.main.async {
-                        LineBuffer.shared.setAIMode(true)
-                    }
-                    i += aiOnMarker.count
-                    continue
-                }
-                if _indexOf(aiOffMarker, in: raw, at: i) {
-                    DispatchQueue.main.async {
-                        LineBuffer.shared.setAIMode(false)
-                    }
-                    i += aiOffMarker.count
-                    continue
-                }
-                modeStripped.append(raw[i])
-                i += 1
-            }
-
-            // ONLCR emulation: a real PTY's termios layer translates
-            // bare LF to CRLF on output so a newline both advances the
-            // cursor AND returns it to column 0. Our pipe has no termios,
-            // so Python's `\n` arrives here as plain 0x0A and SwiftTerm
-            // interprets it as "cursor down, same column" — producing
-            // prompts stair-stepped to the right of the previous line's
-            // content. Convert every lone LF to CRLF here. Existing CRs
-            // (CRLF sequences) are preserved untouched.
-            var cooked: [UInt8] = []
-            cooked.reserveCapacity(modeStripped.count + 16)
-            var j = 0
-            while j < modeStripped.count {
-                let b = modeStripped[j]
-                if b == 0x0A {
-                    let prev = j > 0 ? modeStripped[j - 1] : (cooked.last ?? 0)
-                    if prev != 0x0D {
+                    if b == 0x0A && last != 0x0D {
                         cooked.append(0x0D)
                     }
-                    cooked.append(0x0A)
-                } else {
                     cooked.append(b)
+                    last = b
+                    i += 1
                 }
-                j += 1
+                if !cooked.isEmpty { items.append(.bytes(cooked)) }
+                self.lastOutputByte = last
+                return n
             }
-            let slice = cooked
+            guard n > 0, !items.isEmpty else { return }
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                if let tv = self.terminalView {
-                    tv.feed(byteArray: slice[...])
+            self.outgoingLock.lock()
+            for item in items {
+                if case .bytes(let more) = item, case .bytes(var queued)? = self.outgoing.last {
+                    self.outgoing.removeLast()
+                    queued.append(contentsOf: more)
+                    self.outgoing.append(.bytes(queued))
                 } else {
-                    // terminalView not attached yet — buffer for later
-                    self.pendingLock.lock()
-                    self.pendingBytes.append(contentsOf: slice)
-                    self.pendingLock.unlock()
+                    self.outgoing.append(item)
                 }
-                // Notify the VC so it can mirror into its scrollback
-                // buffer (Copy / Export-log depend on this).
-                self.onOutputBytes?(slice)
+            }
+            let schedule = !self.outgoingScheduled
+            self.outgoingScheduled = true
+            self.outgoingLock.unlock()
+            if schedule {
+                DispatchQueue.main.async { [weak self] in self?.deliverOutgoing() }
             }
         }
 
@@ -339,14 +329,44 @@ final class PTYBridge: NSObject, TerminalViewDelegate {
         readSource = source
     }
 
-    /// Return true iff `haystack[at...]` starts with `needle`. Used by
-    /// the read loop to detect OSC mode-switch markers (raw / cooked).
-    private func _indexOf(_ needle: [UInt8], in haystack: [UInt8], at: Int) -> Bool {
-        guard at + needle.count <= haystack.count else { return false }
-        for k in 0..<needle.count {
-            if haystack[at + k] != needle[k] { return false }
+    /// The signal whose marker starts at `at`, and the marker's length.
+    private static func signal(in bp: UnsafeMutableBufferPointer<UInt8>, at: Int,
+                               count: Int) -> (Int, Signal)? {
+        for (marker, signal) in signals where at + marker.count <= count {
+            var k = 2   // ESC ] already matched
+            while k < marker.count && bp[at + k] == marker[k] { k += 1 }
+            if k == marker.count { return (marker.count, signal) }
         }
-        return true
+        return nil
+    }
+
+    /// Main thread: shows everything the read loop has queued, in order.
+    private func deliverOutgoing() {
+        outgoingLock.lock()
+        let items = outgoing
+        outgoing = []
+        outgoingScheduled = false
+        outgoingLock.unlock()
+        for item in items {
+            switch item {
+            case .bytes(let bytes):
+                if let tv = terminalView {
+                    tv.feed(byteArray: bytes[...])
+                } else {
+                    // terminalView not attached yet — buffer for later
+                    pendingLock.lock()
+                    pendingBytes.append(contentsOf: bytes)
+                    pendingLock.unlock()
+                }
+                // Notify the VC so it can mirror into its scrollback
+                // buffer (Copy / Export-log depend on this).
+                onOutputBytes?(bytes)
+            case .signal(.raw): LineBuffer.shared.setRawMode(true)
+            case .signal(.cooked): LineBuffer.shared.setRawMode(false)
+            case .signal(.aiOn): LineBuffer.shared.setAIMode(true)
+            case .signal(.aiOff): LineBuffer.shared.setAIMode(false)
+            }
+        }
     }
 
     // MARK: - Env vars for pretty output

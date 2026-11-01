@@ -834,6 +834,52 @@ final class CodeEditorViewController: UIViewController {
     /// SwiftTerm doesn't expose scrollback as a String, so we remember what
     /// we've pushed so Copy / Export-log can still work.
     private var terminalLogBuffer = String()
+    /// The start of a UTF-8 character the last chunk of output ended in
+    /// the middle of; it is finished by the next chunk.
+    private var terminalLogCarry: [UInt8] = []
+    /// `terminalLogBuffer` keeps the last ~1 MB (UTF-8).
+    private static let terminalLogLimit = 1_000_000
+
+    /// Adds to `terminalLogBuffer`, dropping the oldest half (at a line
+    /// break) past the limit. Sizes are UTF-8 counts, which a String
+    /// keeps: `count` walks every character — a 1 MB scan on the main
+    /// thread for each chunk of output once the log was full.
+    private func appendToTerminalLog(_ text: String) {
+        terminalLogBuffer.append(text)
+        let utf8 = terminalLogBuffer.utf8
+        guard utf8.count > Self.terminalLogLimit else { return }
+        var cut = utf8.index(utf8.startIndex, offsetBy: utf8.count / 2)
+        if let newline = utf8[cut...].firstIndex(of: 0x0A) {
+            cut = utf8.index(after: newline)
+        }
+        terminalLogBuffer = String(decoding: utf8[cut...], as: UTF8.self)
+    }
+
+    /// Output bytes to the log; returns the text they finished. A chunk
+    /// can end inside a multi-byte character; those bytes wait for the
+    /// next chunk instead of making the whole chunk undecodable (it used
+    /// to be left out of the log).
+    @discardableResult
+    private func appendToTerminalLog(bytes: [UInt8]) -> String {
+        var all = terminalLogCarry
+        all.append(contentsOf: bytes)
+        terminalLogCarry = []
+        // A lead byte in the last three whose sequence isn't complete.
+        var end = all.count
+        for back in 1...min(3, all.count) {
+            let b = all[all.count - back]
+            if b & 0xC0 == 0x80 { continue }          // continuation byte
+            let need = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1
+            if need > back { end = all.count - back }
+            break
+        }
+        if end < all.count {
+            terminalLogCarry = Array(all[end...])
+        }
+        let text = String(decoding: all[..<end], as: UTF8.self)
+        appendToTerminalLog(text)
+        return text
+    }
     private let terminalTrafficClose = UIButton(type: .system)
     private let terminalTrafficMin   = UIButton(type: .system)
     private let terminalTrafficMax   = UIButton(type: .system)
@@ -3597,14 +3643,8 @@ final class CodeEditorViewController: UIViewController {
         // bypasses appendToTerminal.
         PTYBridge.shared.onOutputBytes = { [weak self] bytes in
             guard let self = self else { return }
-            if let s = String(bytes: bytes, encoding: .utf8) {
-                self.terminalLogBuffer.append(s)
-                if self.terminalLogBuffer.count > 1_000_000 {
-                    let cut = self.terminalLogBuffer.index(
-                        self.terminalLogBuffer.startIndex,
-                        offsetBy: self.terminalLogBuffer.count / 2)
-                    self.terminalLogBuffer = String(self.terminalLogBuffer[cut...])
-                }
+            let s = self.appendToTerminalLog(bytes: bytes)
+            if !s.isEmpty {
                 // Watch for "[plot saved] <path>" lines from scripts
                 // launched in the terminal (e.g. `python 3d.py`). The
                 // Run-button path reads __codebench_plot_path from
@@ -3997,6 +4037,7 @@ except Exception:
     /// prompt once it's live.
     private func setTerminalInitialBanner() {
         terminalLogBuffer = ""
+        terminalLogCarry = []
         terminalANSIState = ANSI.State()
         // ESC c (RIS, full terminal reset) — wipes the visible buffer,
         // resets attributes, scroll region, character set, etc.
@@ -7317,7 +7358,7 @@ except Exception:
         // the next runloop tick. Small writes (<512 B) batch; larger
         // ones flush immediately so progress bars don't lag.
         termCoalesceBuffer += normalized
-        if termCoalesceBuffer.count > 4096 {
+        if termCoalesceBuffer.utf8.count > 4096 {
             flushTermCoalesce()
         } else if !termCoalesceScheduled {
             termCoalesceScheduled = true
@@ -7327,15 +7368,8 @@ except Exception:
         }
         // Mirror keeps the ORIGINAL text (no CR injection) so
         // anything that copies the buffer (Cmd+C / share) gets the
-        // clean output users actually wrote.
-        terminalLogBuffer.append(text)
-        // Cap the mirror to ~1MB so long-running sessions don't balloon
-        // memory; drop the oldest half when we hit the limit.
-        if terminalLogBuffer.count > 1_000_000 {
-            let cut = terminalLogBuffer.index(terminalLogBuffer.startIndex,
-                                              offsetBy: terminalLogBuffer.count / 2)
-            terminalLogBuffer = String(terminalLogBuffer[cut...])
-        }
+        // clean output users actually wrote. Capped at ~1 MB.
+        appendToTerminalLog(text)
     }
 
     /// Internal-tag prefixes whose lines are diagnostic noise (manim

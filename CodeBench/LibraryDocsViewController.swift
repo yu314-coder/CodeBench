@@ -1910,15 +1910,20 @@ extension LibraryDocsViewController {
 
     // MARK: Packaging tooling (pip, wheel, setuptools, pygments)
     static var packagingSection: LibrarySection {
-        LibrarySection(name: "pip / wheel / setuptools", icon: "shippingbox.fill", modules: [
-            LibraryModule(name: "pip — install at runtime", summary: "Install pure-Python wheels from PyPI into Documents/site-packages",
-                importLine: "from pip._internal.cli.main import main as pip_main",
-                items: ["pip_main(['install', '--target', dir, 'rich'])", "pip_main(['install', pkg, '--no-deps'])", "pip_main(['install', '--upgrade', pkg])", "pip_main(['install', '--no-binary', ':all:', pkg])", "pip_main(['show', pkg])", "pip_main(['list'])", "pip_main(['uninstall', pkg, '-y'])", "env: PIP_DISABLE_PIP_VERSION_CHECK=1"],
-                example: "import os, sys\nuser_site = os.path.expanduser('~/Documents/site-packages')\nos.makedirs(user_site, exist_ok=True)\nif user_site not in sys.path:\n    sys.path.insert(0, user_site)\n\nfrom pip._internal.cli.main import main as pip_main\nrc = pip_main(['install', '--target', user_site, 'tabulate'])\nprint(f'pip exit: {rc}')\n\nimport tabulate\nprint(tabulate.tabulate([['a', 1], ['b', 2]], headers=['k', 'v']))"),
-            LibraryModule(name: "wheel", summary: "Build .whl archives from setup.py/pyproject.toml projects",
+        LibrarySection(name: "pip / pkg / wheel / setuptools", icon: "shippingbox.fill", modules: [
+            LibraryModule(name: "pip — what's installed", summary: "List and inspect the packages BenchCode comes with; works offline",
+                importLine: "# In the terminal (the same lines work in a notebook cell after a !)",
+                items: ["pip list — every package and its version", "pip show <name> — version, summary, what it needs", "pip show -f <name> — its files", "pip freeze — name==version lines", "pip check — do the packages' requirements line up?", "# pip install doesn't download: BenchCode's packages are built in", "# add a package of your own with pkg add (next topic)"],
+                example: "# The same answers from Python:\nfrom importlib.metadata import version, distributions\nprint('numpy', version('numpy'))\nprint(len(list(distributions())), 'packages are installed')"),
+            LibraryModule(name: "pkg — add your own packages", summary: "Add a pure-Python package you have, or one from a GitHub link, and use it everywhere",
+                importLine: "# In the terminal",
+                items: ["pkg add <file.whl | file.tar.gz | folder | file.py>", "pkg add https://github.com/<owner>/<repo>", "pkg add https://github.com/<owner>/<repo>/tree/<branch>/<folder>", "pkg new <name> — start a package of your own", "pkg list / pkg show <name> / pkg edit <name>", "pkg update [name] — fetch one added from a link again", "pkg remove <name>", "# pure Python only: packages with compiled (.so) code can't be added", "# commands a package brings are listed in help"],
+                example: "# After `pkg new mylib` in the terminal, from any program or notebook:\nimport mylib\nprint(mylib.hello('class'))",
+                language: "python"),
+            LibraryModule(name: "wheel", summary: "The .whl package file format: read one, or build one from a project",
                 importLine: "# wheel ships as a CLI; also usable programmatically",
                 items: ["wheel.bdist_wheel.bdist_wheel", "wheel.wheelfile.WheelFile(path)", "wheel.metadata.pkginfo_to_metadata(...)", "wheel tags — cp314-cp314-iphoneos_arm64", "# CLI: wheel pack <dir>", "# CLI: wheel unpack <whl>", "# CLI: wheel tags <whl>"],
-                example: "# Inspect a wheel without extracting:\nimport zipfile, os\npath = next((p for p in sys.path if 'pip' in p.lower()), None)\nprint('pip is at', path)\n# Or programmatically: use wheel.wheelfile.WheelFile"),
+                example: "# A .whl is a zip file; list what's inside one:\nimport zipfile, glob\nfor whl in glob.glob('*.whl'):\n    with zipfile.ZipFile(whl) as z:\n        print(whl, len(z.namelist()), 'files')\n# pkg add <file.whl> in the terminal adds a pure-Python one"),
             LibraryModule(name: "setuptools — minimal", summary: "Metadata + build-backend for pure-Python projects",
                 importLine: "from setuptools import setup, find_packages",
                 items: ["setup(name, version, packages=find_packages())", "setup(install_requires=['numpy'])", "setup(entry_points={'console_scripts': [...]})", "setup(package_data={'pkg': ['*.json']})", "setup(python_requires='>=3.10')", "setuptools.build_meta — PEP 517 backend", "setuptools.Extension(...)  # C extensions"],
@@ -1929,8 +1934,8 @@ extension LibraryDocsViewController {
                 example: "import pkg_resources\nfor dist in sorted(pkg_resources.working_set, key=lambda d: d.project_name):\n    if dist.project_name.startswith(('pip', 'wheel', 'setup')):\n        print(f'{dist.project_name:20s} {dist.version}')"),
             LibraryModule(name: "importlib.metadata", summary: "Modern query API for installed distributions",
                 importLine: "from importlib.metadata import version, distribution, files, entry_points",
-                items: ["version('numpy')", "distribution('pip').metadata", "distribution(name).files — list of paths", "distribution(name).requires — list of reqs", "distributions() — all installed", "entry_points(group='console_scripts')", "packages_distributions() — module → dists"],
-                example: "from importlib.metadata import version, distribution\nfor name in ['numpy', 'pip', 'rich', 'torch']:\n    try:\n        print(f'{name}: {version(name)}')\n    except Exception:\n        print(f'{name}: not installed')"),
+                items: ["version('numpy')", "distribution('numpy').metadata", "distribution(name).files — list of paths", "distribution(name).requires — list of reqs", "distributions() — all installed", "entry_points(group='console_scripts')", "packages_distributions() — module → dists"],
+                example: "from importlib.metadata import version, distribution\nfor name in ['numpy', 'scipy', 'rich', 'torch']:\n    try:\n        print(f'{name}: {version(name)}')\n    except Exception:\n        print(f'{name}: not installed')"),
             LibraryModule(name: "pygments", summary: "Syntax highlighting for code; 500+ lexers, many formatters",
                 importLine: "from pygments import highlight\nfrom pygments.lexers import PythonLexer, get_lexer_by_name\nfrom pygments.formatters import TerminalFormatter, HtmlFormatter",
                 items: ["highlight(code, lexer, formatter)", "PythonLexer() / JavascriptLexer() / JsonLexer() / …", "get_lexer_by_name('swift')", "get_lexer_for_filename('a.py')", "guess_lexer(code)", "TerminalFormatter(bg='dark')", "Terminal256Formatter(style='monokai')", "HtmlFormatter(style='monokai', noclasses=True)", "pygments.styles.get_all_styles()"],

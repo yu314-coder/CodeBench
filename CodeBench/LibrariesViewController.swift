@@ -178,7 +178,7 @@ final class LibraryCardCell: UICollectionViewCell {
         versionPill.setColors(text: vTint, background: vTint.withAlphaComponent(0.14))
 
         if pkg.origin == "User" {
-            badgePill.text = "PIP"
+            badgePill.text = "YOURS"
             badgePill.setColors(text: UIColor(white: 0.08, alpha: 1),
                                 background: UIColor(red: 0.4, green: 0.85, blue: 0.4, alpha: 1))
         } else {
@@ -226,10 +226,10 @@ final class LibrarySectionHeaderView: UICollectionReusableView {
 
     /// `title` is the existing Section.title (e.g. "Bundled — Machine Learning  (8)").
     func configure(title: String) {
-        let isPip = title.hasPrefix("Pip installed")
+        let isPip = title.hasPrefix("Added by you")
         // Re-derive the bare category name exactly as the old header did.
         let catName: String = {
-            if isPip { return "Pip installed" }
+            if isPip { return "Added by you" }
             var t = title
             if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
             if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
@@ -378,7 +378,7 @@ final class StorageDonutHeaderView: UICollectionReusableView {
     private var total: Int64 = 0
     private var selected: Int?
     private var rows: [UIControl] = []
-    /// Lowercased slice names that are user pip installs / app components, so
+    /// Lowercased slice names that are packages the user added / app components, so
     /// the center caption can say what a slice actually is instead of always
     /// claiming "of bundle".
     private var pipNames: Set<String> = []
@@ -533,7 +533,7 @@ final class StorageDonutHeaderView: UICollectionReusableView {
             // Say what the slice really is so it never contradicts the list.
             let kind: String
             if s.name.hasPrefix("Other")      { kind = "\(pct)% of app · aggregate" }
-            else if pipNames.contains(lc)     { kind = "\(pct)% of app · pip install" }
+            else if pipNames.contains(lc)     { kind = "\(pct)% of app · added by you" }
             else if componentNames.contains(lc) { kind = "\(pct)% of app · component" }
             else                              { kind = "\(pct)% of app · bundled" }
             ring.valueLabel.text = Self.sizeString(s.bytes)
@@ -561,7 +561,7 @@ final class StorageDonutHeaderView: UICollectionReusableView {
 
 /// Libraries tab — live view of every Python package the running
 /// interpreter can see, grouped into:
-///   • Pip installed                            (user's Documents/site-packages)
+///   • Added by you                            (user's Documents/site-packages)
 ///   • Bundled — Machine Learning               (torch, transformers, peft, …)
 ///   • Bundled — Scientific Computing           (numpy, scipy, sympy, …)
 ///   • Bundled — Visualization                  (matplotlib, plotly, seaborn)
@@ -921,8 +921,8 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     /// for the row's left-edge stripe.
     static func iconForCategory(_ category: String) -> (symbol: String, tint: UIColor) {
         switch category {
-        case "Pip installed":
-            return ("arrow.down.app.fill",
+        case "Added by you":
+            return ("plus.app.fill",
                     UIColor(red: 0.32, green: 0.83, blue: 0.45, alpha: 1))     // green
         case "Machine Learning":
             return ("brain.head.profile",
@@ -969,10 +969,10 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         }
     }
 
-    /// Per-row category — Pip-installed rows get their own marker.
+    /// Per-row category — Added-by-you rows get their own marker.
     static func iconForPackage(name: String, origin: String) -> (symbol: String, tint: UIColor) {
         if origin == "User" {
-            return iconForCategory("Pip installed")
+            return iconForCategory("Added by you")
         }
         return iconForCategory(categorize(name))
     }
@@ -1256,7 +1256,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
     /// Donut → list bridge: tapping a slice resolves it to an EXACT package
     /// identity (preferring a Bundled match) and pins the list to just that
     /// card, shown under its real category. Matching by substring used to
-    /// pull in unrelated pip packages (which group first → "Pip installed"),
+    /// pull in unrelated pip packages (which group first → "Added by you"),
     /// and some donut slices are framework-attribution buckets (cairo,
     /// llama_cpp) or synthetic ones (LaTeX, Python runtime, …) that have no
     /// card at all — those just update the donut center + toast, no filter.
@@ -1700,7 +1700,7 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         // Pip-installed section (only if anything matches)
         if !userPkgs.isEmpty {
             out.append(Section(
-                title: "Pip installed  (\(userPkgs.count))",
+                title: "Added by you  (\(userPkgs.count))",
                 rows: userPkgs))
         }
 
@@ -1811,9 +1811,9 @@ final class InstalledLibsViewController: UIViewController, UICollectionViewDeleg
         chipStack.addArrangedSubview(makeChip(title: "All", category: nil,
                                               selected: activeCategory == nil, tint: .systemBlue))
         for sec in universe {
-            let isPip = sec.title.hasPrefix("Pip installed")
+            let isPip = sec.title.hasPrefix("Added by you")
             let catName: String = {
-                if isPip { return "Pip installed" }
+                if isPip { return "Added by you" }
                 var t = sec.title
                 if let r = t.range(of: "Bundled — ") { t.removeSubrange(t.startIndex..<r.upperBound) }
                 if let r = t.range(of: "  (")        { t = String(t[..<r.lowerBound]) }
@@ -3168,20 +3168,17 @@ final class PackageDetailViewController: UIViewController {
 
         // ─── Package Management ───────────────────────────────────
         "pip": Info(
-            summary: "Python's package installer 26.0.1. Patched in "
-                + "CodeBench to: skip native-build sdist fallbacks, "
-                + "retry with --no-deps when bundled-deps conflict, "
-                + "recursively install missing runtime deps, and "
-                + "inject the right `--target` for the per-workspace "
-                + "site-packages.",
-            iosNotes: "• Installs go to ~/Documents/site-packages "
-                + "(visible in the Pip-installed section above).\n"
-                + "• Pure-Python packages install fine; anything with "
-                + "C / Rust extensions usually fails (no cross-"
-                + "compile toolchain on-device).",
+            summary: "pip tells you which Python packages are here: pip list, pip show <name>, "
+                + "pip freeze and pip check work offline. The packages come built in.",
+            iosNotes: "• To add a pure-Python package of your own, type pkg add in the terminal "
+                + "with its .whl, .tar.gz or folder, or a GitHub link.\n"
+                + "• Packages with compiled code (C or Rust) can't be added on an iPad.\n"
+                + "• What you add appears in the Added by you section above.",
             example: """
-            # In the CodeBench shell:
-            pip install evaluate
+            # In the terminal:
+            pip list
+            pip show numpy
+            pkg add https://github.com/<owner>/<repo>
             """
         ),
         "wheel": Info(

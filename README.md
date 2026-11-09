@@ -389,9 +389,28 @@ The CodeBench shell IS a Python REPL — typing Python executes directly. On top
 - **REPL**: `repl` (persistent-namespace Python with rich displayhook; `repl --keep` preserves last session's namespace)
 - **Test runners**: `test-libs` / `test_libs` (smoke-test every bundled library)
 - **VCS**: `git clone` (via zipball fetch — real Git protocol isn't available sandboxed; HuggingFace `hf://` URLs supported via `snapshot_download`)
-- **Package mgmt**: `pip` (install to the per-workspace site-packages dir; smart-skips already-bundled deps)
+- **Packages**: `pip list` / `show` / `freeze` / `check` read the built-in packages (they work offline; `pip install` doesn't download); `pkg` adds your own (below)
+- **Your own commands & packages**: `cmd`, `alias` / `unalias`, `pkg` (below)
 
-`python --help`, `python -V`, `python -c "print(1+1)"`, `python -m pip install …` all behave like real CPython.
+`python --help`, `python -V`, `python -c "print(1+1)"` all behave like real CPython.
+
+### Your own commands and packages
+
+```
+cmd new hello                    # a Python command: My work › Commands/hello.py, opened in the editor
+hello Ann                        # run it — the arguments are in sys.argv[1:]
+cmd new ll2 "ls -la"             # a one-line shortcut (Commands/ll2.sh); alias ll2='ls -la' does the same
+pkg add https://github.com/yu314-coder/python_to_binary     # a repository link (GitHub, GitLab, Codeberg, Bitbucket)
+pkg add ~/Documents/Imported/pywebview-6.1-py3-none-any.whl # or a .whl / .tar.gz / .zip, a folder, a .py file
+py2bin --version                 # commands that packages bring run by name, and help lists them
+pkg list    pkg show <name>    pkg edit <name>    pkg update    pkg remove <name>
+```
+
+- **Commands** are plain files in My work › Commands: `<name>.py` runs as Python, `<name>.sh` runs each line as if typed (`$1`, `$@` for the arguments). A file you drop there is a command too; `help <name>` shows its docstring and Tab completes it.
+- **Packages** go to `~/Documents/site-packages`, so `import` works in the terminal, the editor's Run and notebooks. Pure Python only — iOS runs only native code that ships inside the app — and a package whose name a built-in one already answers to is refused, since Python finds the built-in one first. A link is fetched the way `git clone` fetches a repository (`/tree/<branch>/<folder>` and pip's `git+…@ref#subdirectory=` work too); nothing is looked up by name.
+- **Package commands** (`console_scripts`, or `[project.scripts]` in a source tree) are listed in `help` under *Commands from your packages*; `help py2bin` prints py2bin's own help.
+
+The shell side lives in python-ios-lib: [`offlinai_shell.py`](https://github.com/yu314-coder/python-ios-lib/blob/main/app_packages/site-packages/offlinai_shell.py) and [`benchcode_custom.py`](https://github.com/yu314-coder/python-ios-lib/blob/main/app_packages/site-packages/benchcode_custom.py); details in its [shell doc](https://github.com/yu314-coder/python-ios-lib/blob/main/docs/offlinai-shell.md#your-own-commands-and-packages-benchcode_custom).
 
 ### Keyboard shortcuts
 

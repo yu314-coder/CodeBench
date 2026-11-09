@@ -1300,7 +1300,40 @@ final class LineBuffer {
         "pip", "pip3",
         "pip-install", "pip-uninstall", "pip-list",
         "pip-show", "pip-freeze", "pip-check",
+        // The user's own commands and packages
+        "cmd", "alias", "unalias", "pkg",
     ]
+
+    /// The user's own commands: `<name>.py` / `<name>.sh` in
+    /// My work › Commands, and the console_scripts of packages the user
+    /// added to ~/Documents/site-packages (offlinai_shell runs both by name).
+    private static func userCommands() -> [String] {
+        let fm = FileManager.default
+        var out: [String] = []
+        let dir = AppPaths.workspaceURL.appendingPathComponent("Commands", isDirectory: true)
+        for n in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] {
+            let ext = (n as NSString).pathExtension
+            guard ext == "py" || ext == "sh" else { continue }
+            let stem = (n as NSString).deletingPathExtension
+            if !stem.isEmpty && !stem.hasPrefix(".") { out.append(stem) }
+        }
+        let site = AppPaths.userSitePackagesURL
+        for n in (try? fm.contentsOfDirectory(atPath: site.path)) ?? [] where n.hasSuffix(".dist-info") {
+            let ep = site.appendingPathComponent(n).appendingPathComponent("entry_points.txt")
+            guard let text = try? String(contentsOf: ep, encoding: .utf8) else { continue }
+            var section = ""
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("[") {
+                    section = line.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+                } else if section == "console_scripts", let eq = line.firstIndex(of: "=") {
+                    let name = line[..<eq].trimmingCharacters(in: .whitespaces)
+                    if !name.isEmpty { out.append(name) }
+                }
+            }
+        }
+        return out
+    }
 
     private func handleTab(terminalView tv: TerminalView) {
         // Find the word before cursor.
@@ -1371,7 +1404,8 @@ final class LineBuffer {
     }
 
     private func completeCommand(partial: String) -> [String] {
-        LineBuffer.builtins.filter { $0.hasPrefix(partial) }.sorted()
+        Set(LineBuffer.builtins + LineBuffer.userCommands())
+            .filter { $0.hasPrefix(partial) }.sorted()
     }
 
     /// Extensions that `command` consumes as its primary argument.

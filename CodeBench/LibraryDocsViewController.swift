@@ -113,7 +113,7 @@ final class LibraryDocsViewController: UIViewController {
         if info.sizeBytes > 0 {
             parts.append(Self.formatBytes(info.sizeBytes))
         }
-        parts.append(info.isUserInstalled ? "user-installed" : "bundled")
+        parts.append(info.isUserInstalled ? "added by you" : "bundled")
         if !info.consoleScripts.isEmpty {
             let cmds = info.consoleScripts.prefix(3).joined(separator: ", ")
             parts.append("cmd: \(cmds)")
@@ -429,7 +429,7 @@ extension LibraryDocsViewController: UITableViewDataSource, UITableViewDelegate 
             let body = """
                 version  \(info.version)
                 size     \(info.sizeBytes > 0 ? Self.formatBytes(info.sizeBytes) : "?")
-                location \(info.isUserInstalled ? "user-installed" : "bundled with CodeBench")
+                location \(info.isUserInstalled ? "added by you (pkg add)" : "bundled with CodeBench")
                 \(info.summary.isEmpty ? "" : "\n\(info.summary)")
                 \(info.consoleScripts.isEmpty ? "" : "\nCLI commands:  " + info.consoleScripts.prefix(5).joined(separator: ", "))
                 \(info.requires.isEmpty ? "" : "\nRequires:\n  " + info.requires.prefix(8).joined(separator: "\n  "))
